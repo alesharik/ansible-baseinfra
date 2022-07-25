@@ -18,7 +18,7 @@ services:
       MINIO_ROOT_PASSWORD: ${ROOT_PASSWORD}
     volumes:
 {% if minio.volume_override is defined %}
-      - "{{ minio.volume_override }}:/data1"
+      - "ext:/data1"
 {% else %}
       - "{{ minio.directory }}:/data1"
 {% endif %}
@@ -32,3 +32,8 @@ services:
       interval: 30s
       timeout: 20s
       retries: 3
+{% if minio.volume_override is defined %}
+volumes:
+  ext:
+    name: "{{ minio.volume_override }}"
+    external: true
