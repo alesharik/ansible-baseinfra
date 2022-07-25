@@ -81,6 +81,15 @@
 - name: Make sure handlers are flushed immediately
   ansible.builtin.meta: flush_handlers
   tags: docker_registry_server
+- name: Wait for registry
+  ansible.builtin.uri:
+    url: "https://{{ docker.registry.server.host }}/v2/"
+    return_content: yes
+  register: registry_status
+  retries: 10
+  delay: 5
+  until: "registry_status.status|int == 401"
+  when: "'alesharik.baseinfra.nginx_proxy' in ansible_role_names"
 - name: Auto login to docker registry
   community.docker.docker_login:
     registry_url: "{{ docker.registry.server.host }}"
