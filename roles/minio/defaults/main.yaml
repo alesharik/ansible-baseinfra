@@ -1,0 +1,4 @@
+---
+minio:
+  version: RELEASE.2022-07-24T01-54-52Z
+  directory: "{{ dir.data }}/minio"

@@ -21,11 +21,11 @@
   tags: nginx_proxy
 - name: Create vhosts files
   ansible.builtin.copy:
-    dest: "{{ dir.ansible }}/nginx-proxy/vhost.d/{{ item.key }}"
+    dest: "{{ dir.ansible }}/nginx-proxy/vhost.d/{{ item.name }}"
     content: "{{ item.value }}"
-  loop: "{{ nginx.proxy.vhosts | dict2items }}"
+  loop: "{{ nginx.proxy.vhosts }}"
   loop_control:
-    label: "{{ item.key }}"
+    label: "{{ item.name }}"
   tags: nginx_proxy
   notify:
     - restart nginx-proxy

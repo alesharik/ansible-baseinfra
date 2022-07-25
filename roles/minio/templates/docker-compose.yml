@@ -1,0 +1,34 @@
+version: '3.9'
+networks:
+  minio:
+{% if 'alesharik.baseinfra.nginx_proxy' in ansible_role_names %}
+  proxy:
+    external:
+      name: nginx-proxy_proxy
+{% endif %}
+services:
+  minio:
+    image: quay.io/minio/minio:RELEASE.2022-04-12T06-55-35Z
+    command: server --console-address ":9001" /data1
+    environment:
+      VIRTUAL_HOST: "{{ minio.host }}"
+      VIRTUAL_PORT: 9000
+      LETSENCRYPT_HOST: "{{ minio.host }}"
+      MINIO_ROOT_USER: ${ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${ROOT_PASSWORD}
+    volumes:
+{% if minio.volume_override is not None %}
+      - "{{ minio.volume_override }}:/data1"
+{% else %}
+      - "{{ minio.directory }}:/data1"
+{% endif %}
+    networks:
+      - minio
+{% if 'alesharik.baseinfra.nginx_proxy' in ansible_role_names %}
+      - proxy
+{% endif %}
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      interval: 30s
+      timeout: 20s
+      retries: 3

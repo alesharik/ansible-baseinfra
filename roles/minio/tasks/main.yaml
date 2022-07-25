@@ -1,0 +1,42 @@
+---
+- name: Create compose dir
+  ansible.builtin.file:
+    path: "{{ dir.ansible }}/minio"
+    state: directory
+    mode: 0755
+  tags: minio
+- name: Move compose files
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ dir.ansible }}/minio/docker-compose.yml"
+    mode: 0755
+  tags: minio
+  notify:
+    - restart minio
+- name: Create minio directory
+  ansible.builtin.file:
+    path: "{{ minio.directory }}"
+    state: directory
+    mode: 0755
+  when: minio.volume_override is None
+  tags: minio
+- name: Configure vhost
+  tags: minio
+  when: "'alesharik.baseinfra.nginx_proxy' in ansible_role_names"
+  ansible.builtin.set_fact:
+    nginx: "{{ nginx|combine(vhost, recursive=True) }}"
+  vars:
+    vhost:
+      proxy:
+        vhosts:
+          - name: "{{ minio.domain }}"
+            value: |
+              location /{{ minio.bucket }} {
+                proxy_set_header Host $http_host;
+                proxy_pass http://minio:9000/{{ minio.bucket }}/;
+              }
+          - name: "{{ minio.domain }}_location"
+            value: return 404;
+- name: Make sure handlers are flushed immediately
+  ansible.builtin.meta: flush_handlers
+  tags: minio
