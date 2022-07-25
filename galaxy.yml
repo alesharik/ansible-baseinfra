@@ -9,7 +9,8 @@ description: Collection with basic roles for my infrastructure. Not intended for
 license:
   - Apache-2.0
 tags: []
-dependencies: {}
+dependencies:
+  "community.docker": "*"
 repository: https://github.com/alesharik/ansible-baseinfra
 issues: https://github.com/alesharik/ansible-baseinfra/issues
 build_ignore:

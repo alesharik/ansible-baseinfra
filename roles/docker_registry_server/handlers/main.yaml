@@ -1,0 +1,6 @@
+---
+- name: restart docker registry server
+  community.docker.docker_compose:
+    project_src: "{{ dir.ansible }}/docker-registry"
+    restarted: true
+  tags: docker_registry_server

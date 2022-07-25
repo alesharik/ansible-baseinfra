@@ -1,0 +1,81 @@
+---
+- name: Create compose dir
+  ansible.builtin.file:
+    path: "{{ dir.ansible }}/docker-registry"
+    state: directory
+    mode: 0755
+  tags: docker_registry_server
+- name: Move compose files
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ dir.ansible }}/docker-registry/docker-compose.yml"
+    mode: 0755
+  tags: docker_registry_server
+  notify:
+    - restart docker registry server
+- name: Create docker registry server directory
+  ansible.builtin.file:
+    path: "{{ docker.registry.server.directory }}"
+    state: directory
+    mode: 0755
+  tags: docker_registry_server
+- name: Touch htpasswd file
+  ansible.builtin.file:
+    path: "{{ dir.ansible }}/docker-registry/htpasswd"
+    state: present
+    mode: 0755
+  tags: docker_registry_server
+- name: Add users
+  community.general.htpasswd:
+    path: "{{ dir.ansible }}/docker-registry/htpasswd"
+    name: "{{ item.key }}"
+    password: "{{ item.value.password }}"
+    state: present
+  tags: docker_registry_server
+  loop: "{{ docker.registry.server.users | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+- name: Determine existing users
+  ansible.builtin.shell: >
+    set -o pipefail;
+    cat "{{ dir.ansible }}/docker-registry/htpasswd" | cut -d: -f1 | tr "," "\n"
+  args:
+    executable: /bin/bash
+  changed_when: false
+  register: existing_users
+  tags: docker_registry_server
+- name: Determine removed users
+  ansible.builtin.set_fact:
+    removed_users: "{{ existing_users.stdout_lines | difference(docker.registry.server.users.keys()) }}"
+  tags: docker_registry_server
+- name: Delete removed user accounts
+  community.general.htpasswd:
+    path: "{{ dir.ansible }}/docker-registry/htpasswd"
+    name: "{{ item }}"
+    state: absent
+  with_items: "{{ removed_users }}"
+  loop_control:
+    label: "{{ item }}"
+  tags: docker_registry_server
+- name: Configure vhost
+  tags: docker_registry_server
+  when: "'alesharik.baseinfra.nginx_proxy' in ansible_role_names"
+  ansible.builtin.set_fact:
+    nginx: "{{ nginx|combine(vhost, recursive=True) }}"
+  vars:
+    vhost:
+      proxy:
+        vhosts:
+          - name: "{{ docker.registry.server.host }}"
+            value: client_max_body_size 1000M;
+- name: Make sure handlers are flushed immediately
+  ansible.builtin.meta: flush_handlers
+  tags: docker_registry_server
+- name: Auto login to docker registry
+  community.docker.docker_login:
+    registry_url: "{{ docker.registry.server.host }}"
+    username: "{{ item.key }}"
+    password: "{{ item.value.password }}"
+  loop: "{{ docker.registry.server.users | dict2items | selectattr('value.autologin', 'defined') }}"
+  loop_control:
+    label: "{{ item.key }}"
