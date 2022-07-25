@@ -22,7 +22,7 @@
 - name: Touch htpasswd file
   ansible.builtin.file:
     path: "{{ dir.ansible }}/docker-registry/htpasswd"
-    state: file
+    state: touch
     mode: 0755
   tags: docker_registry_server
 - name: Add users
