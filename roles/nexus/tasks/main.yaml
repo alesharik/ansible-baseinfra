@@ -1,0 +1,52 @@
+---
+- name: Create compose dir
+  ansible.builtin.file:
+    path: "{{ dir.ansible }}/nexus"
+    state: directory
+    mode: 0755
+  tags: nexus
+- name: Move compose files
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ dir.ansible }}/nexus/docker-compose.yml"
+    mode: 0755
+  tags: nexus
+  notify:
+    - restart nexus
+- name: Create nexus directory
+  ansible.builtin.file:
+    path: "{{ nexus.directory }}"
+    state: directory
+    mode: 0755
+  when: nexus.volume_override is not defined
+  tags: nexus
+- name: Configure vhost
+  tags: nexus
+  when: "'alesharik.baseinfra.nginx_proxy' in ansible_role_names"
+  ansible.builtin.set_fact:
+    nginx: "{{ nginx|combine(vhost, recursive=True, list_merge='append') }}"
+  vars:
+    vhost:
+      proxy:
+        vhosts:
+          - name: "{{ nexus.host }}"
+            value: |
+              client_max_body_size 1000M;
+
+              location /v2 {
+                      proxy_set_header Host $host:$server_port;
+                      proxy_set_header X-Real-IP $remote_addr;
+                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                      proxy_set_header X-Forwarded-Proto "https";
+                      proxy_pass http://{{ nexus.host }}/repository/docker-hosted/$request_uri;
+              }
+              location /v1 {
+                      proxy_set_header Host $host:$server_port;
+                      proxy_set_header X-Real-IP $remote_addr;
+                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                      proxy_set_header X-Forwarded-Proto "https";
+                      proxy_pass http://{{ nexus.host }}/repository/docker/$request_uri;
+              }
+- name: Make sure handlers are flushed immediately
+  ansible.builtin.meta: flush_handlers
+  tags: nexus

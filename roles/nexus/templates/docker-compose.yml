@@ -1,0 +1,30 @@
+version: '3.9'
+networks:
+{% if 'alesharik.baseinfra.nginx_proxy' in ansible_role_names %}
+  proxy:
+    external:
+      name: nginx-proxy_proxy
+{% endif %}
+services:
+  nexus:
+    image: "sonatype/nexus3:{{ nexus.version }}"
+    environment:
+      VIRTUAL_HOST: "{{ nexus.host }}"
+      VIRTUAL_PORT: 8081
+      LETSENCRYPT_HOST: "{{ nexus.host }}"
+    volumes:
+{% if nexus.volume_override is defined %}
+      - "ext:/data1"
+{% else %}
+      - "{{ nexus.directory }}:/data1"
+{% endif %}
+{% if 'alesharik.baseinfra.nginx_proxy' in ansible_role_names %}
+    networks:
+      - proxy
+{% endif %}
+{% if nexus.volume_override is defined %}
+volumes:
+  ext:
+    name: "{{ nexus.volume_override }}"
+    external: true
+{% endif %}

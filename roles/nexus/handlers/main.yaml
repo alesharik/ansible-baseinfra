@@ -1,0 +1,6 @@
+---
+- name: restart nexus
+  community.docker.docker_compose:
+    project_src: "{{ dir.ansible }}/nexus"
+    restarted: true
+  tags: nexus
