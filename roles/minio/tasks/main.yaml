@@ -32,7 +32,7 @@
   tags: minio
   when: "'alesharik.baseinfra.nginx_proxy' in ansible_role_names"
   ansible.builtin.set_fact:
-    nginx: "{{ nginx|combine(vhost, recursive=True) }}"
+    nginx: "{{ nginx|combine(vhost, recursive=True, list_merge='append') }}"
   vars:
     vhost:
       proxy:
