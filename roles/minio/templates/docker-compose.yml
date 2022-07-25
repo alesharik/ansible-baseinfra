@@ -37,3 +37,4 @@ volumes:
   ext:
     name: "{{ minio.volume_override }}"
     external: true
+{% endif %}
