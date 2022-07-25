@@ -1,0 +1,35 @@
+---
+- name: docker/ensure apt keyrings dir exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: 0755
+- name: docker/add repo key
+  ansible.builtin.apt_key:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    keyring: /etc/apt/keyrings/docker.gpg
+    state: present
+- name: docker/get repo string
+  ansible.builtin.shell: >
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu  $(lsb_release -cs) stable"
+  register: docker_repo
+  changed_when: docker_repo.rc != 0
+- name: docker/add repo
+  ansible.builtin.apt_repository:
+    repo: "{{ docker_repo.stdout }}"
+    state: present
+    update_cache: true
+- name: docker/install packages
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+    state: present
+- name: docker/enable and start docker service
+  ansible.builtin.systemd:
+    daemon_reload: true
+    enabled: true
+    state: started
+    name: docker

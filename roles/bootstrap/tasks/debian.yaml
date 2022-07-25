@@ -1,0 +1,10 @@
+---
+- name: Install basic utils
+  ansible.builtin.apt:
+    update_cache: true
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+      - python3-pip

@@ -1,0 +1,36 @@
+---
+- name: Create ansible-managed group
+  ansible.builtin.group:
+    name: ansible-managed
+    state: present
+- name: Add user
+  ansible.builtin.user:
+    name: "{{ item.key }}"
+    create_home: "{{ item.value.create_home }}"
+    groups: "{{ item.value.groups }},ansible-managed"
+    shell: /bin/bash
+  loop: "{{ users | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+- name: Add authorized keys
+  ansible.builtin.authorized_key:
+    user: "{{ item.key }}"
+    state: present
+    key: "{{ lookup('file', '{{ playbook_dir }}/ssh_keys/{{ item.key }}.pub') }}"
+  loop: "{{ users | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+- name: Determine existing users
+  ansible.builtin.shell: >
+    set -o pipefail;
+    grep ansible-managed /etc/group | cut -d: -f4 | tr "," "\n"
+  changed_when: false
+  register: existing_users
+- name: Determine removed users
+  ansible.builtin.set_fact:
+    removed_users: "{{ existing_users.stdout_lines | difference(users.keys()) }}"
+- name: Delete removed user accounts
+  ansible.builtin.user:
+    name: "{{ item }}"
+    state: absent
+  with_items: "{{ removed_users }}"

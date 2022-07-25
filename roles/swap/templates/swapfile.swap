@@ -1,0 +1,9 @@
+[Unit]
+Description=Primary swap
+
+[Swap]
+What=/swapfile
+TimeoutSec=10s
+
+[Install]
+WantedBy=basic.target

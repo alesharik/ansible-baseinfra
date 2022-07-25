@@ -1,0 +1,16 @@
+---
+- name: Setup config
+  ansible.builtin.template:
+    src: timesyncd.conf
+    dest: /etc/systemd/timesyncd.conf
+    mode: 0644
+    owner: root
+    group: root
+- name: Start systemd-timesyncd
+  ansible.builtin.systemd:
+    name: systemd-timesyncd
+    state: restarted
+    enabled: true
+- name: Set-ntp on
+  ansible.builtin.command: /usr/bin/timedatectl set-ntp on
+  changed_when: false

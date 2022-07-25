@@ -1,0 +1,10 @@
+---
+- name: Install package
+  ansible.builtin.package:
+    name: sudo
+- name: Allow nopasswd login for sudo group
+  community.general.sudoers:
+    commands: ALL
+    group: sudo
+    name: sudo-group
+    nopassword: true

@@ -1,0 +1,5 @@
+---
+limits:
+  nofile:
+    soft: 8192
+    hard: 1048576

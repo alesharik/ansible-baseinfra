@@ -1,0 +1,15 @@
+---
+- name: Change hostname
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}"
+
+- name: Change hostname in /etc/hosts
+  ansible.builtin.lineinfile:
+    dest: /etc/hosts
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+    state: present
+  no_log: true
+  loop:
+    - { regexp: "^127\\.0\\.0\\.1[ \\t]+localhost", line: "127.0.0.1 localhost {{ inventory_hostname }}" }
+    - { regexp: "^{{ ansible_default_ipv4.address }}.+$", line: "{{ ansible_default_ipv4.address }} {{ inventory_hostname }}" }

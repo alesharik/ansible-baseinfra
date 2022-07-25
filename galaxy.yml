@@ -1,0 +1,16 @@
+---
+namespace: alesharik
+name: baseinfra
+version: 1.0.0
+readme: README.md
+authors:
+  - Aleksei Arsenev <alesharik4@gmail.com>
+description: Collection with basic roles for my infrastructure. Not intended for public use
+license:
+  - Apache-2.0
+tags: []
+dependencies: {}
+repository: https://github.com/alesharik/ansible-baseinfra
+issues: https://github.com/alesharik/ansible-baseinfra/issues
+build_ignore:
+  - idea/*

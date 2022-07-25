@@ -1,0 +1,65 @@
+---
+- name: Ensure swap exists
+  ansible.builtin.command: swapon --show=SIZE --bytes --noheadings
+  register: swap_exists
+  changed_when: false
+  tags: swap
+
+- name: Exists
+  ansible.builtin.debug:
+    msg: "swap_size_mb: {{ (swap_exists.stdout_lines|map('trim')|map('int')|sum / 1024 / 1024)|round|int }}"
+  when: swap_exists.stdout is defined and swap_exists.stdout | length > 1
+  tags: swap
+
+# if the swap exists and the size is not equal to swap_file_size_mb
+- name: If swap exists and size differs
+  block:
+    - name: Disable old swap
+      ansible.builtin.systemd:
+        state: stopped
+        name: swapfile.swap
+    - name: Remove swap file
+      ansible.builtin.file:
+        path: "{{ swap.file }}"
+        state: absent
+  when: >
+    (swap_exists.stdout is defined and swap_exists.stdout | length > 1)
+      and ((swap_exists.stdout_lines|map('trim')|map('int')|sum / 1024 / 1024)|round|int != swap.size_mb|int)
+  tags: swap
+
+# if the swap does not exist
+- name: If swap does not exist
+  block:
+    - name: Create swap file
+      ansible.builtin.command: >
+        dd if=/dev/zero of={{ swap.file }} bs=1M count={{ swap.size_mb }}
+        creates='{{ swap.file }}'
+
+    - name: Set permissions on file
+      ansible.builtin.file:
+        path: "{{ swap.file }}"
+        owner: root
+        group: root
+        mode: 0600
+
+    - name: Make swap file
+      ansible.builtin.command: mkswap {{ swap.file }}
+      register: mkswap_result
+      changed_when: mkswap_result.rc != 0
+
+    - name: Setup systemd unut
+      ansible.builtin.template:
+        src: swapfile.swap
+        dest: /etc/systemd/system/{{ swap.file[1:] }}.swap
+        mode: 0755
+
+    - name: Enable
+      ansible.builtin.systemd:
+        state: started
+        name: swapfile.swap
+        enabled: true
+        daemon_reload: true
+  when: >
+    (swap_exists.stdout is defined and swap_exists.stdout | length < 1)
+      or (swap_exists.stdout_lines is defined and (swap_exists.stdout_lines|map('trim')|map('int')|sum / 1024 / 1024)|round|int != swap.size_mb|int)
+  tags: swap

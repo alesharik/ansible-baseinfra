@@ -1,0 +1,11 @@
+---
+- name: Set nofile limits
+  ansible.builtin.pam_limits:
+    domain: "*"
+    limit_type: "{{ item.type }}"
+    limit_item: "{{ item.item }}"
+    value: "{{ item.value }}"
+  loop:
+    - { type: soft, item: nofile, value: "{{ limits.nofile.soft }}" }
+    - { type: hard, item: nofile, value: "{{ limits.nofile.hard }}" }
+  tags: pam-limits

@@ -1,0 +1,10 @@
+---
+- name: Create service
+  ansible.builtin.template:
+    dest: /etc/systemd/system/disable-transparent-huge-pages.service
+    src: disable-transparent-huge-pages.service
+    mode: 0755
+  notify: restart disable-thp
+  tags: disable-thb
+- name: Make sure handlers are flushed immediately
+  ansible.builtin.meta: flush_handlers
