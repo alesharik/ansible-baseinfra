@@ -1,5 +1,5 @@
 ---
-postgres:
+postgresgen:
   dirs:
     directory: "{{ dir.data }}/postgres-{{ postgres.name }}"
     wal: "{{ dir.data }}/postgres-{{ postgres.name }}-wal-archive/"
