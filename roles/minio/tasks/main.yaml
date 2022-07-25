@@ -13,6 +13,14 @@
   tags: minio
   notify:
     - restart minio
+- name: Move env file
+  ansible.builtin.template:
+    src: .env
+    dest: "{{ dir.ansible }}/minio/.env"
+    mode: 0755
+  tags: minio
+  notify:
+    - restart minio
 - name: Create minio directory
   ansible.builtin.file:
     path: "{{ minio.directory }}"
