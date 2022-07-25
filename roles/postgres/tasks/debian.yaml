@@ -1,0 +1,5 @@
+---
+- name: Install pg-devel
+  ansible.builtin.apt:
+    name: libpq-dev
+  tags: postgres

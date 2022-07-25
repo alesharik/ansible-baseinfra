@@ -1,4 +1,7 @@
 ---
+- include_tasks: debian.yaml
+  when: ansible_os_family == "Debian"
+  tags: postgres
 - name: Install psycopg2
   ansible.builtin.pip:
     name: psycopg2-binary
