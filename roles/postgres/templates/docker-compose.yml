@@ -20,6 +20,6 @@ services:
       - "{{ postgresgen.dirs.directory }}:/var/lib/postgresql/data"
       - "{{ dir.ansible }}/postgres-{{ postgres.name }}/pg_hba.conf:/etc/postgresql/pg_hba.conf"
       - "{{ dir.ansible }}/postgres-{{ postgres.name }}/postgresql.conf:/etc/postgresql/postgresql.conf"
-{% postgres.role == 'primary' or postgres.role == 'standby' %}
+{% if postgres.role == 'primary' or postgres.role == 'standby' %}
       - "{{ postgresgen.dirs.wal }}:{{ postgresgen.dirs.wal }}"
 {% endif %}
