@@ -26,7 +26,7 @@
     path: "{{ minio.directory }}"
     state: directory
     mode: 0755
-  when: minio.volume_override is None
+  when: minio.volume_override is not defined
   tags: minio
 - name: Configure vhost
   tags: minio

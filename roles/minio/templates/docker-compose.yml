@@ -17,7 +17,7 @@ services:
       MINIO_ROOT_USER: ${ROOT_USER}
       MINIO_ROOT_PASSWORD: ${ROOT_PASSWORD}
     volumes:
-{% if minio.volume_override is not None %}
+{% if minio.volume_override is defined %}
       - "{{ minio.volume_override }}:/data1"
 {% else %}
       - "{{ minio.directory }}:/data1"
