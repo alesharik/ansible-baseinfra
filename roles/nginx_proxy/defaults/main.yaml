@@ -1,0 +1,6 @@
+nginx:
+  proxy:
+    versions:
+      nginx: 1.0-alpine
+      le: 2.2
+    vhosts: {}

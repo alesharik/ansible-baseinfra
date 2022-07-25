@@ -1,0 +1,41 @@
+version: '3.9'
+networks:
+  proxy:
+services:
+  nginx-proxy:
+    container_name: nginx-proxy
+    image: "nginxproxy/nginx-proxy:{{ nginx.proxy.versions.nginx }}"
+    restart: always
+    networks:
+      - proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - certs:/etc/nginx/certs
+      - vhost.d:/etc/nginx/vhost.d
+      - html:/usr/share/nginx/html
+      {% for vhost in (nginx.proxy.vhosts | dict2items) %}
+      - ./vhost.d/{{ vhost.key }}:/etc/nginx/vhost.d/{{ vhost.key }}
+      {% endfor %}
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+  nginx-proxy-letsencrypt:
+    container_name: nginx-proxy-letsencrypt
+    image: "nginxproxy/acme-companion:{{ nginx.proxy.versions.le }}"
+    restart: always
+    networks:
+      - proxy
+    volumes:
+      - certs:/etc/nginx/certs
+      - vhost.d:/etc/nginx/vhost.d
+      - html:/usr/share/nginx/html
+      {% for vhost in (nginx.proxy.vhosts | dict2items) %}
+      - ./vhost.d/{{ vhost.key }}:/etc/nginx/vhost.d/{{ vhost.key }}
+      {% endfor %}
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - NGINX_PROXY_CONTAINER=nginx-proxy
+volumes:
+  certs:
+  vhost.d:
+  html:
