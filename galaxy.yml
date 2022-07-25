@@ -10,7 +10,7 @@ license:
   - Apache-2.0
 tags: []
 dependencies:
-  "community.docker": "*"
+  community.docker: "*"
 repository: https://github.com/alesharik/ansible-baseinfra
 issues: https://github.com/alesharik/ansible-baseinfra/issues
 build_ignore:

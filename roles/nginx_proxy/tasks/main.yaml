@@ -23,6 +23,7 @@
   ansible.builtin.copy:
     dest: "{{ dir.ansible }}/nginx-proxy/vhost.d/{{ item.name }}"
     content: "{{ item.value }}"
+    mode: 0755
   loop: "{{ nginx.proxy.vhosts }}"
   loop_control:
     label: "{{ item.name }}"
