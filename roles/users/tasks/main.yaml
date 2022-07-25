@@ -24,6 +24,8 @@
   ansible.builtin.shell: >
     set -o pipefail;
     grep ansible-managed /etc/group | cut -d: -f4 | tr "," "\n"
+  args:
+    executable: /bin/bash
   changed_when: false
   register: existing_users
 - name: Determine removed users
