@@ -1,0 +1,148 @@
+---
+- name: Install psycopg2
+  ansible.builtin.pip:
+    name: psycopg2-binary
+    state: present
+  tags: postgres
+- name: Create data dir
+  ansible.builtin.file:
+    path: "{{ postgres_directory }}"
+    state: directory
+    mode: 0755
+  tags: postgres
+- name: Check if data dir is empty
+  ansible.builtin.find:
+    paths: "{{ postgres_directory }}"
+  register: postgres_directory_files
+  when: postgres.role == 'standby'
+  tags: postgres
+- name: Run basebackup
+  ansible.builtin.docker_container:
+    name: pg_basebackup
+    image: "{{ postgres.image }}"
+    auto_remove: true
+    command: >
+      pg_basebackup
+        --pgdata /var/lib/postgresql/data
+        --format=p
+        --write-recovery-conf
+        --checkpoint=fast
+        --label=mffb
+        --progress
+        --host={{ hostvars[postgres.replication.primary_host].network.internal.ip }}
+        --port=5432
+        --username=replication
+    volumes:
+      - "{{ postgres_directory }}:/var/lib/postgresql/data"
+    env:
+      PGPASSWORD: "{{ lookup('vars', postgres.replication.ref).replication.password }}"
+  when: postgres.role == 'standby' and postgres_directory_files.matched == 0
+  tags: postgres
+- name: Create wal archive dir
+  ansible.builtin.file:
+    path: "{{ postgres_wal_archive_directory }}"
+    state: directory
+    mode: 0755
+  when: postgres.role == 'primary' or postgres.role == 'standby'
+  tags: postgres
+- name: Create compose dir
+  ansible.builtin.file:
+    path: "{{ dir.ansible }}/postgres-{{ postgres.name }}"
+    state: directory
+    mode: 0755
+  tags: postgres
+- name: Move compose files
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ dir.ansible }}/postgres-{{ postgres.name }}/docker-compose.yml"
+    mode: 0755
+  tags: postgres
+- name: "{{ postgres.name }}/deploy postgres container"
+  community.docker.docker_compose:
+    project_src: "{{ dir.ansible }}/postgres-{{ postgres.name }}"
+  tags: postgres
+- name: Wait for postgres to init
+  ansible.builtin.pause:
+    seconds: 5
+  tags: postgres
+- name: Copy new configs
+  ansible.builtin.template:
+    src: "{{ item }}"
+    dest: "{{ postgres_directory }}/{{ item }}"
+    mode: 0755
+  loop:
+    - pg_hba.conf
+    - postgresql.conf
+  notify:
+    - restart db
+  tags: postgres
+- name: Set host fact
+  ansible.builtin.set_fact:
+    postgres_host: 127.0.0.1
+  when: postgres.role == 'primary'
+  tags: postgres
+- name: Get container info
+  ansible.builtin.docker_container_info:
+    name: postgres-{{ postgres.name }}_postgres_1
+  register: postgres_container_info
+  tags: postgres
+- name: Set host fact
+  ansible.builtin.set_fact:
+    postgres_host: >
+      {{ postgres_container_info['container']
+        ['NetworkSettings']
+        ['Networks']
+        ['postgres-' + postgres.name + '_main']
+        ['IPAddress']
+      }}
+  when: postgres.role != 'primary'
+  tags: postgres
+- name: Create users
+  community.postgresql.postgresql_user:
+    login_host: "{{ postgres_host }}"
+    login_password: "{{ postgres.password }}"
+    login_user: "{{ postgres.username }}"
+    name: "{{ item.key }}"
+    password: "{{ item.value.password }}"
+  loop: "{{ postgres.users | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: postgres.role != 'standby'
+  tags: postgres
+- name: Create databases
+  community.postgresql.postgresql_db:
+    login_host: "{{ postgres_host }}"
+    login_password: "{{ postgres.password }}"
+    login_user: "{{ postgres.username }}"
+    name: "{{ item.key }}"
+  loop: "{{ postgres.databases | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: postgres.role != 'standby'
+  tags: postgres
+- name: Give privileges
+  community.postgresql.postgresql_privs:
+    login_host: "{{ postgres_host }}"
+    login_password: "{{ postgres.password }}"
+    login_user: "{{ postgres.username }}"
+    privs: "{{ item[1].privs }}"
+    type: "{{ item[1].type }}"
+    database: "{{ item[1].db }}"
+    role: "{{ item[0].key }}"
+    objs: "{{ item[1].objs }}"
+  loop: "{{ postgres.users | dict2items | subelements('value.privs') }}"
+  loop_control:
+    label: "{{ item[0].key }}-{{ item[1] }}"
+  when: postgres.role != 'standby'
+  tags: postgres
+- name: Create replication user
+  community.postgresql.postgresql_user:
+    login_host: "{{ postgres_host }}"
+    login_password: "{{ postgres.password }}"
+    login_user: "{{ postgres.username }}"
+    name: replication
+    password: "{{ postgres.replication.password }}"
+    role_attr_flags: REPLICATION
+    state: present
+  when: postgres.role == 'primary'
+  tags: postgres

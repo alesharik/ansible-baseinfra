@@ -1,0 +1,22 @@
+version: '3'
+{% if postgres.role != 'primary' %}
+networks:
+  main: {}
+{% endif %}
+services:
+  postgres:
+    image: "{{ postgres.image }}"
+    restart: always
+{% if postgres.role != 'primary' %}
+    networks:
+      - main
+{% else %}
+    network_mode: host
+{% endif %}
+    environment:
+      POSTGRES_PASSWORD: "{{ postgres.password }}"
+      POSTGRES_USER: "{{ postgres.username }}"
+    volumes:
+      - "{{ postgres_directory }}:/var/lib/postgresql/data"
+      - "{{ dir.ansible }}/postgres-{{ postgres.name }}/pg_hba.conf:/etc/postgresql/pg_hba.conf"
+      - "{{ dir.ansible }}/postgres-{{ postgres.name }}/postgresql.conf:/etc/postgresql/postgresql.conf"
