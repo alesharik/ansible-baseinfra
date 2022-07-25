@@ -96,7 +96,7 @@
         ['NetworkSettings']
         ['Networks']
         ['postgres-' + postgres.name + '_main']
-        ['IPAddress'] }}
+        ['IPAddress'] | trim }}
   when: postgres.role != 'primary'
   tags: postgres
 - name: Create users
