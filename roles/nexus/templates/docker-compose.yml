@@ -14,7 +14,7 @@ services:
       LETSENCRYPT_HOST: "{{ nexus.host }}"
     volumes:
 {% if nexus.volume_override is defined %}
-      - "ext:/data1"
+      - "ext:/nexus-data"
 {% else %}
       - "{{ nexus.directory }}:/nexus-data"
 {% endif %}
