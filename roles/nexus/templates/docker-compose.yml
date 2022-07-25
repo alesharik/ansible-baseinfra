@@ -16,7 +16,7 @@ services:
 {% if nexus.volume_override is defined %}
       - "ext:/data1"
 {% else %}
-      - "{{ nexus.directory }}:/data1"
+      - "{{ nexus.directory }}:/nexus-data"
 {% endif %}
 {% if 'alesharik.baseinfra.nginx_proxy' in ansible_role_names %}
     networks:
