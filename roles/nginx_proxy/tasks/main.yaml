@@ -1,3 +1,4 @@
+---
 - name: Create compose dir
   ansible.builtin.file:
     path: "{{ dir.ansible }}/nginx-proxy"
