@@ -2,6 +2,7 @@
 - name: Install passlib
   ansible.builtin.pip:
     name: passlib
+  tags: docker_registry_server
 - name: Create compose dir
   ansible.builtin.file:
     path: "{{ dir.ansible }}/docker-registry"
