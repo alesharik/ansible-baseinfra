@@ -1,7 +1,9 @@
 ---
-- name: Install passlib
+- name: Install passlib and bcrypt
   ansible.builtin.pip:
-    name: passlib
+    name:
+      - passlib
+      - bcrypt
   tags: docker_registry_server
 - name: Create compose dir
   ansible.builtin.file:
