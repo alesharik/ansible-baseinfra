@@ -96,12 +96,13 @@
         ['NetworkSettings']
         ['Networks']
         ['postgres-' + postgres.name + '_main']
-        ['IPAddress'] | trim }}
+        ['IPAddress']
+      }}
   when: postgres.role != 'primary'
   tags: postgres
 - name: Create users
   community.postgresql.postgresql_user:
-    login_host: "{{ postgres_host }}"
+    login_host: "{{ postgres_host | trim }}"
     login_password: "{{ postgres.password }}"
     login_user: "{{ postgres.username }}"
     name: "{{ item.key }}"
@@ -113,7 +114,7 @@
   tags: postgres
 - name: Create databases
   community.postgresql.postgresql_db:
-    login_host: "{{ postgres_host }}"
+    login_host: "{{ postgres_host | trim }}"
     login_password: "{{ postgres.password }}"
     login_user: "{{ postgres.username }}"
     name: "{{ item.key }}"
@@ -124,7 +125,7 @@
   tags: postgres
 - name: Give privileges
   community.postgresql.postgresql_privs:
-    login_host: "{{ postgres_host }}"
+    login_host: "{{ postgres_host | trim }}"
     login_password: "{{ postgres.password }}"
     login_user: "{{ postgres.username }}"
     privs: "{{ item[1].privs }}"
@@ -139,7 +140,7 @@
   tags: postgres
 - name: Create replication user
   community.postgresql.postgresql_user:
-    login_host: "{{ postgres_host }}"
+    login_host: "{{ postgres_host | trim }}"
     login_password: "{{ postgres.password }}"
     login_user: "{{ postgres.username }}"
     name: replication
