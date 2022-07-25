@@ -9,13 +9,13 @@
   tags: postgres
 - name: Create data dir
   ansible.builtin.file:
-    path: "{{ postgres_directory }}"
+    path: "{{ postgres.dirs.directory }}"
     state: directory
     mode: 0755
   tags: postgres
 - name: Check if data dir is empty
   ansible.builtin.find:
-    paths: "{{ postgres_directory }}"
+    paths: "{{ postgres.dirs.directory }}"
   register: postgres_directory_files
   when: postgres.role == 'standby'
   tags: postgres
@@ -36,14 +36,14 @@
         --port=5432
         --username=replication
     volumes:
-      - "{{ postgres_directory }}:/var/lib/postgresql/data"
+      - "{{ postgres.dirs.directory }}:/var/lib/postgresql/data"
     env:
       PGPASSWORD: "{{ lookup('vars', postgres.replication.ref).replication.password }}"
   when: postgres.role == 'standby' and postgres_directory_files.matched == 0
   tags: postgres
 - name: Create wal archive dir
   ansible.builtin.file:
-    path: "{{ postgres_wal_archive_directory }}"
+    path: "{{ postgres.dirs.wal }}"
     state: directory
     mode: 0755
   when: postgres.role == 'primary' or postgres.role == 'standby'
@@ -71,7 +71,7 @@
 - name: Copy new configs
   ansible.builtin.template:
     src: "{{ item }}"
-    dest: "{{ postgres_directory }}/{{ item }}"
+    dest: "{{ postgres.dirs.directory }}/{{ item }}"
     mode: 0755
   loop:
     - pg_hba.conf
