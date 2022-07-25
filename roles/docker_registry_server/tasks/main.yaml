@@ -85,3 +85,4 @@
   loop: "{{ docker.registry.server.users | dict2items | selectattr('value.autologin', 'defined') }}"
   loop_control:
     label: "{{ item.key }}"
+  tags: docker_registry_server
