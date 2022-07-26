@@ -4,7 +4,6 @@
     path: "{{ dir.ansible }}/nexus"
     state: directory
     mode: 0755
-    owner: 200
   tags: nexus
 - name: Move compose files
   ansible.builtin.template:
@@ -19,6 +18,7 @@
     path: "{{ nexus.directory }}"
     state: directory
     mode: 0755
+    owner: 200
   when: nexus.volume_override is not defined
   tags: nexus
 - name: Configure vhost
