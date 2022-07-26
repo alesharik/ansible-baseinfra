@@ -1,9 +1,19 @@
 ---
 - include_tasks: debian.yaml
   when: ansible_os_family == "Debian"
-- name: docker/install py library
+- name: Install py library
   ansible.builtin.pip:
     name:
       - docker
       - docker-compose
     state: latest
+  tags: docker
+- name: Login into registries
+  community.docker.docker_login:
+    registry_url: "{{ item.key }}"
+    username: "{{ item.value.username }}"
+    password: "{{ item.value.password }}"
+  loop: "{{ docker.registries | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  tags: docker
