@@ -4,6 +4,7 @@ networks:
 services:
   clickhouse:
     image: "clickhouse/clickhouse-server:{{ clickhouse.version }}"
+    restart: always
     ulimits:
       nproc: 65535
       nofile:

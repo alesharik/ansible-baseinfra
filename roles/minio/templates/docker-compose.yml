@@ -10,6 +10,7 @@ services:
   minio:
     image: "quay.io/minio/minio:{{ minio.version }}"
     command: server --console-address ":9001" /data1
+    restart: always
     environment:
       VIRTUAL_HOST: "{{ minio.host }}"
       VIRTUAL_PORT: 9000

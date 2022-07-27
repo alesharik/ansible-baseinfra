@@ -8,6 +8,7 @@ networks:
 services:
   nexus:
     image: "sonatype/nexus3:{{ nexus.version }}"
+    restart: always
     environment:
       VIRTUAL_HOST: "{{ nexus.host }}"
       VIRTUAL_PORT: 8081

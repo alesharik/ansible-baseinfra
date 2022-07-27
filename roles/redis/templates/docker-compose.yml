@@ -5,6 +5,7 @@ services:
   redis:
     image: "redis:{{ redis.version }}"
     command: redis-server --save 60 1 --requirepass ${REDIS_PASSWORD}
+    restart: always
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       REDISCLI_AUTH: ${REDIS_PASSWORD}
