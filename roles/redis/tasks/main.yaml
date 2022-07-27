@@ -32,6 +32,11 @@
     state: directory
     mode: 0755
   tags: redis
+- name: Allow memory overcommit
+  ansible.posix.sysctl:
+    name: "vm.overcommit_memory"
+    value: 1
+  tags: redis
 - name: Make sure handlers are flushed immediately
   ansible.builtin.meta: flush_handlers
   tags: redis
