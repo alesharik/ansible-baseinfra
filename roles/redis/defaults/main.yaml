@@ -1,0 +1,4 @@
+---
+redis:
+  version: 7.0.4-alpine
+  directory: "{{ dir.data }}/redis-{{ redis.name }}"

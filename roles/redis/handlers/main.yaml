@@ -1,0 +1,6 @@
+---
+- name: restart redis
+  community.docker.docker_compose:
+    project_src: "{{ dir.ansible }}/redis-{{ redis.name }}"
+    restarted: true
+  tags: redis

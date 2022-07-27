@@ -1,0 +1,32 @@
+---
+- name: Create compose dir
+  ansible.builtin.file:
+    path: "{{ dir.ansible }}/redis-{{ redis.name }}"
+    state: directory
+    mode: 0755
+  tags: redis
+- name: Move compose files
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ dir.ansible }}/redis-{{ redis.name }}/docker-compose.yml"
+    mode: 0755
+  tags: redis
+  notify:
+    - restart redis
+- name: Move env file
+  ansible.builtin.template:
+    src: .env
+    dest: "{{ dir.ansible }}/redis-{{ redis.name }}/.env"
+    mode: 0755
+  tags: redis
+  notify:
+    - restart redis
+- name: Create redis directory
+  ansible.builtin.file:
+    path: "{{ redis.directory }}"
+    state: directory
+    mode: 0755
+  tags: redis
+- name: Make sure handlers are flushed immediately
+  ansible.builtin.meta: flush_handlers
+  tags: redis
