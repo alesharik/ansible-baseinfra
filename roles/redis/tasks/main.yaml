@@ -1,4 +1,12 @@
 ---
+- name: Set directory fact
+  when: "redis.directory is not defined"
+  tags: redis
+  ansible.builtin.set_fact:
+    redis: "{{ redis|combine(dir, recursive=True, list_merge='append') }}"
+  vars:
+    dir:
+      directory: "{{ dir.data }}/redis-{{ redis.name }}"
 - name: Create compose dir
   ansible.builtin.file:
     path: "{{ dir.ansible }}/redis-{{ redis.name }}"
