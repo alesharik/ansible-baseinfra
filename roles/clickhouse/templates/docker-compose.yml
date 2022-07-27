@@ -13,7 +13,7 @@ services:
       CLICKHOUSE_DB: ${CLICKHOUSE_DB}
       CLICKHOUSE_USER: ${CLICKHOUSE_ROOT_USER}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_ROOT_PASSWORD}
-      CLICKHOUSE_INIT_TIMEOUT: 60
+      CLICKHOUSE_INIT_TIMEOUT: 300
     volumes:
       - ./init-defaults.sh:/docker-entrypoint-initdb.d/init-defaults.sh:ro
 {% if clickhouse.volume_override is defined %}
