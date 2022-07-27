@@ -1,0 +1,46 @@
+---
+- name: Set directory fact
+  when: "clickhouse.directory is defined"
+  tags: clickhouse
+  ansible.builtin.set_fact:
+    clickhousegen_directory: "{{ clickhouse.directory }}"
+- name: Create compose dir
+  ansible.builtin.file:
+    path: "{{ dir.ansible }}/clickhouse-{{ clickhouse.name }}"
+    state: directory
+    mode: 0755
+  tags: clickhouse
+- name: Move compose files
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ dir.ansible }}/clickhouse-{{ clickhouse.name }}/docker-compose.yml"
+    mode: 0755
+  tags: clickhouse
+  notify:
+    - restart clickhouse
+- name: Move env file
+  ansible.builtin.template:
+    src: .env
+    dest: "{{ dir.ansible }}/clickhouse-{{ clickhouse.name }}/.env"
+    mode: 0755
+  tags: clickhouse
+  notify:
+    - restart clickhouse
+- name: Move init-defauts.sh file
+  ansible.builtin.template:
+    src: init-defaults.sh
+    dest: "{{ dir.ansible }}/clickhouse-{{ clickhouse.name }}/init-defaults.sh"
+    mode: 0755
+  tags: clickhouse
+  notify:
+    - restart clickhouse
+- name: Create clickhouse directory
+  ansible.builtin.file:
+    path: "{{ clickhousegen_directory }}"
+    state: directory
+    mode: 0755
+  when: clickhouse.volume_override is not defined
+  tags: clickhouse
+- name: Make sure handlers are flushed immediately
+  ansible.builtin.meta: flush_handlers
+  tags: clickhouse

@@ -1,0 +1,4 @@
+---
+minio:
+  version: 22.6.4-alpine
+clickhousegen_directory: "{{ dir.data }}/clickhouse-{{ clickhouse.name }}"

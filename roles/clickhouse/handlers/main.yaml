@@ -1,0 +1,6 @@
+---
+- name: restart clickhouse
+  community.docker.docker_compose:
+    project_src: "{{ dir.ansible }}/clickhouse-{{ clickhouse.name }}"
+    restarted: true
+  tags: clickhouse
