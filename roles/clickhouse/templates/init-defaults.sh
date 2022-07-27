@@ -4,7 +4,7 @@ CLICKHOUSE_DB="${CLICKHOUSE_DB:-database}";
 CLICKHOUSE_USER="${CLICKHOUSE_USER:-user}";
 CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-password}";
 
-cat <<EOT >> /etc/clickhouse-server/users.d/user.xml
+cat <<EOT > /etc/clickhouse-server/users.d/user.xml
 <yandex>
   <!-- Docs: <https://clickhouse.tech/docs/en/operations/settings/settings_users/> -->
   <users>
