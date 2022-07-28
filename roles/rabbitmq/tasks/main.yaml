@@ -34,6 +34,7 @@
   add_host:
     name: rabbitmq_rabbitmq_1
     ansible_connection: docker
+    remote_tmp: /tmp/.ansible
   changed_when: false
   tags: rabbitmq
 - name: Add vhosts
