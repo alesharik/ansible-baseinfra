@@ -4,9 +4,9 @@ networks:
 services:
   rabbitmq:
 {% if rabbitmq.management %}
-    image: "rabbitmq:{{ rabbitmq.version }}-alpine"
-{% else %}
     image: "rabbitmq:{{ rabbitmq.version }}-management-alpine"
+{% else %}
+    image: "rabbitmq:{{ rabbitmq.version }}-alpine"
 {% endif %}
     restart: always
     environment:
