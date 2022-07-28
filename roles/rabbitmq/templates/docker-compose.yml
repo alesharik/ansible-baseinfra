@@ -13,8 +13,7 @@ services:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
       RABBITMQ_DEFAULT_PASSWORD: ${RABBITMQ_DEFAULT_PASSWORD}
     volumes:
-      - "{{ rabbitmq.directory }}/data:/var/lib/rabbitmq"
-      - "{{ rabbitmq.directory }}/log:/var/log/rabbitmq"
+      - "{{ rabbitmq.directory }}:/var/lib/rabbitmq"
     networks:
       - rabbitmq
     healthcheck:
