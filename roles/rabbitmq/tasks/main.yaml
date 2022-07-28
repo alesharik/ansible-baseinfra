@@ -34,7 +34,9 @@
   add_host:
     name: rabbitmq_rabbitmq_1
     ansible_connection: docker
-    ansible_user: root
+    ansible_ssh_user: root
+    ansible_become_user: root
+    ansible_become: true
   changed_when: false
   tags: rabbitmq
 - name: Add vhosts
