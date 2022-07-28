@@ -30,33 +30,33 @@
 - name: Make sure handlers are flushed immediately
   ansible.builtin.meta: flush_handlers
   tags: rabbitmq
-- name: Add rabbit container to inventory
-  add_host:
-    name: rabbitmq_rabbitmq_1
-    ansible_connection: docker
-    ansible_ssh_user: root
-    ansible_become_user: root
-    ansible_become: true
-  changed_when: false
-  tags: rabbitmq
-- name: Add vhosts
-  delegate_to: rabbitmq_rabbitmq_1
-  community.rabbitmq.rabbitmq_vhost:
-    name: "{{ item }}"
-  loop: "{{ rabbitmq.vhosts }}"
-  loop_control:
-    label: "{{ item }}"
-  tags: rabbitmq
-- name: Add users
-  delegate_to: rabbitmq_rabbitmq_1
-  community.rabbitmq.rabbitmq_user:
-    user: "{{ item.key }}"
-    vhost: "{{ item.value.vhost }}"
-    update_password: always
-    tags: ansible
-    permissions: "{{ item.value.permissions }}"
-    password: "{{ item.value.password }}"
-  loop: "{{ rabbitmq.users | dict2items }}"
-  loop_control:
-    label: "{{ item.key }}"
-  tags: rabbitmq
+#- name: Add rabbit container to inventory
+#  add_host:
+#    name: rabbitmq_rabbitmq_1
+#    ansible_connection: docker
+#    ansible_ssh_user: root
+#    ansible_become_user: root
+#    ansible_become: true
+#  changed_when: false
+#  tags: rabbitmq
+#- name: Add vhosts
+#  delegate_to: rabbitmq_rabbitmq_1
+#  community.rabbitmq.rabbitmq_vhost:
+#    name: "{{ item }}"
+#  loop: "{{ rabbitmq.vhosts }}"
+#  loop_control:
+#    label: "{{ item }}"
+#  tags: rabbitmq
+#- name: Add users
+#  delegate_to: rabbitmq_rabbitmq_1
+#  community.rabbitmq.rabbitmq_user:
+#    user: "{{ item.key }}"
+#    vhost: "{{ item.value.vhost }}"
+#    update_password: always
+#    tags: ansible
+#    permissions: "{{ item.value.permissions }}"
+#    password: "{{ item.value.password }}"
+#  loop: "{{ rabbitmq.users | dict2items }}"
+#  loop_control:
+#    label: "{{ item.key }}"
+#  tags: rabbitmq
