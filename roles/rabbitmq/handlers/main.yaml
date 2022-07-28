@@ -1,0 +1,6 @@
+---
+- name: restart rabbitmq
+  community.docker.docker_compose:
+    project_src: "{{ dir.ansible }}/rabbitmq"
+    restarted: true
+  tags: rabbitmq

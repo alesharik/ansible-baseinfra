@@ -1,0 +1,24 @@
+version: '3.9'
+networks:
+  rabbitmq:
+services:
+  rabbitmq:
+{% if rabbitmq.management %}
+    image: "rabbitmq:{{ rabbitmq.version }}-alpine"
+{% else %}
+    image: "rabbitmq:{{ rabbitmq.version }}-management-alpine"
+{% endif %}
+    restart: always
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASSWORD: ${RABBITMQ_DEFAULT_PASSWORD}
+    volumes:
+      - "{{ rabbitmq.directory }}/data:/var/lib/rabbitmq"
+      - "{{ rabbitmq.directory }}/log:/var/log/rabbitmq"
+    networks:
+      - rabbitmq
+    healthcheck:
+      test: "rabbitmq-diagnostics -q ping"
+      interval: 30s
+      timeout: 20s
+      retries: 3

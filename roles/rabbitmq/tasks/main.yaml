@@ -1,0 +1,71 @@
+---
+- name: Create compose dir
+  ansible.builtin.file:
+    path: "{{ dir.ansible }}/rabbitmq"
+    state: directory
+    mode: 0755
+  tags: rabbitmq
+- name: Move compose files
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ dir.ansible }}/rabbitmq/docker-compose.yml"
+    mode: 0755
+  tags: rabbitmq
+  notify:
+    - restart rabbitmq
+- name: Move env file
+  ansible.builtin.template:
+    src: .env
+    dest: "{{ dir.ansible }}/rabbitmq/.env"
+    mode: 0755
+  tags: rabbitmq
+  notify:
+    - restart rabbitmq
+- name: Create rabbitmq directory
+  ansible.builtin.file:
+    path: "{{ rabbitmq.directory }}"
+    state: directory
+    mode: 0755
+  tags: rabbitmq
+- name: Create rabbitmq data directory
+  ansible.builtin.file:
+    path: "{{ rabbitmq.directory }}/data"
+    state: directory
+    mode: 0755
+  tags: rabbitmq
+- name: Create rabbitmq log directory
+  ansible.builtin.file:
+    path: "{{ rabbitmq.directory }}/log"
+    state: directory
+    mode: 0755
+  tags: rabbitmq
+- name: Make sure handlers are flushed immediately
+  ansible.builtin.meta: flush_handlers
+  tags: rabbitmq
+- name: Add rabbit container to inventory
+  add_host:
+    name: rabbitmq_rabbitmq_1
+    ansible_connection: docker
+  changed_when: false
+  tags: rabbitmq
+- name: Add vhosts
+  delegate_to: rabbitmq_rabbitmq_1
+  community.rabbitmq.rabbitmq_vhost:
+    name: "{{ item }}"
+  loop: "{{ rabbitmq.vhosts }}"
+  loop_control:
+    label: "{{ item }}"
+  tags: rabbitmq
+- name: Add users
+  delegate_to: rabbitmq_rabbitmq_1
+  community.rabbitmq.rabbitmq_user:
+    user: "{{ item.key }}"
+    vhost: "{{ item.value.vhost }}"
+    update_password: always
+    tags: ansible
+    permissions: "{{ item.value.permissions }}"
+    password: "{{ item.value.password }}"
+  loop: "{{ rabbitmq.users | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  tags: rabbitmq
