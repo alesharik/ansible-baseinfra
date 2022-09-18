@@ -8,7 +8,7 @@
   ansible.builtin.user:
     name: "{{ nginx.static.git.name }}"
     state: present
-    create_home: false
+    create_home: true
     generate_ssh_key: true
     group: "{{ nginx.static.git.name }}"
     password: '!'
