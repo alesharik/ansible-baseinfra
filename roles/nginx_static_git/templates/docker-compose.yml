@@ -21,6 +21,7 @@ services:
     volumes:
       - "{{ dir.data }}/nginx-static-{{ nginx.static.git.name }}:/var/www"
       - "{{ dir.ansible }}/nginx-static-git-{{ nginx.static.git.name }}/nginx.conf:/etc/nginx/nginx.conf"
+      - "/home/{{ nginx.static.git.name }}/.ssh/id_ecdsa:/id_ecdsa"
 {% if 'alesharik.baseinfra.nginx_proxy' in ansible_role_names %}
     networks:
       - proxy
