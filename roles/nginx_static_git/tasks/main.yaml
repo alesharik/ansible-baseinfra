@@ -44,6 +44,24 @@
   tags: nginx_static_git
   notify:
     - restart nginx
+- name: Move dockerfile
+  ansible.builtin.template:
+    src: Dockerfile
+    dest: "{{ dir.ansible }}/nginx-static-git-{{ nginx.static.git.name }}/Dockerfile"
+    mode: 0755
+  tags: nginx_static_git
+  when: nginx.static.git.pull_token is defined
+  notify:
+    - restart nginx
+- name: Move pull.sh
+  ansible.builtin.template:
+    src: pull.sh
+    dest: "{{ dir.ansible }}/nginx-static-git-{{ nginx.static.git.name }}/pull.sh"
+    mode: 0755
+  tags: nginx_static_git
+  when: nginx.static.git.pull_token is defined
+  notify:
+    - restart nginx
 - name: Move nginx config
   ansible.builtin.template:
     src: nginx.conf

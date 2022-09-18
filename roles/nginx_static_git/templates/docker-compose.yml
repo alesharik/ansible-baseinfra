@@ -7,7 +7,11 @@ networks:
 {% endif %}
 services:
   nginx:
+{% if nginx.static.git.pull_token is defined %}
+    build: .
+{% else %}
     image: "{{ nginx.static.git.image }}"
+{% endif %}
     restart: always
     user: "{{ userinfo.uid }}"
     environment:
