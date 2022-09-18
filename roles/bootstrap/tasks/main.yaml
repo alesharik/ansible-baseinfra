@@ -1,13 +1,16 @@
 ---
 - include_tasks: debian.yaml
   when: ansible_os_family == "Debian"
+  tags: bootstrap
 - name: Create data folder
   ansible.builtin.file:
     path: "{{ dir.data }}"
     state: directory
     mode: 0755
+  tags: bootstrap
 - name: Create ansible folder
   ansible.builtin.file:
     path: "{{ dir.ansible }}"
     state: directory
     mode: 0755
+  tags: bootstrap
