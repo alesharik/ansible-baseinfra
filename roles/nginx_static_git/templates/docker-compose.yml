@@ -10,7 +10,6 @@ services:
     image: "{{ nginx.static.git.image }}"
     restart: always
     user: "{{ nginx.static.git.name }}"
-    group: "{{ nginx.static.git.name }}"
     environment:
       VIRTUAL_HOST: "{{ nginx.static.git.host }}"
       VIRTUAL_PORT: 80
