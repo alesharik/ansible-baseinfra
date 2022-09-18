@@ -60,6 +60,8 @@
     dest: "{{ dir.data }}/nginx-static-{{ nginx.static.git.name }}"
     single_branch: true
     version: "{{ nginx.static.git.branch }}"
+    accept_hostkey: yes
+    key_file: "/home/{{ nginx.static.git.name }}/.ssh/id_ecdsa"
   tags: nginx_static_git
 - name: Make sure handlers are flushed immediately
   ansible.builtin.meta: flush_handlers
