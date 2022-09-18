@@ -18,7 +18,7 @@
   tags: nginx_static_git
 - name: Print public key
   ansible.builtin.debug:
-    key: "{{ userinfo.ssh_public_key }}"
+    msg: "User puclic key: '{{ userinfo.ssh_public_key }}'"
   tags: nginx_static_git
 - name: Create data dir
   ansible.builtin.file:
