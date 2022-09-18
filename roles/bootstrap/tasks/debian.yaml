@@ -8,5 +8,5 @@
       - gnupg
       - lsb-release
       - python3-pip
-      - aсl
+      - acl
   tags: bootstrap
