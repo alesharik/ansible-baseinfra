@@ -16,7 +16,7 @@ services:
       VIRTUAL_PORT: 80
       LETSENCRYPT_HOST: "{{ nexus.host }}"
     volumes:
-      - "{{ dir.data }}/nginx-static-{{ nginx.static.git.name }}:/var/www"
+      - "{{ nginx.static.git.directory }}:/var/www"
       - "{{ dir.ansible }}/nginx-static-git-{{ nginx.static.git.name }}:/etc/nginx/nginx.conf"
 {% if 'alesharik.baseinfra.nginx_proxy' in ansible_role_names %}
     networks:
