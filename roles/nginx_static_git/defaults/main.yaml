@@ -6,5 +6,4 @@ nginx:
       image: nginx:1.23.1-alpine
       repository: ""
       host: ""
-      directory: "{{ dir.data }}/nginx-static-{{ nginx.static.git.name }}"
       branch: "master"
