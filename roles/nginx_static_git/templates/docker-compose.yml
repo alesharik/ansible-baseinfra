@@ -14,7 +14,7 @@ services:
     environment:
       VIRTUAL_HOST: "{{ nginx.static.git.host }}"
       VIRTUAL_PORT: 80
-      LETSENCRYPT_HOST: "{{ nexus.host }}"
+      LETSENCRYPT_HOST: "{{ nginx.static.git.host }}"
     volumes:
       - "{{ nginx.static.git.directory }}:/var/www"
       - "{{ dir.ansible }}/nginx-static-git-{{ nginx.static.git.name }}:/etc/nginx/nginx.conf"
