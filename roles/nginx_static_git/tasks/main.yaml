@@ -14,7 +14,7 @@
     password: '!'
     shell: /sbin/nologin
     ssh_key_type: ecdsa
-    register: userinfo
+  register: userinfo
   tags: nginx_static_git
 - name: Print public key
   ansible.builtin.debug:
