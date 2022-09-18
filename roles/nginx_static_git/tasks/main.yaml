@@ -28,7 +28,7 @@
     state: directory
     mode: 0755
     owner: "{{ nginx.static.git.name }}"
-    groups: "{{ nginx.static.git.name }}"
+    group: "{{ nginx.static.git.name }}"
   tags: nginx_static_git
 - name: Create compose dir
   ansible.builtin.file:
