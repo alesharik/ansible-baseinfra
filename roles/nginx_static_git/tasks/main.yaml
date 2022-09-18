@@ -56,7 +56,7 @@
   become: true
   become_user: "{{ nginx.static.git.name }}"
   ansible.builtin.git:
-    repo: "{{ nginx.static.git.name }}"
+    repo: "{{ nginx.static.git.repository }}"
     dest: "{{ dir.data }}/nginx-static-{{ nginx.static.git.name }}"
     single_branch: true
     version: "{{ nginx.static.git.branch }}"
