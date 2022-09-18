@@ -10,7 +10,9 @@
     state: present
     create_home: true
     generate_ssh_key: true
-    group: "{{ nginx.static.git.name }}"
+    groups:
+      - "{{ nginx.static.git.name }}"
+      - procusers
     password: '!'
     shell: /sbin/nologin
     ssh_key_type: ecdsa
@@ -26,9 +28,7 @@
     state: directory
     mode: 0755
     owner: "{{ nginx.static.git.name }}"
-    groups:
-      - "{{ nginx.static.git.name }}"
-      - procusers
+    groups: "{{ nginx.static.git.name }}"
   tags: nginx_static_git
 - name: Create compose dir
   ansible.builtin.file:
