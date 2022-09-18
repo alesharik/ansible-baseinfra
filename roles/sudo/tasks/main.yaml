@@ -2,9 +2,24 @@
 - name: Install package
   ansible.builtin.package:
     name: sudo
+  tags: sudo
 - name: Allow nopasswd login for sudo group
   community.general.sudoers:
     commands: ALL
     group: sudo
     name: sudo-group
     nopassword: true
+  tags: sudo
+- name: Create procusers group
+  group:
+    name: procusers
+    state: present
+  tags: sudo
+- name: Allow nopasswd login for sudo group in procusers
+  community.general.sudoers:
+    commands: ALL
+    group: sudo
+    name: procusers-access
+    runas: %procusers
+    nopassword: true
+  tags: sudo
