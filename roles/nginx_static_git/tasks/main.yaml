@@ -22,7 +22,7 @@
   tags: nginx_static_git
 - name: Create data dir
   ansible.builtin.file:
-    path: "{{ nginx.static.git.directory }}"
+    path: "{{ dir.data }}/nginx-static-{{ nginx.static.git.name }}"
     state: directory
     mode: 0755
     owner: "{{ nginx.static.git.name }}"
@@ -55,7 +55,7 @@
   become_user: "{{ nginx.static.git.name }}"
   ansible.builtin.git:
     repo: "{{ nginx.static.git.name }}"
-    dest: "{{ nginx.static.git.directory }}"
+    dest: "{{ dir.data }}/nginx-static-{{ nginx.static.git.name }}"
     single_branch: true
     version: "{{ nginx.static.git.branch }}"
   tags: nginx_static_git
