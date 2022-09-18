@@ -20,6 +20,6 @@
     commands: ALL
     group: sudo
     name: procusers-access
-    runas: %procusers
+    runas: "%procusers"
     nopassword: true
   tags: sudo
