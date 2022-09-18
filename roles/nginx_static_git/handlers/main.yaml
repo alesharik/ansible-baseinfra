@@ -1,0 +1,6 @@
+---
+- name: restart nginx
+  community.docker.docker_compose:
+    project_src: "{{ dir.ansible }}/nginx-static-git-{{ nginx.static.git.name }}"
+    restarted: true
+  tags: nginx_static_git

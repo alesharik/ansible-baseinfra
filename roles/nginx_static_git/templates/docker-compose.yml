@@ -1,0 +1,29 @@
+version: '3.9'
+networks:
+{% if 'alesharik.baseinfra.nginx_proxy' in ansible_role_names %}
+  proxy:
+    external:
+      name: nginx-proxy_proxy
+{% endif %}
+services:
+  nginx:
+    image: "{{ nginx.static.git.image }}"
+    restart: always
+    user: "{{ nginx.static.git.name }}"
+    group: "{{ nginx.static.git.name }}"
+    environment:
+      VIRTUAL_HOST: "{{ nginx.static.git.host }}"
+      VIRTUAL_PORT: 80
+      LETSENCRYPT_HOST: "{{ nexus.host }}"
+    volumes:
+      - "{{ nginx.static.git.directory }}:/var/www"
+      - "{{ dir.ansible }}/nginx-static-git-{{ nginx.static.git.name }}:/etc/nginx/nginx.conf"
+{% if 'alesharik.baseinfra.nginx_proxy' in ansible_role_names %}
+    networks:
+      - proxy
+{% endif %}
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:80/.health" ]
+      interval: 30s
+      timeout: 20s
+      retries: 3

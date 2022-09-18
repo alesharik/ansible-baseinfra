@@ -1,0 +1,64 @@
+---
+- name: Create group
+  ansible.builtin.group:
+    name: "{{ nginx.static.git.name }}"
+    state: present
+  tags: nginx_static_git
+- name: Create user
+  ansible.builtin.user:
+    name: "{{ nginx.static.git.name }}"
+    state: present
+    create_home: false
+    generate_ssh_key: true
+    group: "{{ nginx.static.git.name }}"
+    password: '!'
+    shell: /sbin/nologin
+    ssh_key_type: ecdsa
+    register: userinfo
+  tags: nginx_static_git
+- name: Print public key
+  ansible.builtin.debug:
+    key: "{{ userinfo.ssh_public_key }}"
+  tags: nginx_static_git
+- name: Create data dir
+  ansible.builtin.file:
+    path: "{{ nginx.static.git.directory }}"
+    state: directory
+    mode: 0755
+    owner: "{{ nginx.static.git.name }}"
+    group: "{{ nginx.static.git.name }}"
+  tags: nginx_static_git
+- name: Create compose dir
+  ansible.builtin.file:
+    path: "{{ dir.ansible }}/nginx-static-git-{{ nginx.static.git.name }}"
+    state: directory
+    mode: 0755
+  tags: nginx_static_git
+- name: Move compose files
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ dir.ansible }}/nginx-static-git-{{ nginx.static.git.name }}/docker-compose.yml"
+    mode: 0755
+  tags: nginx_static_git
+  notify:
+    - restart nginx
+- name: Move nginx config
+  ansible.builtin.template:
+    src: nginx.conf
+    dest: "{{ dir.ansible }}/nginx-static-git-{{ nginx.static.git.name }}/nginx.conf"
+    mode: 0755
+  tags: nginx_static_git
+  notify:
+    - restart nginx
+- name: Clone repo
+  become: true
+  become_user: "{{ nginx.static.git.name }}"
+  ansible.builtin.git:
+    repo: "{{ nginx.static.git.name }}"
+    dest: "{{ nginx.static.git.directory }}"
+    single_branch: true
+    version: "{{ nginx.static.git.branch }}"
+  tags: nginx_static_git
+- name: Make sure handlers are flushed immediately
+  ansible.builtin.meta: flush_handlers
+  tags: nginx_static_git
