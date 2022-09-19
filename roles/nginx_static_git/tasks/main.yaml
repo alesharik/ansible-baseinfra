@@ -3,6 +3,7 @@
   ansible.builtin.group:
     name: "{{ nginx.static.git.name }}"
     state: present
+  register: groupinfo
   tags: nginx_static_git
 - name: Create user
   ansible.builtin.user:
