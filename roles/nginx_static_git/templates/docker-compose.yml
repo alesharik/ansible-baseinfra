@@ -3,7 +3,7 @@ networks:
 {% if 'alesharik.baseinfra.nginx_proxy' in ansible_role_names %}
   proxy:
     external:
-      name: nginx-proxy_proxy
+      name: nginx-proxy
 {% endif %}
 services:
   nginx:
