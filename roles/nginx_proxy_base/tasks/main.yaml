@@ -14,5 +14,6 @@
   tags: nginx_proxy_base
 
 - name: Create nginx network
+  tags: nginx_proxy_base
   community.docker.docker_network:
     name: nginx-proxy
