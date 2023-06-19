@@ -1,6 +1,8 @@
 version: '3.9'
 networks:
   proxy:
+    name: nginx-proxy
+    external: true
 services:
   nginx-proxy:
     container_name: nginx-proxy
@@ -13,12 +15,9 @@ services:
       - "443:443"
     volumes:
       - certs:/etc/nginx/certs
-      - vhost.d:/etc/nginx/vhost.d
       - html:/usr/share/nginx/html
       - /var/run/docker.sock:/tmp/docker.sock:ro
-{% for vhost in nginx.proxy.vhosts %}
-      - ./vhost.d/{{ vhost.name }}:/etc/nginx/vhost.d/{{ vhost.name }}
-{% endfor %}
+      - ./vhost.d/:/etc/nginx/vhost.d/
   nginx-proxy-letsencrypt:
     container_name: nginx-proxy-letsencrypt
     image: "nginxproxy/acme-companion:{{ nginx.proxy.versions.le }}"
@@ -27,15 +26,11 @@ services:
       - proxy
     volumes:
       - certs:/etc/nginx/certs
-      - vhost.d:/etc/nginx/vhost.d
       - html:/usr/share/nginx/html
       - /var/run/docker.sock:/var/run/docker.sock:ro
-{% for vhost in nginx.proxy.vhosts %}
-      - ./vhost.d/{{ vhost.name }}:/etc/nginx/vhost.d/{{ vhost.name }}
-{% endfor %}
+      - ./vhost.d/:/etc/nginx/vhost.d/
     environment:
       - NGINX_PROXY_CONTAINER=nginx-proxy
 volumes:
   certs:
-  vhost.d:
   html:

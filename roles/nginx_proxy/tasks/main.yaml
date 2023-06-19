@@ -1,10 +1,4 @@
 ---
-- name: Create compose dir
-  ansible.builtin.file:
-    path: "{{ dir.ansible }}/nginx-proxy"
-    state: directory
-    mode: 0755
-  tags: nginx_proxy
 - name: Move compose files
   ansible.builtin.template:
     src: docker-compose.yml
@@ -13,13 +7,8 @@
   tags: nginx_proxy
   notify:
     - restart nginx-proxy
-- name: Create vhosts directory
-  ansible.builtin.file:
-    path: "{{ dir.ansible }}/nginx-proxy/vhost.d"
-    state: directory
-    mode: 0755
-  tags: nginx_proxy
-- name: Create vhosts files
+
+- name: Create vhosts files (deprecated)
   ansible.builtin.copy:
     dest: "{{ dir.ansible }}/nginx-proxy/vhost.d/{{ item.name }}"
     content: "{{ item.value }}"
@@ -30,6 +19,7 @@
   tags: nginx_proxy
   notify:
     - restart nginx-proxy
+
 - name: Make sure handlers are flushed immediately
   ansible.builtin.meta: flush_handlers
   tags: nginx_proxy

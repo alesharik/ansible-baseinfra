@@ -2,3 +2,4 @@
 dependencies:
   - role: bootstrap
   - role: docker
+  - role: nginx_proxy_base
