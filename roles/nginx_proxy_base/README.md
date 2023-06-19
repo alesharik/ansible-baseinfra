@@ -1,4 +1,5 @@
 # nginx-proxy-base
+__Tags - `nginx_proxy_base`__
 
 Creates config and vhost directory for nginx-proxy
 
