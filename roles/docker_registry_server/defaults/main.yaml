@@ -2,6 +2,5 @@
 docker:
   registry:
     server:
-      directory: "{{ dir.data }}/docker-registry"
       version: 2
       users: {}

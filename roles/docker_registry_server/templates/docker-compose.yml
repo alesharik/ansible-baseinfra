@@ -1,13 +1,13 @@
 version: '3.9'
 networks:
-  registry:
-{% if 'alesharik.baseinfra.nginx_proxy' in ansible_role_names %}
+{% if 'alesharik.baseinfra.nginx_proxy_base' in ansible_role_names %}
   proxy:
     external:
       name: nginx-proxy
 {% endif %}
 services:
   registry:
+    name: docker-registry
     restart: always
     image: "registry:{{ docker.registry.server.version }}"
     environment:
@@ -15,14 +15,14 @@ services:
       REGISTRY_AUTH_HTPASSWD_PATH: /htpasswd
       REGISTRY_AUTH_HTPASSWD_REALM: Registry Realm
       REGISTRY_HTTP_ADDR: 0.0.0.0:80
+      REGISTRY_STORAGE_DELETE_ENABLED: 'true'
       VIRTUAL_HOST: "{{ docker.registry.server.host }}"
       VIRTUAL_PORT: 80
       LETSENCRYPT_HOST: "{{ docker.registry.server.host }}"
     volumes:
-      - "{{ docker.registry.server.directory }}:/var/lib/registry"
+      - "{{ dir.data }}/docker-registry:/var/lib/registry"
       - "{{ dir.ansible }}/docker-registry/htpasswd:/htpasswd"
     networks:
-      - registry
-{% if 'alesharik.baseinfra.nginx_proxy' in ansible_role_names %}
+{% if 'alesharik.baseinfra.nginx_proxy_base' in ansible_role_names %}
       - proxy
 {% endif %}
