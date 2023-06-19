@@ -7,7 +7,7 @@ networks:
 {% endif %}
 services:
   registry:
-    name: docker-registry
+    container_name: docker-registry
     restart: always
     image: "registry:{{ docker.registry.server.version }}"
     environment:
