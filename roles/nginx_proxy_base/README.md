@@ -14,5 +14,8 @@ _No local variables_
 - creates `{{ dir.ansible }}/nginx-proxy`
 - creates `{{ dir.ansible }}/nginx-proxy/vhost.d`
 
+#### Docker networks
+- `nginx-proxy` - should be used to connect nginx-proxy to other containers
+
 ### Dependencies
 - `bootstrap`
