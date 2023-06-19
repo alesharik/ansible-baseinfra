@@ -1,4 +1,5 @@
 # nginx-proxy
+__Tags - `nginx_proxy`__
 
 Deploys nginx-proxy
 
