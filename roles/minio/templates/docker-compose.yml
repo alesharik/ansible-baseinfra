@@ -17,6 +17,7 @@ services:
       LETSENCRYPT_HOST: "{{ minio.host }}"
       MINIO_ROOT_USER: ${ROOT_USER}
       MINIO_ROOT_PASSWORD: ${ROOT_PASSWORD}
+      MINIO_PROMETHEUS_AUTH_TYPE: public
     volumes:
 {% if minio.volume_override is defined %}
       - "ext:/data1"
@@ -28,6 +29,10 @@ services:
 {% if 'alesharik.baseinfra.nginx_proxy' in ansible_role_names %}
       - proxy
 {% endif %}
+    labels:
+      prometheus.io.path: /minio/v2/metrics/cluster
+      prometheus.io.port: 9000
+      prometheus.io.network: minio_minio
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
       interval: 30s
