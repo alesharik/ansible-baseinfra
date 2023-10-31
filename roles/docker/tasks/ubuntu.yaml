@@ -7,13 +7,13 @@
   tags: docker
 - name: docker/add repo key
   ansible.builtin.apt_key:
-    url: https://download.docker.com/linux/debian/gpg
+    url: https://download.docker.com/linux/ubuntu/gpg
     keyring: /etc/apt/keyrings/docker.gpg
     state: present
   tags: docker
 - name: docker/get repo string
   ansible.builtin.shell: >
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian  $(lsb_release -cs) stable"
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu  $(lsb_release -cs) stable"
   register: docker_repo
   changed_when: docker_repo.rc != 0
 - name: docker/add repo

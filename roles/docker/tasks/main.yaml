@@ -1,6 +1,9 @@
 ---
+- include_tasks: ubuntu.yaml
+  when: ansible_distribution == 'Ubuntu'
+  tags: docker
 - include_tasks: debian.yaml
-  when: ansible_os_family == "Debian"
+  when: ansible_distribution == 'Debian'
   tags: docker
 - name: Install py library
   ansible.builtin.pip:
