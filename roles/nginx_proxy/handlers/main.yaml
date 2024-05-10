@@ -2,5 +2,5 @@
 - name: restart nginx-proxy
   community.docker.docker_compose_v2:
     project_src: "{{ dir.ansible }}/nginx-proxy"
-    restarted: true
+    state: restarted
   tags: nginx_proxy

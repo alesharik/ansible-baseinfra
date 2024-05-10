@@ -2,5 +2,5 @@
 - name: restart docker registry server
   community.docker.docker_compose_v2:
     project_src: "{{ dir.ansible }}/docker-registry"
-    restarted: true
+    state: restarted
   tags: docker_registry_server
