@@ -1,4 +1,4 @@
 ---
 redis:
-  version: 7.0.4-alpine
+  version: 7.2.4-alpine
 redisgen_directory: "{{ dir.data }}/redis-{{ redis.name }}"
