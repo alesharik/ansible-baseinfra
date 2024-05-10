@@ -61,7 +61,7 @@
     mode: 0755
   tags: postgres
 - name: "{{ postgres.name }}/deploy postgres container"
-  community.docker.docker_compose:
+  community.docker.docker_compose_v2:
     project_src: "{{ dir.ansible }}/postgres-{{ postgres.name }}"
   tags: postgres
 - name: Wait for postgres to init
