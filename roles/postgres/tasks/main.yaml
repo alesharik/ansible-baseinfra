@@ -86,7 +86,7 @@
   tags: postgres
 - name: Get container info
   ansible.builtin.docker_container_info:
-    name: postgres-{{ postgres.name }}_postgres_1
+    name: postgres-{{ postgres.name }}-postgres-1
   register: postgres_container_info
   tags: postgres
 - name: Set host fact
