@@ -8,7 +8,7 @@ networks:
 {% endif %}
 services:
   minio:
-    image: "quay.io/minio/minio:{{ minio.version }}"
+    image: "{{ minio.image }}:{{ minio.version }}"
     command: server --console-address ":9001" /data1
     restart: always
     environment:
