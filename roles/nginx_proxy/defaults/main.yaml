@@ -1,6 +1,9 @@
 ---
 nginx:
   proxy:
+    images:
+      nginx: nginxproxy/nginx-proxy
+      le: nginxproxy/acme-companion
     versions:
       nginx: 1.0-alpine
       le: 2.2

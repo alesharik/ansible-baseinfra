@@ -6,7 +6,7 @@ networks:
 services:
   nginx-proxy:
     container_name: nginx-proxy
-    image: "nginxproxy/nginx-proxy:{{ nginx.proxy.versions.nginx }}"
+    image: "{{ nginx.proxy.images.nginx }}:{{ nginx.proxy.versions.nginx }}"
     restart: always
     networks:
       - proxy
@@ -20,7 +20,7 @@ services:
       - ./vhost.d/:/etc/nginx/vhost.d/
   nginx-proxy-letsencrypt:
     container_name: nginx-proxy-letsencrypt
-    image: "nginxproxy/acme-companion:{{ nginx.proxy.versions.le }}"
+    image: "{{ nginx.proxy.images.le }}:{{ nginx.proxy.versions.le }}"
     restart: always
     networks:
       - proxy
