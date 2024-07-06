@@ -1,0 +1,115 @@
+---
+- name: Create compose dir
+  ansible.builtin.file:
+    path: "{{ dir.ansible }}/harbor"
+    state: directory
+    mode: 0755
+  tags: harbor
+
+- name: Create tls dir
+  ansible.builtin.file:
+    path: "{{ dir.ansible }}/harbor/tls"
+    state: directory
+    mode: 0755
+  tags: harbor
+
+- name: Create data dir
+  ansible.builtin.file:
+    path: "{{ dir.data }}/harbor"
+    state: directory
+    mode: 0755
+    owner: '473'
+  tags: harbor
+
+
+- name: Find TLS files
+  ansible.builtin.find:
+    paths: "{{ dir.ansible }}/harbor/tls"
+  register: tls_files
+  tags: harbor
+
+- name: Setup TLS certs
+  community.docker.docker_container:
+    name: harbor-tls
+    image: goharbor/prepare:v{{ harbor.version }}
+    command: gencert -p /cert
+    auto_remove: true
+    mounts:
+      - source: "{{ dir.ansible }}/harbor/tls"
+        target: /cert
+        type: bind
+  tags: harbor
+  when: tls_files.matched|int < 28
+
+- name: Set TLS files permissions
+  tags: harbor
+  file:
+    dest: "{{ dir.ansible }}/harbor/tls"
+    owner: 10000
+    group: 10000
+    mode: 0600
+    recurse: true
+
+
+- name: Move files
+  ansible.builtin.template:
+    src: "{{ item }}"
+    dest: "{{ dir.ansible }}/harbor/{{ item }}"
+    mode: 0755
+  tags: harbor
+  register: harbor_files
+  notify:
+    - restart harbor
+  loop:
+    - 'common.sh'
+    - 'harbor.yml'
+    - 'install.sh'
+    - 'prepare'
+
+- name: Install harbor
+  ansible.builtin.shell:
+    cmd: ./install.sh --with-trivy
+    chdir: "{{ dir.ansible }}/harbor"
+    creates: "{{ dir.ansible }}/harbor/docker-compose.yml"
+  register: harbor_install
+  tags: harbor
+  notify:
+    - restart harbor
+
+- name: Configure harbor
+  ansible.builtin.shell:
+    cmd: ./prepare --with-trivy
+    chdir: "{{ dir.ansible }}/harbor"
+  when: (harbor_install.skipped is not defined or harbor_install.skipped) and harbor_files.changed
+  tags: harbor
+  notify:
+    - restart harbor
+
+- name: Configure docker-compose
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ dir.ansible }}/harbor/docker-compose.yml"
+    mode: 0755
+  tags: harbor
+  notify:
+    - restart harbor
+
+- name: Start harbor
+  community.docker.docker_compose_v2:
+    project_src: "{{ dir.ansible }}/harbor"
+    state: present
+  tags: harbor
+
+- name: Configure vhost
+  tags: harbor
+  when: "'alesharik.baseinfra.nginx_proxy_base' in ansible_role_names"
+  ansible.builtin.copy:
+    dest: "{{ dir.ansible }}/nginx-proxy/vhost.d/{{ harbor.host }}"
+    content: "client_max_body_size 1000M;"
+    mode: 0755
+  notify:
+    - restart nginx-proxy
+
+- name: Make sure handlers are flushed immediately
+  ansible.builtin.meta: flush_handlers
+  tags: harbor
