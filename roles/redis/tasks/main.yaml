@@ -37,6 +37,13 @@
     name: "vm.overcommit_memory"
     value: 1
   tags: redis
+
+- name: Start nginx
+  community.docker.docker_compose_v2:
+    project_src: "{{ dir.ansible }}/redis-{{ redis.name }}"
+    state: present
+  tags: redis
+
 - name: Make sure handlers are flushed immediately
   ansible.builtin.meta: flush_handlers
   tags: redis
