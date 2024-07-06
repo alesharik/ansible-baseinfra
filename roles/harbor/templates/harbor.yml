@@ -159,7 +159,7 @@ external_redis:
 # Add domain to the `no_proxy` field, when you want disable proxy
 # for some special registry.
 proxy:
-  http_proxy:
+#  http_proxy:
   https_proxy:
   no_proxy:
   components:
