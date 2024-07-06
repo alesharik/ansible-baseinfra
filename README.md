@@ -1,6 +1,8 @@
 # Ansible Collection - alesharik.baseinfra
 
-**WARNING: Collection is not intended for public use**
+### Roles
+- `bootstrap` installs base utils
+- `chrony` - setup chrony NTP server
 
 ### `procusers` user group
 This group exists for users assigned to processes (like nginx, postgres, etc).

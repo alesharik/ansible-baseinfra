@@ -1,0 +1,25 @@
+- name: Install chrony
+  tags: chrony
+  ansible.builtin.apt:
+    name: chrony
+    state: present
+- name: Setup config
+  tags: chrony
+  ansible.builtin.template:
+    src: chrony.conf
+    dest: /etc/chrony.conf
+    mode: 0500
+    owner: root
+    group: root
+- name: Stop systemd-timesyncd
+  tags: chrony
+  ansible.builtin.systemd:
+    name: systemd-timesyncd
+    state: stopped
+    enabled: false
+- name: Start chrony
+  tags: chrony
+  ansible.builtin.systemd:
+    name: chronyd
+    state: restarted
+    enabled: true
