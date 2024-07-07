@@ -35,7 +35,6 @@ clickhouse-client -u "${CLICKHOUSE_USER}" --password "${CLICKHOUSE_PASSWORD}" --
 cat <<EOT > /etc/clickhouse-server/users.d/users.xml
 <!-- Docs: <https://clickhouse.tech/docs/en/operations/settings/settings_users/> -->
 <users>
-  </{{ clickhouse.root.user }}>
 {% for u in (clickhouse.users | dict2items) %}
   <{{ u.key }}>
     <profile>default</profile>
@@ -45,7 +44,7 @@ cat <<EOT > /etc/clickhouse-server/users.d/users.xml
     <password>${{{ u.key }}_PASSWORD}</password>
     <quota>default</quota>
     <grants>
-{% for g in (u.value.grants | default([])) %}
+{% for g in (u.value.grants or []) %}
       <query>{{ g }}</query>
 {% endfor %}
     </grants>
