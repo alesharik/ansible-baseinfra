@@ -13,6 +13,36 @@
     mode: 0700
   tags: vmagent
 
+- name: Read password
+  tags: vmagent
+  shell: |
+    cat {{ dir.ansible }}/vmagent/password
+  register: pwd
+  ignore_errors: true
+
+- name: Set password fact
+  tags: vmagent
+  set_fact:
+    pwd: "{{ pwd.stdout }}"
+  when: pwd is defined
+
+- name: Generate password
+  tags: vmagent
+  set_fact:
+    pwd: {{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}
+  when: pwd is not defined
+
+- name: Write password
+  copy:
+    dest: "{{ dir.ansible }}/vmagent/config/password"
+    content: "{{ pwd }}"
+    group: root
+    owner: root
+    mode: 0550
+  tags: vmagent
+  notify:
+    - restart vmagent
+
 - name: Move compose files
   ansible.builtin.template:
     src: docker-compose.yml
@@ -41,6 +71,11 @@
   tags: vmagent
   notify:
     - restart vmagent
+
+- name: Clear password
+  set_fact:
+    pwd: ''
+  tags: vmagent
 
 - name: Create private key
   tags: vmagent

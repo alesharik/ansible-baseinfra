@@ -5,7 +5,7 @@ scrape_configs:
     honor_labels: true
     basic_auth:
       username: 'vmagent-auth'
-      password: {{ lookup('ansible.builtin.password', '{{ dir.ansible }}/vmagent/password', length=25, chars=['ascii_letters', 'digits']) }}
+      password: {{ pwd }}
     static_configs:
       - targets: ["localhost:8429"]
         labels:
