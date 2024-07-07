@@ -39,7 +39,7 @@ scrape_configs:
       - source_labels: [ __meta_docker_container_label_prometheus_io_instance ]
         regex: (.+)
         target_label: instance
-      - action: keepequal
+      - action: keep_if_contains
         source_labels: [ __meta_docker_container_label_prometheus_io_network ]
         target_label: __meta_docker_network_name
       - action: labeldrop
