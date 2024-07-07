@@ -41,6 +41,7 @@ cat <<EOT > /etc/clickhouse-server/users.d/users.xml
     <networks>
       <ip>::/0</ip>
     </networks>
+    <password>{% raw %}${{% endraw %}{{ u.key | upper }}{% raw %}_PASSWORD}{% endraw %}</password>
     <quota>default</quota>
     <grants>
 {% for g in (u.value.grants or []) %}
