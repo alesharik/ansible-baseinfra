@@ -16,7 +16,7 @@
 - name: Read password
   tags: vmagent
   shell: |
-    cat {{ dir.ansible }}/vmagent/password
+    cat {{ dir.ansible }}/vmagent/config/password
   register: pwd
   ignore_errors: true
 
@@ -30,7 +30,7 @@
   tags: vmagent
   set_fact:
     pwd: "{{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}"
-  when: pwd is not defined
+  when: not pwd|default(None)
 
 - name: Write password
   copy:
