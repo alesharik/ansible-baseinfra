@@ -29,7 +29,7 @@ services:
     networks:
       - redis-{{ redis.name }}
     labels:
-      prometheus.io.path: /
+      prometheus.io.path: /metrics
       prometheus.io.port: 9121 # port
       prometheus.io.instance: "{{ inventory_hostname }}-{{ redis.name }}"
 {% endif %}
