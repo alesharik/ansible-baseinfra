@@ -38,10 +38,6 @@ compactor:
 limits_config:
   {{ loki.retention | to_nice_yaml | indent(2) }}
 
-querier:
-  engine:
-    max_look_back_period: {{ loki.retention.retention_period }}
-
 storage_config:
   tsdb_shipper:
     active_index_directory: /var/lib/loki/tsdb-index
