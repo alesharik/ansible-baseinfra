@@ -29,9 +29,10 @@ loki:
       - selector: '{container_name="nginx-proxy"}'
         priority: 1
         period: 24h
+  migrate_from_v11: false # migrate from old v11 schema
   migration_dates: # used to migrate old loki from v11 to v13
     v11: "2020-10-24"
-    v13: "2024-07-08"
+    v13: "2024-07-06"
 ```
 
 ### Effects

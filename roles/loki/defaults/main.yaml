@@ -13,6 +13,7 @@ loki:
       - selector: '{container_name="nginx-proxy"}'
         priority: 1
         period: 24h
+  migrate_from_v11: false
   migration_dates:
     v11: "2020-10-24"
-    v13: "2024-07-08"
+    v13: "2024-07-06"

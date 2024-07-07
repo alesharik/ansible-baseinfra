@@ -59,6 +59,7 @@ schema_config:
       index:
         prefix: index_
         period: 24h
+{% if loki.migrate_from_v11 %}
     - from: '{{ loki.migration_dates.v13 }}'
       store: tsdb
       object_store: filesystem
@@ -66,6 +67,7 @@ schema_config:
       index:
         period: 24h
         prefix: index_
+{% endif %}
 
 #ruler:
 #  alertmanager_url: http://localhost:9093
