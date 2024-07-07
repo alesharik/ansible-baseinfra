@@ -1,0 +1,11 @@
+---
+promtail:
+  image: grafana/promtail
+  version: 2.7.4
+  relabel_configs:
+    docker: []
+    systemd: []
+  pipeline:
+    common: []
+    docker: []
+    systemd: []

@@ -1,0 +1,109 @@
+---
+- name: Create compose dir
+  ansible.builtin.file:
+    path: "{{ dir.ansible }}/promtail"
+    state: directory
+    mode: 0755
+  tags: promtail
+- name: Create data dir
+  ansible.builtin.file:
+    path: "{{ dir.data }}/promtail"
+    state: directory
+    mode: 0755
+    owner: '10001'
+  tags: promtail
+- name: Move compose files
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ dir.ansible }}/promtail/docker-compose.yml"
+    mode: 0755
+  tags: promtail
+  notify:
+    - restart promtail
+- name: Make config folder
+  ansible.builtin.file:
+    path: "{{ dir.ansible }}/promtail/config"
+    state: directory
+    mode: 0755
+  tags: promtail
+- name: Move config
+  ansible.builtin.template:
+    src: config.yaml
+    dest: "{{ dir.ansible }}/promtail/config/config.yaml"
+    mode: 0755
+  tags: promtail
+  notify:
+    - restart promtail
+
+- name: Create private key
+  delegate_to: 127.0.0.1
+  tags: promtail
+  become: no
+  vars:
+    ansible_remote_tmp: "{{ playbook_dir }}/tmp"
+  community.crypto.openssl_privatekey:
+    path: "{{ playbook_dir }}/certs/promtail_{{ inventory_hostname }}.key"
+- name: Create certificate signing request (CSR) for new certificate
+  delegate_to: 127.0.0.1
+  tags: promtail
+  become: no
+  vars:
+    ansible_remote_tmp: "{{ playbook_dir }}/tmp"
+  community.crypto.openssl_csr_pipe:
+    privatekey_path: "{{ playbook_dir }}/certs/promtail_{{ inventory_hostname }}.key"
+  register: csr
+- name: Sign certificate with our CA
+  tags: promtail
+  become: no
+  vars:
+    ansible_remote_tmp: "{{ playbook_dir }}/tmp"
+  community.crypto.x509_certificate_pipe:
+    csr_content: "{{ csr.csr }}"
+    provider: ownca
+    ownca_path: "{{ playbook_dir }}/certs/loki_ca.pem"
+    ownca_privatekey_path: "{{ playbook_dir }}/certs/loki_ca.key"
+    ownca_not_after: +365d  # valid for one year
+    ownca_not_before: "-1d"  # valid since yesterday
+  delegate_to: 127.0.0.1
+  register: cert
+- name: Write certificate
+  copy:
+    dest: "{{ dir.ansible }}/promtail/config/client.cer"
+    content: "{{ cert.certificate }}"
+    owner: '10001'
+    group: root
+    mode: 0550
+  tags: promtail
+  notify:
+    - restart promtail
+- name: Write key
+  copy:
+    src: "{{ playbook_dir }}/certs/promtail_{{ inventory_hostname }}.key"
+    dest: "{{ dir.ansible }}/promtail/config/client.key"
+    owner: '10001'
+    group: root
+    mode: 0550
+  tags: promtail
+  notify:
+    - restart promtail
+- name: Write CA
+  copy:
+    src: "{{ playbook_dir }}/certs/loki_ca.pem"
+    dest: "{{ dir.ansible }}/promtail/config/ca.pem"
+    owner: '10001'
+    group: root
+    mode: 0550
+  tags: promtail
+  notify:
+    - restart promtail
+
+- name: Setup daemon config
+  tags: promtail
+  ansible.builtin.template:
+    src: daemon.json
+    dest: "/etc/docker/daemon.json"
+    mode: 0755
+
+- name: Make sure handlers are flushed immediately
+  ansible.builtin.meta: flush_handlers
+  tags: promtail

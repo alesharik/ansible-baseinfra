@@ -1,0 +1,13 @@
+services:
+  promtail:
+    container_name: promtail
+    image: "{{ promtail.image }}:{{ promtail.version }}"
+    restart: always
+    command: -config.file=/etc/promtail/config.yaml
+    volumes:
+      - "{{ dir.data }}/promtail:/var/lib/promtail"
+      - "{{ dir.ansible }}/promtail/config:/etc/promtail"
+      - "/var/log/:/var/log/"
+      - "/run/log/journal/:/run/log/journal/"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "/etc/machine-id:/etc/machine-id"

@@ -1,0 +1,6 @@
+---
+- name: restart promtail
+  community.docker.docker_compose_v2:
+    project_src: "{{ dir.ansible }}/promtail"
+    state: restarted
+  tags: promtail
