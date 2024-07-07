@@ -88,6 +88,12 @@
   notify:
     - restart mimir
 
+- name: Start mimir
+  community.docker.docker_compose_v2:
+    project_src: "{{ dir.ansible }}/mimir"
+    state: present
+  tags: mimir
+
 - name: Make sure handlers are flushed immediately
   ansible.builtin.meta: flush_handlers
   tags: mimir
