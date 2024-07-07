@@ -1,20 +1,15 @@
 ---
-- name: Set directory fact
-  when: "redis.directory is defined"
-  tags: redis
-  ansible.builtin.set_fact:
-    redisgen_directory: "{{ redis.directory }}"
 - name: Create compose dir
   ansible.builtin.file:
     path: "{{ dir.ansible }}/redis-{{ redis.name }}"
     state: directory
-    mode: 0755
+    mode: 0700
   tags: redis
 - name: Move compose files
   ansible.builtin.template:
     src: docker-compose.yml
     dest: "{{ dir.ansible }}/redis-{{ redis.name }}/docker-compose.yml"
-    mode: 0755
+    mode: 0700
   tags: redis
   notify:
     - restart redis
@@ -22,23 +17,26 @@
   ansible.builtin.template:
     src: .env
     dest: "{{ dir.ansible }}/redis-{{ redis.name }}/.env"
-    mode: 0755
+    mode: 0700
   tags: redis
   notify:
     - restart redis
 - name: Create redis directory
   ansible.builtin.file:
-    path: "{{ redisgen_directory }}"
+    path: "{{ dir.data }}/redis-{{ redis.name }}"
     state: directory
-    mode: 0755
+    mode: 0700
+    user: 10031
+    group: 10031
   tags: redis
+
 - name: Allow memory overcommit
   ansible.posix.sysctl:
     name: "vm.overcommit_memory"
     value: 1
   tags: redis
 
-- name: Start nginx
+- name: Start redis
   community.docker.docker_compose_v2:
     project_src: "{{ dir.ansible }}/redis-{{ redis.name }}"
     state: present

@@ -1,20 +1,35 @@
-version: '3.9'
 networks:
-  redis:
+  redis-{{ redis.name }}:
+    name: 'redis-{{ redis.name }}'
 services:
   redis:
-    image: "redis:{{ redis.version }}"
-    command: redis-server --save 60 1 --requirepass ${REDIS_PASSWORD}
+    image: "{{ redis.image }}:{{ redis.version }}"
     restart: always
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       REDISCLI_AUTH: ${REDIS_PASSWORD}
+      REDIS_DAEMON_USER: 10031
+      REDIS_DAEMON_GROUP: 10031
     volumes:
-      - "{{ redisgen_directory }}:/data"
+      - "{{ dir.data }}/redis-{{ redis.name }}:/bitnami/redis/data"
     networks:
-      - redis
+      - redis-{{ redis.name }}
     healthcheck:
       test: ["CMD", "redis-cli","ping"]
       interval: 30s
       timeout: 20s
       retries: 3
+{% if redis.exporter.enabled %}
+  exporter:
+    image: "{{ redis.exporter.image }}:{{ redis.exporter.version }}"
+    restart: always
+    environment:
+      REDIS_ADDR: redis://redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    networks:
+      - redis-{{ redis.name }}
+    labels:
+      prometheus.io.path: /
+      prometheus.io.port: 9121 # port
+      prometheus.io.instance: "{{ inventory_hostname }}-{{ redis.name }}"
+{% endif %}

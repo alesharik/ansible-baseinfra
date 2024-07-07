@@ -1,4 +1,8 @@
 ---
 redis:
-  version: 7.2.4-alpine
-redisgen_directory: "{{ dir.data }}/redis-{{ redis.name }}"
+  image: bitnami/redis
+  version: 7.2.5
+  exporter:
+    enabled: true
+    image: bitnami/redis-exporter
+    version: 1.61.0
