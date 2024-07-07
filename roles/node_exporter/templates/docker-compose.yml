@@ -1,0 +1,23 @@
+services:
+  prom:
+    container_name: node-exporter
+    image: "{{ node_exporter.image }}:{{ node_exporter.version }}"
+    restart: always
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+      - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+      - '--collector.systemd'
+      - '--collector.processes'
+    security_opt:
+      - apparmor:unconfined
+    labels:
+      prometheus.io.path: /metrics
+      prometheus.io.port: 9100
+      prometheus.io.instance: "{{ inventory_hostname }}"

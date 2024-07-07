@@ -1,0 +1,23 @@
+---
+- name: Create compose dir
+  ansible.builtin.file:
+    path: "{{ dir.ansible }}/node-exporter"
+    state: directory
+    mode: 0755
+  tags: node_exporter
+- name: Move compose files
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ dir.ansible }}/node-exporter/docker-compose.yml"
+    mode: 0755
+  tags: node_exporter
+  notify:
+    - restart node exporter
+- name: Start node exporter
+  tags: node_exporter
+  community.docker.docker_compose_v2:
+    project_src: "{{ dir.ansible }}/node-exporter"
+    state: present
+- name: Make sure handlers are flushed immediately
+  ansible.builtin.meta: flush_handlers
+  tags: node_exporter

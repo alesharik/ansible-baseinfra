@@ -1,0 +1,4 @@
+---
+node_exporter:
+  image: prom/node-exporter
+  version: v1.8.1
