@@ -1,7 +1,7 @@
 networks:
   proxy:
-    external:
-      name: nginx-proxy
+    name: nginx-proxy
+    external: true
 services:
   grafana:
     image: "{{ grafana.image }}:{{ grafana.version }}"
