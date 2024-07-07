@@ -5,6 +5,7 @@ loki:
   tls_hostname: loki.infra.local
   clients:
     - grafana
+  allow_structured_metadata: true
   retention:
     retention_period: 30d
     retention_stream:
