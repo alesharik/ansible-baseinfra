@@ -1,0 +1,99 @@
+---
+- name: Create compose dir
+  ansible.builtin.file:
+    path: "{{ dir.ansible }}/loki"
+    state: directory
+    mode: 0755
+  tags: loki
+- name: Create data dir
+  ansible.builtin.file:
+    path: "{{ dir.data }}/loki"
+    state: directory
+    mode: 0755
+    owner: '10001'
+  tags: loki
+- name: Move compose files
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ dir.ansible }}/loki/docker-compose.yml"
+    mode: 0755
+  tags: loki
+  notify:
+    - restart loki
+- name: Make config folder
+  ansible.builtin.file:
+    path: "{{ dir.ansible }}/loki/config"
+    state: directory
+    mode: 0755
+  tags: loki
+- name: Move config
+  ansible.builtin.template:
+    src: config.yaml
+    dest: "{{ dir.ansible }}/loki/config/config.yaml"
+    mode: 0755
+  tags: loki
+  notify:
+    - restart loki
+
+- name: Generate CA
+  ansible.builtin.include_tasks:
+    file: gen-ca.yaml
+    apply:
+      tags:
+        - loki
+  tags: loki
+
+- name: Generate server keys
+  ansible.builtin.include_tasks:
+    file: gen-server.yaml
+    apply:
+      tags:
+        - loki
+  tags: loki
+
+- name: Generate client keys
+  tags: loki
+  loop: "{{ loki.clients }}"
+  ansible.builtin.include_tasks:
+    file: gen-client.yaml
+    apply:
+      tags:
+        - loki
+
+- name: Write certificate
+  copy:
+    dest: "{{ dir.ansible }}/loki/config/server.cer"
+    content: "{{ certificate.certificate }}"
+    owner: '10001'
+    mode: 0500
+  tags: loki
+  notify:
+    - restart loki
+- name: Write key
+  copy:
+    src: "{{ playbook_dir }}/certs/loki_server.key"
+    dest: "{{ dir.ansible }}/loki/config/server.key"
+    owner: '10001'
+    mode: 0500
+  tags: loki
+  notify:
+    - restart loki
+- name: Write CA
+  copy:
+    src: "{{ playbook_dir }}/certs/loki_ca.pem"
+    dest: "{{ dir.ansible }}/loki/config/ca.pem"
+    owner: '10001'
+    mode: 0500
+  tags: loki
+  notify:
+    - restart loki
+
+- name: Start loki
+  community.docker.docker_compose_v2:
+    project_src: "{{ dir.ansible }}/loki"
+    state: present
+  tags: loki
+
+- name: Make sure handlers are flushed immediately
+  ansible.builtin.meta: flush_handlers
+  tags: loki

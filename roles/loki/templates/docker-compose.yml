@@ -1,0 +1,11 @@
+version: '3.9'
+services:
+  loki:
+    image: "{{ loki.image }}:{{ loki.version }}"
+    restart: always
+    command: -config.file=/etc/loki/config.yaml
+    ports:
+      - "{{ loki.host }}:3100:3100"
+    volumes:
+      - "{{ dir.data }}/loki:/var/lib/loki"
+      - "{{ dir.ansible }}/loki/config:/etc/loki"

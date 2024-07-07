@@ -1,0 +1,7 @@
+---
+loki:
+  image: grafana/loki
+  version: 2.7.4
+  tls_hostname: loki.infra.local
+  clients:
+    - grafana

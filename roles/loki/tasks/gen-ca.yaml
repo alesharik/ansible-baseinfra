@@ -1,0 +1,37 @@
+---
+- name: Create CA private key
+  community.crypto.openssl_privatekey:
+    path: "{{ playbook_dir }}/certs/loki_ca.key"
+  delegate_to: 127.0.0.1
+  become: no
+  tags: loki
+  vars:
+    ansible_remote_tmp: "{{ playbook_dir }}/tmp"
+- name: Create certificate signing request (CSR) for CA certificate
+  community.crypto.openssl_csr_pipe:
+    privatekey_path: "{{ playbook_dir }}/certs/loki_ca.key"
+    common_name: Loki CA
+    use_common_name_for_san: false  # since we do not specify SANs, don't use CN as a SAN
+    basic_constraints:
+      - 'CA:TRUE'
+    basic_constraints_critical: true
+    key_usage:
+      - keyCertSign
+    key_usage_critical: true
+  delegate_to: 127.0.0.1
+  tags: loki
+  become: no
+  register: ca_csr
+  vars:
+    ansible_remote_tmp: "{{ playbook_dir }}/tmp"
+- name: Create self-signed CA certificate from CSR
+  community.crypto.x509_certificate:
+    path: "{{ playbook_dir }}/certs/loki_ca.pem"
+    csr_content: "{{ ca_csr.csr }}"
+    privatekey_path: "{{ playbook_dir }}/certs/loki_ca.key"
+    provider: selfsigned
+  delegate_to: 127.0.0.1
+  tags: loki
+  become: no
+  vars:
+    ansible_remote_tmp: "{{ playbook_dir }}/tmp"

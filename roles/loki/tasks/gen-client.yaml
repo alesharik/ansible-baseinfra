@@ -1,0 +1,42 @@
+- name: 'Create {{ item }} private key'
+  delegate_to: 127.0.0.1
+  tags: loki
+  become: no
+  vars:
+    ansible_remote_tmp: "{{ playbook_dir }}/tmp"
+  community.crypto.openssl_privatekey:
+    path: "{{ playbook_dir }}/certs/loki_{{ item }}.key"
+- name: Create certificate signing request (CSR) for new certificate
+  delegate_to: 127.0.0.1
+  tags: loki
+  become: no
+  vars:
+    ansible_remote_tmp: "{{ playbook_dir }}/tmp"
+  community.crypto.openssl_csr_pipe:
+    privatekey_path: "{{ playbook_dir }}/certs/loki_{{ item }}.key"
+  run_once: true
+  register: 'csr'
+- name: Sign certificate with our CA
+  tags: loki
+  become: no
+  vars:
+    ansible_remote_tmp: "{{ playbook_dir }}/tmp"
+  community.crypto.x509_certificate_pipe:
+    csr_content: "{{ csr.csr }}"
+    provider: ownca
+    ownca_path: "{{ playbook_dir }}/certs/loki_ca.pem"
+    ownca_privatekey_path: "{{ playbook_dir }}/certs/loki_ca.key"
+    ownca_not_after: +365d  # valid for one year
+    ownca_not_before: "-1d"  # valid since yesterday
+  delegate_to: 127.0.0.1
+  run_once: true
+  register: cert
+- name: 'Write {{ item }} certificate'
+  become: no
+  vars:
+    ansible_remote_tmp: "{{ playbook_dir }}/tmp"
+  copy:
+    dest: "{{ playbook_dir }}/certs/loki_{{ item }}.cet"
+    content: "{{ cert.certificate }}"
+  tags: loki
+  delegate_to: 127.0.0.1
