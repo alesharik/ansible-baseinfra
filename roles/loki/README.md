@@ -20,6 +20,12 @@ loki:
   tls_hostname: loki.infra.local # server hostname for DNS SAN in TLS cert
   clients: # generate TLS creds for:
     - grafana
+  retention:
+    retention_period: 30d # required, max retention
+    retention_stream: # configure retention for specific log sets
+      - selector: '{container_name="nginx-proxy"}'
+        priority: 1
+        period: 24h
 ```
 
 ### Effects

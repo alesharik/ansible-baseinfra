@@ -5,3 +5,9 @@ loki:
   tls_hostname: loki.infra.local
   clients:
     - grafana
+  retention:
+    retention_period: 30d
+    retention_stream:
+      - selector: '{container_name="nginx-proxy"}'
+        priority: 1
+        period: 24h
