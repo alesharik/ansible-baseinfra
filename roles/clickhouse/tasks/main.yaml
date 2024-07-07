@@ -36,6 +36,7 @@
     path: "{{ dir.data }}/clickhouse"
     state: directory
     owner: 1002
+    group: 1002
     mode: 0700
   tags: clickhouse
 

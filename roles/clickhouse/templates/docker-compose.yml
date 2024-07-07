@@ -10,7 +10,7 @@ services:
       nofile:
         soft: 262144
         hard: 262144
-    user: '1002'
+    user: 1002:1002
     environment:
 {% for u in (clickhouse.users | dict2items) %}
       {{ u.key | upper }}_PASSWORD={%raw%}${{%endraw%}{{ u.key | upper }}{%raw%}_PASSWORD}{%endraw%}
