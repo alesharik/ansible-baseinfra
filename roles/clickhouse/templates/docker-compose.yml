@@ -14,9 +14,11 @@ services:
     environment:
 {% for u in (clickhouse.users | dict2items) %}
       {{ u.key | upper }}_PASSWORD={%raw%}${{%endraw%}{{ u.key | upper }}{%raw%}_PASSWORD}{%endraw%}
+
 {% endfor %}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+
       CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
       CLICKHOUSE_INIT_TIMEOUT: 300
     volumes:
       - ./init-defaults.sh:/docker-entrypoint-initdb.d/init-defaults.sh:ro
