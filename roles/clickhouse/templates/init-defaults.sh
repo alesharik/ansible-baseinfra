@@ -41,8 +41,12 @@ cat <<EOT > /etc/clickhouse-server/users.d/users.xml
     <networks>
       <ip>::/0</ip>
     </networks>
-    <password>${{{ u.key }}_PASSWORD}</password>
     <quota>default</quota>
+    <grants>
+{% for g in (u.value.grants or []) %}
+      <query>{{ g }}</query>
+{% endfor %}
+    </grants>
   </{{ u.key }}>
 {% endfor %}
 </users>
