@@ -23,6 +23,7 @@ clickhouse-client -u "${CLICKHOUSE_USER}" --password "${CLICKHOUSE_PASSWORD}" --
 echo "Writing users config"
 cat <<EOT > /etc/clickhouse-server/users.d/users.xml
 <!-- Docs: <https://clickhouse.tech/docs/en/operations/settings/settings_users/> -->
+<clickhouse>
 <users>
 {% for u in (clickhouse.users | dict2items) %}
   <{{ u.key }}>
@@ -40,5 +41,6 @@ cat <<EOT > /etc/clickhouse-server/users.d/users.xml
   </{{ u.key }}>
 {% endfor %}
 </users>
+</clickhouse>
 EOT
 #cat /etc/clickhouse-server/users.d/user.xml;
