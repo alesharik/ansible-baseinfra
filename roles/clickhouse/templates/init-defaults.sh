@@ -13,25 +13,14 @@ cat <<EOT > /etc/clickhouse-server/config.d/prometheus.xml
 </clickhouse>
 EOT
 
-
-cat <<EOT > /etc/clickhouse-server/users.d/root.xml
-<!-- Docs: <https://clickhouse.tech/docs/en/operations/settings/settings_users/> -->
-<users>
-  <${CLICKHOUSE_USER}>
-    <profile>default</profile>
-    <networks>
-      <ip>::/0</ip>
-    </networks>
-    <password>${CLICKHOUSE_PASSWORD}</password>
-    <quota>default</quota>
-  </${CLICKHOUSE_USER}>
-</users>
-EOT
+echo "Prometheus config written"
 
 {% for db in clickhouse.databases %}
+echo "Creating database {{ db }}"
 clickhouse-client -u "${CLICKHOUSE_USER}" --password "${CLICKHOUSE_PASSWORD}" --query "CREATE DATABASE IF NOT EXISTS {{ db }}";
 {% endfor %}
 
+echo "Writing users config"
 cat <<EOT > /etc/clickhouse-server/users.d/users.xml
 <!-- Docs: <https://clickhouse.tech/docs/en/operations/settings/settings_users/> -->
 <users>
