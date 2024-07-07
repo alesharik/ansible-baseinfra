@@ -19,7 +19,7 @@ loki:
 ```yaml
 promtail:
   image: grafana/promtail
-  version: 2.7.4
+  version: 3.1.0
   relabel_configs:
     docker: []
     systemd: []
