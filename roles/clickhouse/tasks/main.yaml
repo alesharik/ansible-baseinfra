@@ -42,7 +42,7 @@
 - name: Start clickhouse
   community.docker.docker_compose_v2:
     project_src: "{{ dir.ansible }}/clickhouse"
-    state: restarted
+    state: present
   tags: clickhouse
 
 - name: Make sure handlers are flushed immediately
