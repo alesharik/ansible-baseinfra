@@ -14,6 +14,18 @@ clickhouse:
 ```
 
 ### Vars
+Default vars:
+```yaml
+clickhouse:
+  image: clickhouse/clickhouse-server
+  version: 24.6.2.17-alpine
+  databases: []
+  users: {}
+  root:
+    user: root
+```
+
+Example vars:
 ```yaml
 clickhouse:
   image: clickhouse/clickhouse-server

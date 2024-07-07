@@ -36,7 +36,7 @@ cat <<EOT > /etc/clickhouse-server/users.d/users.xml
 <!-- Docs: <https://clickhouse.tech/docs/en/operations/settings/settings_users/> -->
 <users>
   </{{ clickhouse.root.user }}>
-{% for u in lookup('ansible.builtin.dict', clickhouse.users) %}
+{% for u in (clickhouse.users | dict2items) %}
   <{{ u.key }}>
     <profile>default</profile>
     <networks>
