@@ -30,3 +30,6 @@ node_exporter:
 ### Dependencies
 - `bootstrap`
 - `docker`
+
+### Metrics
+Service exposes metrics on `0.0.0.0:9100/metrics`. Service has required prometheus tags

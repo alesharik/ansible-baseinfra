@@ -1,0 +1,24 @@
+---
+- name: Create compose dir
+  ansible.builtin.file:
+    path: "{{ dir.ansible }}/wg-exporter"
+    state: directory
+    mode: 0755
+  tags: wg_exporter
+- name: Move compose files
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ dir.ansible }}/wg-exporter/docker-compose.yml"
+    mode: 0755
+  tags: wg_exporter
+  notify:
+    - restart wg exporter
+
+- name: Start wg exporter
+  community.docker.docker_compose_v2:
+    project_src: "{{ dir.ansible }}/wg-exporter"
+    state: present
+
+- name: Make sure handlers are flushed immediately
+  ansible.builtin.meta: flush_handlers
+  tags: wg_exporter

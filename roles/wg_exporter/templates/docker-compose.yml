@@ -1,0 +1,15 @@
+services:
+  exporter:
+    image: "{{ wg_exporter.image }}:{{ wg_exporter.version }}"
+    restart: always
+    network_mode: host
+    container_name: wg-exporter
+    cap_add:
+      - NET_ADMIN
+    command:
+      - '--prepend_sudo=true'
+      - '-l=127.0.0.1'
+    labels:
+      prometheus.io.path: /metrics
+      prometheus.io.instance: "{{ inventory_hostname }}"
+      prometheus.io.address: 127.0.0.1:9586

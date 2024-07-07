@@ -1,0 +1,6 @@
+---
+- name: restart wg exporter
+  community.docker.docker_compose_v2:
+    project_src: "{{ dir.ansible }}/wg-exporter"
+    state: restarted
+  tags: wg_exporter

@@ -1,0 +1,4 @@
+---
+wg_exporter:
+  image: mindflavor/prometheus-wireguard-exporter
+  version: 3.6.6
