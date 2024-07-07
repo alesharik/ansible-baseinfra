@@ -29,7 +29,7 @@ scrape_configs:
 {% for result in promtail.relabel_configs.systemd %}
       - {{ result | to_nice_yaml | indent(8) }}
 {% endfor %}
-{% if len(promtail.pipeline.common) > 0 or len(promtail.pipeline.systemd) > 0 %}
+{% if promtail.pipeline.common|length > 0 or promtail.pipeline.systemd|length > 0 %}
     pipeline_stages:
 {% for result in promtail.pipeline.systemd %}
       - {{ result | to_nice_yaml | indent(8) }}
@@ -50,7 +50,7 @@ scrape_configs:
       - {{ result | to_nice_yaml | indent(8) }}
 {% endfor %}
 
-{% if len(promtail.pipeline.common) > 0 or len(promtail.pipeline.docker) > 0 %}
+{% if promtail.pipeline.common|length > 0 or promtail.pipeline.docker|length > 0 %}
     pipeline_stages:
 {% for result in promtail.pipeline.docker %}
       - {{ result | to_nice_yaml | indent(8) }}
