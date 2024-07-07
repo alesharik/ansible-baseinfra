@@ -3,7 +3,7 @@ __Tags - `redis`__
 
 Deploys redis single-node instance. 
 
-Uses user `10031` and group `10031`
+Uses user `1001` and group `1001`
 
 ### Usage
 ```yaml

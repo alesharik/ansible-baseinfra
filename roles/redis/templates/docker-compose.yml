@@ -8,8 +8,8 @@ services:
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       REDISCLI_AUTH: ${REDIS_PASSWORD}
-      REDIS_DAEMON_USER: 10031
-      REDIS_DAEMON_GROUP: 10031
+      REDIS_DAEMON_USER: 1001
+      REDIS_DAEMON_GROUP: 1001
     volumes:
       - "{{ dir.data }}/redis-{{ redis.name }}:/bitnami/redis/data"
     networks:
