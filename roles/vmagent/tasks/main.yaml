@@ -29,7 +29,7 @@
 - name: Generate password
   tags: vmagent
   set_fact:
-    pwd: {{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}
+    pwd: "{{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}"
   when: pwd is not defined
 
 - name: Write password
