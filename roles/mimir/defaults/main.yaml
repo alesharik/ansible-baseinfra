@@ -2,7 +2,7 @@
 mimir:
   image: grafana/mimir
   version: 2.13.0
-  tls_hostname: loki.infra.local
+  tls_hostname: mimir.infra.local
   clients:
     - grafana
   log_format: json
