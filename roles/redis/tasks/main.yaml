@@ -26,7 +26,7 @@
     path: "{{ dir.data }}/redis-{{ redis.name }}"
     state: directory
     mode: 0700
-    user: 10031
+    owner: 10031
     group: 10031
   tags: redis
 
