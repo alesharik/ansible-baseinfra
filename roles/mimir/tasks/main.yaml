@@ -1,0 +1,93 @@
+---
+- name: Create compose dir
+  ansible.builtin.file:
+    path: "{{ dir.ansible }}/mimir"
+    state: directory
+    mode: 0755
+  tags: mimir
+- name: Create data dir
+  ansible.builtin.file:
+    path: "{{ dir.data }}/mimir"
+    state: directory
+    mode: 0755
+    owner: '10001'
+  tags: mimir
+- name: Move compose files
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ dir.ansible }}/mimir/docker-compose.yml"
+    mode: 0755
+  tags: mimir
+  notify:
+    - restart mimir
+- name: Make config folder
+  ansible.builtin.file:
+    path: "{{ dir.ansible }}/mimir/config"
+    state: directory
+    mode: 0755
+  tags: mimir
+- name: Move config
+  ansible.builtin.template:
+    src: config.yaml
+    dest: "{{ dir.ansible }}/mimir/config/config.yaml"
+    mode: 0755
+  tags: mimir
+  notify:
+    - restart mimir
+
+- name: Generate CA
+  ansible.builtin.include_tasks:
+    file: gen-ca.yaml
+    apply:
+      tags:
+        - mimir
+  tags: mimir
+
+- name: Generate server keys
+  ansible.builtin.include_tasks:
+    file: gen-server.yaml
+    apply:
+      tags:
+        - mimir
+  tags: mimir
+
+- name: Generate client keys
+  tags: mimir
+  loop: "{{ mimir.clients }}"
+  ansible.builtin.include_tasks:
+    file: gen-client.yaml
+    apply:
+      tags:
+        - mimir
+
+- name: Write certificate
+  copy:
+    dest: "{{ dir.ansible }}/mimir/config/server.cer"
+    content: "{{ certificate.certificate }}"
+    owner: '10001'
+    mode: 0500
+  tags: mimir
+  notify:
+    - restart mimir
+- name: Write key
+  copy:
+    src: "{{ playbook_dir }}/certs/mimir_server.key"
+    dest: "{{ dir.ansible }}/mimir/config/server.key"
+    owner: '10001'
+    mode: 0500
+  tags: mimir
+  notify:
+    - restart mimir
+- name: Write CA
+  copy:
+    src: "{{ playbook_dir }}/certs/mimir_ca.pem"
+    dest: "{{ dir.ansible }}/mimir/config/ca.pem"
+    owner: '10001'
+    mode: 0500
+  tags: mimir
+  notify:
+    - restart mimir
+
+- name: Make sure handlers are flushed immediately
+  ansible.builtin.meta: flush_handlers
+  tags: mimir

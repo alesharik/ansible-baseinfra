@@ -1,0 +1,11 @@
+version: '3.9'
+services:
+  mimir:
+    image: "{{ mimir.image }}:{{ mimir.version }}"
+    restart: always
+    command: -config.file=/etc/mimir/config.yaml -target=all
+    ports:
+      - "{{ mimir.host }}:9009:9009"
+    volumes:
+      - "{{ dir.data }}/mimir:/var/lib/mimir"
+      - "{{ dir.ansible }}/mimir/config:/etc/mimir"

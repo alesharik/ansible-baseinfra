@@ -1,0 +1,35 @@
+- name: Create server private key
+  delegate_to: 127.0.0.1
+  tags: mimir
+  become: no
+  vars:
+    ansible_remote_tmp: "{{ playbook_dir }}/tmp"
+  community.crypto.openssl_privatekey:
+    path: "{{ playbook_dir }}/certs/mimir_server.key"
+- name: Create certificate signing request (CSR) for new certificate
+  delegate_to: 127.0.0.1
+  tags: mimir
+  become: no
+  vars:
+    ansible_remote_tmp: "{{ playbook_dir }}/tmp"
+  community.crypto.openssl_csr_pipe:
+    privatekey_path: "{{ playbook_dir }}/certs/mimir_server.key"
+    subject_alt_name:
+      - "DNS:{{ mimir.tls_hostname }}"
+  run_once: true
+  register: csr
+- name: Sign certificate with our CA
+  tags: mimir
+  become: no
+  vars:
+    ansible_remote_tmp: "{{ playbook_dir }}/tmp"
+  community.crypto.x509_certificate_pipe:
+    csr_content: "{{ csr.csr }}"
+    provider: ownca
+    ownca_path: "{{ playbook_dir }}/certs/mimir_ca.pem"
+    ownca_privatekey_path: "{{ playbook_dir }}/certs/mimir_ca.key"
+    ownca_not_after: +365d  # valid for one year
+    ownca_not_before: "-1d"  # valid since yesterday
+  delegate_to: 127.0.0.1
+  run_once: true
+  register: certificate

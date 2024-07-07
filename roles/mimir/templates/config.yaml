@@ -1,0 +1,54 @@
+multitenancy_enabled: false
+
+blocks_storage:
+  backend: filesystem
+  bucket_store:
+    sync_dir: /var/lib/mimir/tsdb-sync
+  filesystem:
+    dir: /var/lib/mimir/data/tsdb
+  tsdb:
+    dir: /var/lib/mimir/tsdb
+
+compactor:
+  data_dir: /var/lib/mimir/compactor
+  sharding_ring:
+    kvstore:
+      store: memberlist
+
+distributor:
+  ring:
+    instance_addr: 127.0.0.1
+    kvstore:
+      store: memberlist
+
+ingester:
+  ring:
+    instance_addr: 127.0.0.1
+    kvstore:
+      store: memberlist
+    replication_factor: 1
+
+ruler_storage:
+  backend: filesystem
+  filesystem:
+    dir: /var/lib/mimir/rules
+
+server:
+  http_listen_port: 9009
+  log_level: warn
+  log_format: {{ mimir.log_format }}
+  http_tls_config:
+    cert_file: /etc/mimir/server.cer
+    key_file: /etc/mimir/server.key
+    client_auth_type: RequireAndVerifyClientCert
+    client_ca_file: /etc/mimir/ca.pem
+
+limits:
+  # Delete from storage metrics data older than 1 year.
+  compactor_blocks_retention_period: {{ mimir.compactor_blocks_retention_period }}
+
+store_gateway:
+  sharding_ring:
+    replication_factor: 1
+usage_stats:
+  enabled: false

@@ -1,0 +1,9 @@
+---
+mimir:
+  image: grafana/mimir
+  version: 2.13.0
+  tls_hostname: loki.infra.local
+  clients:
+    - grafana
+  log_format: json
+  compactor_blocks_retention_period: 4w
