@@ -1,46 +1,50 @@
 ---
-- name: Set directory fact
-  when: "clickhouse.directory is defined"
-  tags: clickhouse
-  ansible.builtin.set_fact:
-    clickhousegen_directory: "{{ clickhouse.directory }}"
 - name: Create compose dir
   ansible.builtin.file:
-    path: "{{ dir.ansible }}/clickhouse-{{ clickhouse.name }}"
+    path: "{{ dir.ansible }}/clickhouse"
     state: directory
-    mode: 0755
+    mode: 0700
   tags: clickhouse
 - name: Move compose files
   ansible.builtin.template:
     src: docker-compose.yml
-    dest: "{{ dir.ansible }}/clickhouse-{{ clickhouse.name }}/docker-compose.yml"
-    mode: 0755
+    dest: "{{ dir.ansible }}/clickhouse/docker-compose.yml"
+    mode: 0700
   tags: clickhouse
   notify:
     - restart clickhouse
 - name: Move env file
   ansible.builtin.template:
     src: .env
-    dest: "{{ dir.ansible }}/clickhouse-{{ clickhouse.name }}/.env"
-    mode: 0755
+    dest: "{{ dir.ansible }}/clickhouse/.env"
+    mode: 0700
   tags: clickhouse
   notify:
     - restart clickhouse
 - name: Move init-defauts.sh file
   ansible.builtin.template:
     src: init-defaults.sh
-    dest: "{{ dir.ansible }}/clickhouse-{{ clickhouse.name }}/init-defaults.sh"
-    mode: 0755
+    dest: "{{ dir.ansible }}/clickhouse/init-defaults.sh"
+    mode: 0700
+    owner: 1002
   tags: clickhouse
   notify:
     - restart clickhouse
+
 - name: Create clickhouse directory
   ansible.builtin.file:
-    path: "{{ clickhousegen_directory }}"
+    path: "{{ dir.data }}/clickhouse"
     state: directory
-    mode: 0755
-  when: clickhouse.volume_override is not defined
+    owner: 1002
+    mode: 0700
   tags: clickhouse
+
+- name: Start clickhouse
+  community.docker.docker_compose_v2:
+    project_src: "{{ dir.ansible }}/clickhouse"
+    state: restarted
+  tags: clickhouse
+
 - name: Make sure handlers are flushed immediately
   ansible.builtin.meta: flush_handlers
   tags: clickhouse

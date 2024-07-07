@@ -1,15 +1,16 @@
-version: '3.9'
 networks:
   clickhouse:
+    name: clickhouse
 services:
   clickhouse:
-    image: "clickhouse/clickhouse-server:{{ clickhouse.version }}"
+    image: "{{ clickhouse.image }}:{{ clickhouse.version }}"
     restart: always
     ulimits:
       nproc: 65535
       nofile:
         soft: 262144
         hard: 262144
+    user: '1002'
     environment:
       CLICKHOUSE_DB: ${CLICKHOUSE_DB}
       CLICKHOUSE_USER: ${CLICKHOUSE_ROOT_USER}
@@ -17,11 +18,7 @@ services:
       CLICKHOUSE_INIT_TIMEOUT: 300
     volumes:
       - ./init-defaults.sh:/docker-entrypoint-initdb.d/init-defaults.sh:ro
-{% if clickhouse.volume_override is defined %}
-      - "ext:/var/lib/clickhouse:cached"
-{% else %}
-      - "{{ clickhousegen_directory }}:/var/lib/clickhouse:cached"
-{% endif %}
+      - "{{ dir.data }}/clickhouse:/var/lib/clickhouse:cached"
     networks:
       - clickhouse
     healthcheck:
@@ -29,9 +26,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-{% if clickhouse.volume_override is defined %}
-volumes:
-  ext:
-    name: "{{ clickhouse.volume_override }}"
-    external: true
-{% endif %}
+    labels:
+      prometheus.io.path: /metrics
+      prometheus.io.port: 9363 # port
+      prometheus.io.instance: "{{ inventory_hostname }}"

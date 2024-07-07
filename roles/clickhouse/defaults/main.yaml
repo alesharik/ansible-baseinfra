@@ -1,4 +1,8 @@
 ---
 clickhouse:
-  version: 22.6.4-alpine
-clickhousegen_directory: "{{ dir.data }}/clickhouse-{{ clickhouse.name }}"
+  image: clickhouse/clickhouse-server
+  version: 24.6.2.17-alpine
+  databases: []
+  users: []
+  root:
+    user: root
