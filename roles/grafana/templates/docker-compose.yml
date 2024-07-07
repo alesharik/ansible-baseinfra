@@ -1,0 +1,23 @@
+version: '3.9'
+networks:
+  proxy:
+    external:
+      name: nginx-proxy
+services:
+  grafana:
+    image: "{{ grafana.image }}:{{ grafana.version }}"
+    restart: always
+    environment:
+      VIRTUAL_HOST: "{{ grafana.host }}"
+      VIRTUAL_PORT: 3000
+      LETSENCRYPT_HOST: "{{ grafana.host }}"
+      GF_SECURITY_ADMIN_PASSWORD__FILE: "/run/secrets/admin_password"
+    volumes:
+      - "{{ dir.data }}/grafana:/var/lib/grafana"
+    secrets:
+      - admin_password
+    networks:
+      - proxy
+secrets:
+   admin_password:
+     file: admin_password.txt

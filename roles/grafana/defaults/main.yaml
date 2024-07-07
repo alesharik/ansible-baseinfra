@@ -1,0 +1,4 @@
+---
+grafana:
+  image: grafana/grafana-oss
+  version: 11.1.0
