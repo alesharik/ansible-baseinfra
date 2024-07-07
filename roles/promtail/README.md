@@ -32,7 +32,6 @@ promtail:
 ### Effects
 - creates and manages `{{ dir.ansible }}/promtail`
 - creates `{{ dir.data }}/promtail`
-- creates `{{ playbook_dir }}/certs/promtail_{{ inventory_hostname }}.key` to manage node key
 - deploys docker compose project `promtail` with container `promtail`
 
 ### Handlers

@@ -36,21 +36,18 @@
     - restart promtail
 
 - name: Create private key
-  delegate_to: 127.0.0.1
   tags: promtail
-  become: no
-  vars:
-    ansible_remote_tmp: "{{ playbook_dir }}/tmp"
   community.crypto.openssl_privatekey:
-    path: "{{ playbook_dir }}/certs/promtail_{{ inventory_hostname }}.key"
+    path: "{{ dir.ansible }}/promtail/config/client.key"
+    owner: '10001'
+    group: root
+    mode: 0550
+  notify:
+    - restart promtail
 - name: Create certificate signing request (CSR) for new certificate
-  delegate_to: 127.0.0.1
   tags: promtail
-  become: no
-  vars:
-    ansible_remote_tmp: "{{ playbook_dir }}/tmp"
   community.crypto.openssl_csr_pipe:
-    privatekey_path: "{{ playbook_dir }}/certs/promtail_{{ inventory_hostname }}.key"
+    privatekey_path: "{{ dir.ansible }}/promtail/config/client.key"
   register: csr
 - name: Sign certificate with our CA
   tags: promtail
@@ -76,16 +73,6 @@
   tags: promtail
   notify:
     - restart promtail
-- name: Write key
-  copy:
-    src: "{{ playbook_dir }}/certs/promtail_{{ inventory_hostname }}.key"
-    dest: "{{ dir.ansible }}/promtail/config/client.key"
-    owner: '10001'
-    group: root
-    mode: 0550
-  tags: promtail
-  notify:
-    - restart promtail
 - name: Write CA
   copy:
     src: "{{ playbook_dir }}/certs/loki_ca.pem"
@@ -103,6 +90,12 @@
     src: daemon.json
     dest: "/etc/docker/daemon.json"
     mode: 0755
+
+- name: Start promtail
+  community.docker.docker_compose_v2:
+    project_src: "{{ dir.ansible }}/promtail"
+    state: present
+  tags: promtail
 
 - name: Make sure handlers are flushed immediately
   ansible.builtin.meta: flush_handlers
