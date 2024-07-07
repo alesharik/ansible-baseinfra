@@ -1,0 +1,4 @@
+---
+vmagent:
+  image: victoriametrics/vmagent
+  version: v1.101.0

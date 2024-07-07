@@ -33,6 +33,7 @@ promtail:
 - creates and manages `{{ dir.ansible }}/promtail`
 - creates `{{ dir.data }}/promtail`
 - deploys docker compose project `promtail` with container `promtail`
+- **container has docker access**
 
 ### Handlers
 - `restart promtail` - restarts promtail

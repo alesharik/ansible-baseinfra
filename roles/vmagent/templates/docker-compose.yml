@@ -1,0 +1,21 @@
+services:
+  vmagent:
+    container_name: vmagent
+    image: "{{ vmagent.image }}:{{ vmagent.version }}"
+    restart: always
+    volumes:
+      - "{{ dir.ansible }}/vmagent/config:/etc/vmagent"
+      - "{{ dir.data }}/vmagent:/vmagent"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    command:
+      - '-remoteWrite.url=https://{{ mimir.host }}:9009/api/v1/push'
+      - '-remoteWrite.tlsCAFile=/etc/vmagent/ca.pem'
+      - '-remoteWrite.tlsCertFile=/etc/vmagent/client.cer'
+      - '-remoteWrite.tlsKeyFile=/etc/vmagent/client.key'
+      - '-remoteWrite.tlsServerName={{ mimir.tls_hostname }}'
+      - '-httpListenAddr=127.0.0.1:8429'
+      - '-httpAuth.username=vmagent-auth'
+      - '-httpAuth.password=file:///etc/vmagent/password'
+      - '-promscrape.config=/etc/vmagent/config.yml'
+    user: 'root:root'
+    network_mode: host
