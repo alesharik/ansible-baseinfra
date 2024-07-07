@@ -48,13 +48,20 @@ table_manager:
 
 schema_config:
   configs:
-    - from: 2020-10-24
+    - from: '{{ loki.migration_dates.v11 }}'
       store: boltdb-shipper
       object_store: filesystem
       schema: v11
       index:
         prefix: index_
         period: 24h
+    - from: '{{ loki.migration_dates.v13 }}'
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        period: 24h
+        prefix: index_
 
 #ruler:
 #  alertmanager_url: http://localhost:9093

@@ -1,7 +1,7 @@
 ---
 loki:
   image: grafana/loki
-  version: 2.7.4
+  version: 3.1.0
   tls_hostname: loki.infra.local
   clients:
     - grafana
@@ -11,3 +11,6 @@ loki:
       - selector: '{container_name="nginx-proxy"}'
         priority: 1
         period: 24h
+  migration_dates:
+    v11: "2020-10-24"
+    v13: "2024-07-08"
