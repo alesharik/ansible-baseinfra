@@ -14,18 +14,24 @@ loki:
 
 ### Vars
 ```yaml
+---
 loki:
   image: grafana/loki
-  version: 2.7.4
+  version: 3.1.0
   tls_hostname: loki.infra.local # server hostname for DNS SAN in TLS cert
-  clients: # generate TLS creds for:
+  clients:  # generate TLS creds for:
     - grafana
+  allow_structured_metadata: true
+  log_format: json
   retention:
     retention_period: 30d # required, max retention
     retention_stream: # configure retention for specific log sets
       - selector: '{container_name="nginx-proxy"}'
         priority: 1
         period: 24h
+  migration_dates: # used to migrate old loki from v11 to v13
+    v11: "2020-10-24"
+    v13: "2024-07-08"
 ```
 
 ### Effects

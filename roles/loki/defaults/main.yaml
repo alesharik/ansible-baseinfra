@@ -6,6 +6,7 @@ loki:
   clients:
     - grafana
   allow_structured_metadata: true
+  log_format: json
   retention:
     retention_period: 30d
     retention_stream:
