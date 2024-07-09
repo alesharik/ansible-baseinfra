@@ -9,7 +9,8 @@ Deploys harbor instance
 ```
 ```yaml
 harbor:
-  host: harbor.org
+  hosts: 
+    - harbor.org
   admin_password: "admin_pass"
   db:
     host: postgres-harbor-postgres-1

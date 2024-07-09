@@ -249,9 +249,9 @@ services:
       - portal
       - log
     environment:
-      VIRTUAL_HOST: "{{ harbor.host }}"
+      VIRTUAL_HOST: "{{ harbor.hosts | join(',') }}"
       VIRTUAL_PORT: 8080
-      LETSENCRYPT_HOST: "{{ harbor.host }}"
+      LETSENCRYPT_HOST: "{{ harbor.host | join(',') }}"
     logging:
       driver: "syslog"
       options:

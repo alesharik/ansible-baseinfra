@@ -104,11 +104,12 @@
   tags: harbor
   when: "'alesharik.baseinfra.nginx_proxy_base' in ansible_role_names"
   ansible.builtin.copy:
-    dest: "{{ dir.ansible }}/nginx-proxy/vhost.d/{{ harbor.host }}"
-    content: "client_max_body_size 1000M;"
+    dest: "{{ dir.ansible }}/nginx-proxy/vhost.d/{{ item }}"
+    content: "client_max_body_size 10000M;"
     mode: 0755
   notify:
     - restart nginx-proxy
+  loop: "{{ harbor.hosts }}"
 
 - name: Make sure handlers are flushed immediately
   ansible.builtin.meta: flush_handlers
