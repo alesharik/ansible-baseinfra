@@ -23,35 +23,23 @@
     - restart minio
 - name: Create minio directory
   ansible.builtin.file:
-    path: "{{ minio.directory }}"
+    path: "{{ dir.data }}/minio"
     state: directory
     mode: 0755
-  when: minio.volume_override is not defined
   tags: minio
 
-- name: Configure vhost
+- name: Configure nginx-proxy
   tags: minio
-  when: "'alesharik.baseinfra.nginx_proxy_base' in ansible_role_names"
-  ansible.builtin.copy:
-    dest: "{{ dir.ansible }}/nginx-proxy/vhost.d/{{ minio.host }}"
-    content: |
-              location /{{ minio.bucket }} {
-                proxy_set_header Host $http_host;
-                proxy_pass http://minio:9000/{{ minio.bucket }}/;
-              }
-    mode: 0755
-  notify:
-    - restart nginx-proxy
+  include_role: 'vhost.yaml'
+  loop: "{{ minio.hosts }}"
+  loop_control:
+    loop_var: domain
 
-- name: Configure vhost location
+- name: Start minio
+  community.docker.docker_compose_v2:
+    project_src: "{{ dir.ansible }}/minio"
+    state: present
   tags: minio
-  when: "'alesharik.baseinfra.nginx_proxy_base' in ansible_role_names"
-  ansible.builtin.copy:
-    dest: "{{ dir.ansible }}/nginx-proxy/vhost.d/{{ minio.host }}_location"
-    content: "return 404;"
-    mode: 0755
-  notify:
-    - restart nginx-proxy
 
 - name: Make sure handlers are flushed immediately
   ansible.builtin.meta: flush_handlers
