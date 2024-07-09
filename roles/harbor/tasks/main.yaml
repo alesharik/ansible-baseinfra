@@ -94,6 +94,17 @@
   notify:
     - restart harbor
 
+- name: Copy CA
+  ansible.builtin.copy:
+    src: "{{ dir.ansible }}/harbor/tls/harbor_internal_ca.crt"
+    dest: "{{ dir.ansible }}/harbor/common/config/shared/trust-certificates/ca.crt"
+    owner: 10000
+    group: 10000
+    mode: 0600
+  tags: harbor
+  notify:
+    - restart harbor
+
 - name: Start harbor
   community.docker.docker_compose_v2:
     project_src: "{{ dir.ansible }}/harbor"
