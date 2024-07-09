@@ -45,3 +45,4 @@ minio:
 ### Dependencies
 - `bootstrap`
 - `docker`
+- `nginx_proxy_base`
