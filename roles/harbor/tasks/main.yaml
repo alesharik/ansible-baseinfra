@@ -100,7 +100,7 @@
     dest: "{{ dir.ansible }}/harbor/common/config/shared/trust-certificates/ca.crt"
     owner: 10000
     group: 10000
-    mode: 0600
+    mode: 0611
     remote_src: true
   tags: harbor
   notify:
