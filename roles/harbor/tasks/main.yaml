@@ -101,6 +101,7 @@
     owner: 10000
     group: 10000
     mode: 0600
+    remote_src: true
   tags: harbor
   notify:
     - restart harbor
