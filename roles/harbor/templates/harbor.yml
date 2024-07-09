@@ -1,4 +1,4 @@
-hostname: {{ harbor.host }}
+hostname: {{ harbor.hosts[0] }}
 
 http:
   port: 80
@@ -7,7 +7,7 @@ internal_tls:
   enabled: true
   dir: "{{ dir.ansible }}/harbor/tls"
 
-external_url: https://{{ harbor.host }}
+external_url: https://{{ harbor.hosts[0] }}
 harbor_admin_password: {{ harbor.admin_password }}
 
 data_volume: {{ dir.data }}/harbor/
