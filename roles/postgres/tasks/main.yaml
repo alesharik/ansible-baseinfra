@@ -151,4 +151,5 @@
   tags: postgres
 - name: Configure exporter
   tags: postgres
-  include_role: monitoring.yaml
+  include_role:
+    name: monitoring.yaml
