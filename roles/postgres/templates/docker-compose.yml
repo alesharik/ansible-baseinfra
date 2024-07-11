@@ -1,25 +1,37 @@
-version: '3'
-{% if postgres.role != 'primary' %}
 networks:
   main: {}
-{% endif %}
 services:
-  postgres:
-    image: "{{ postgres.image }}"
+  exporter:
+    image: "{{ postgres.exporter.image }}:{{ postgres.exporter.version }}"
     restart: always
-{% if postgres.role != 'primary' %}
     networks:
       - main
-{% else %}
-    network_mode: host
+    depends_on:
+      - postgres
+    environment:
+      DATA_SOURCE_URI: "postgres:5432/postgres?sslmode=disable"
+      DATA_SOURCE_USER: "prom-exporter"
+      DATA_SOURCE_PASS: "{{ pwd|default('') }}"
+    labels:
+      prometheus.io.path: /metrics
+      prometheus.io.port: 9187
+      prometheus.io.instance: "{{ inventory_hostname }}-{{ postgres.name }}"
+  postgres:
+    image: "{{ postgres.image }}:{{ postgres.version }}"
+    restart: always
+    networks:
+      - main
+{% if postgres.role == 'primary' %}
+    ports:
+      - 5432:5432
 {% endif %}
     environment:
       POSTGRES_PASSWORD: "{{ postgres.password }}"
       POSTGRES_USER: "{{ postgres.username }}"
     volumes:
-      - "{{ postgresgen.dirs.directory }}:/var/lib/postgresql/data"
+      - "{{ dir.data }}/postgres-{{ postgres.name }}:/var/lib/postgresql/data"
       - "{{ dir.ansible }}/postgres-{{ postgres.name }}/pg_hba.conf:/etc/postgresql/pg_hba.conf"
       - "{{ dir.ansible }}/postgres-{{ postgres.name }}/postgresql.conf:/etc/postgresql/postgresql.conf"
 {% if postgres.role == 'primary' or postgres.role == 'standby' %}
-      - "{{ postgresgen.dirs.wal }}:{{ postgresgen.dirs.wal }}"
+      - "{{ dir.data }}/postgres-{{ postgres.name }}-wal-archive/:{{ dir.data }}/postgres-{{ postgres.name }}-wal-archive/"
 {% endif %}

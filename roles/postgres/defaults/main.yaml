@@ -1,5 +1,7 @@
 ---
-postgresgen:
-  dirs:
-    directory: "{{ dir.data }}/postgres-{{ postgres.name }}"
-    wal: "{{ dir.data }}/postgres-{{ postgres.name }}-wal-archive/"
+postgres:
+  image: postgres
+  version: 16.3
+  exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter
+    version: v0.15.0

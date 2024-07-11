@@ -1,0 +1,67 @@
+- tags: postgres
+  when: postgres.role != 'standby'
+  block:
+  - name: Read password
+    tags: postgres
+    shell: |
+      cat {{ dir.data }}/postgres-{{ postgres.name }}/mon_pwd
+    register: pwd
+    ignore_errors: true
+
+  - name: Set password fact
+    tags: postgres
+    set_fact:
+      pwd: "{{ pwd.stdout }}"
+    when: pwd is defined
+
+  - name: Generate password
+    tags: postgres
+    set_fact:
+      pwd: "{{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}"
+    when: not pwd|default(None)
+
+  - name: Write password
+    copy:
+      dest: "{{ dir.data }}/postgres-{{ postgres.name }}/mon_pwd"
+      content: "{{ pwd }}"
+      group: root
+      owner: root
+      mode: 0100
+    tags: postgres
+    notify:
+      - restart db
+
+  - name: Create prom-exporter user
+    community.postgresql.postgresql_user:
+      login_host: "{{ postgres_host | trim }}"
+      login_password: "{{ postgres.password }}"
+      login_user: "{{ postgres.username }}"
+      name: "prom-exporter"
+      database: postgres
+      password: "{{ pwd }}"
+    tags: postgres
+
+  - name: Give monitoring privileges
+    community.postgresql.postgresql_privs:
+      login_host: "{{ postgres_host | trim }}"
+      login_password: "{{ postgres.password }}"
+      login_user: "{{ postgres.username }}"
+      privs: pg_monitor
+      role: prom-exporter
+    tags: postgres
+
+  - name: Rewrite compose file
+    ansible.builtin.template:
+      src: docker-compose.yml
+      dest: "{{ dir.ansible }}/postgres-{{ postgres.name }}/docker-compose.yml"
+      mode: 0700
+    tags: postgres
+  - name: Redeploy postgres container
+    community.docker.docker_compose_v2:
+      project_src: "{{ dir.ansible }}/postgres-{{ postgres.name }}"
+    tags: postgres
+
+- name: Clear monitoring password
+  tags: postgres
+  set_fact:
+    pwd: ''
