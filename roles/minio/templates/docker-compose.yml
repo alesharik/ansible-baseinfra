@@ -28,7 +28,7 @@ services:
     labels:
       prometheus.io.path: /minio/v2/metrics/cluster
       prometheus.io.port: 9000
-      prometheus.io.network: minio_minio
+      prometheus.io.network: minio
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
       interval: 30s
