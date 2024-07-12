@@ -105,11 +105,11 @@
     login_host: "{{ postgres_host | trim }}"
     login_password: "{{ postgres.password }}"
     login_user: "{{ postgres.username }}"
-    name: "{{ item.key }}"
+    name: "{{ item.name }}"
     password: "{{ item.value.password }}"
-  loop: "{{ postgres.users | dict2items }}"
+  loop: "{{ postgres.users }}"
   loop_control:
-    label: "{{ item.key }}"
+    label: "{{ item.name }}"
   when: postgres.role != 'standby'
   tags: postgres
 - name: Create databases
@@ -117,27 +117,19 @@
     login_host: "{{ postgres_host | trim }}"
     login_password: "{{ postgres.password }}"
     login_user: "{{ postgres.username }}"
-    name: "{{ item.key }}"
-  loop: "{{ postgres.databases | dict2items }}"
+    name: "{{ item.name }}"
+  loop: "{{ postgres.databases }}"
   loop_control:
-    label: "{{ item.key }}"
+    label: "{{ item.name }}"
   when: postgres.role != 'standby'
   tags: postgres
 - name: Give privileges
-  community.postgresql.postgresql_privs:
-    login_host: "{{ postgres_host | trim }}"
-    login_password: "{{ postgres.password }}"
-    login_user: "{{ postgres.username }}"
-    privs: "{{ item[1].privs }}"
-    type: "{{ item[1].type }}"
-    database: "{{ item[1].db }}"
-    role: "{{ item[0].key }}"
-    objs: "{{ item[1].objs }}"
-  loop: "{{ postgres.users | dict2items | subelements('value.privs') }}"
-  loop_control:
-    label: "{{ item[0].key }}-{{ item[1] }}"
-  when: postgres.role != 'standby'
   tags: postgres
+  include_tasks:
+    file: priv.yaml
+  loop: "{{ postgres.users }}"
+  loop_control:
+    loop_var: user
 - name: Create replication user
   community.postgresql.postgresql_user:
     login_host: "{{ postgres_host | trim }}"

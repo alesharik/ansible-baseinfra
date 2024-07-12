@@ -1,0 +1,14 @@
+- name: Give privileges
+  community.postgresql.postgresql_privs:
+    login_host: "{{ postgres_host | trim }}"
+    login_password: "{{ postgres.password }}"
+    login_user: "{{ postgres.username }}"
+    privs: "{{ item.privs }}"
+    type: "{{ item.type }}"
+    database: "{{ item.db }}"
+    role: "{{ user.name }}"
+    objs: "{{ item.objs }}"
+  loop: "{{ user.privs }}"
+  loop_control:
+    label: "{{ user.name }}-{{ item.objs }}"
+  tags: postgres
