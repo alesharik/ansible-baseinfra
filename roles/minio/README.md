@@ -13,7 +13,7 @@ minio:
     username: adm # TODO admin username
     password: pass # TODO admin password
   hosts: # todo setup hosts
-    storage.test:
+    - name: storage.test
       buckets:
         - test-prod
 ```

@@ -1,7 +1,7 @@
 - name: Configure vhost
   tags: minio
   ansible.builtin.copy:
-    dest: "{{ dir.ansible }}/nginx-proxy/vhost.d/{{ domain.key }}"
+    dest: "{{ dir.ansible }}/nginx-proxy/vhost.d/{{ domain.name }}"
     content: |
               location /{{ item }} {
                 proxy_set_header Host $http_host;
@@ -15,7 +15,7 @@
 - name: Configure vhost location
   tags: minio
   ansible.builtin.copy:
-    dest: "{{ dir.ansible }}/nginx-proxy/vhost.d/{{ domain.key }}_location"
+    dest: "{{ dir.ansible }}/nginx-proxy/vhost.d/{{ domain.name }}_location"
     content: "return 404;"
     mode: 0755
   notify:
