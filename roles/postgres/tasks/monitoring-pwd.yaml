@@ -1,0 +1,32 @@
+- tags: postgres
+  when: postgres.role != 'standby'
+  block:
+  - name: Read password
+    tags: postgres
+    shell: |
+      cat {{ dir.data }}/postgres-{{ postgres.name }}/mon_pwd
+    register: mon_pwd
+    ignore_errors: true
+
+  - name: Set password fact
+    tags: postgres
+    set_fact:
+      mon_pwd: "{{ mon_pwd.stdout }}"
+    when: mon_pwd is defined
+
+  - name: Generate password
+    tags: postgres
+    set_fact:
+      mon_pwd: "{{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}"
+    when: not mon_pwd|default(None)
+
+  - name: Write password
+    copy:
+      dest: "{{ dir.data }}/postgres-{{ postgres.name }}/mon_pwd"
+      content: "{{ mon_pwd }}"
+      group: root
+      owner: root
+      mode: 0100
+    tags: postgres
+    notify:
+      - restart db

@@ -54,6 +54,10 @@
     state: directory
     mode: 0755
   tags: postgres
+- name: Configure exporter password
+  tags: postgres
+  include_tasks:
+    file: monitoring-pwd.yaml
 - name: Move compose files
   ansible.builtin.template:
     src: docker-compose.yml

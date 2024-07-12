@@ -11,7 +11,7 @@ services:
     environment:
       DATA_SOURCE_URI: "postgres:5432/postgres?sslmode=disable"
       DATA_SOURCE_USER: "prom-exporter"
-      DATA_SOURCE_PASS: "{{ pwd|default('') }}"
+      DATA_SOURCE_PASS: "{{ mon_pwd }}"
     labels:
       prometheus.io.path: /metrics
       prometheus.io.port: 9187

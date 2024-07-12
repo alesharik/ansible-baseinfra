@@ -1,43 +1,13 @@
 - tags: postgres
   when: postgres.role != 'standby'
   block:
-  - name: Read password
-    tags: postgres
-    shell: |
-      cat {{ dir.data }}/postgres-{{ postgres.name }}/mon_pwd
-    register: pwd
-    ignore_errors: true
-
-  - name: Set password fact
-    tags: postgres
-    set_fact:
-      pwd: "{{ pwd.stdout }}"
-    when: pwd is defined
-
-  - name: Generate password
-    tags: postgres
-    set_fact:
-      pwd: "{{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}"
-    when: not pwd|default(None)
-
-  - name: Write password
-    copy:
-      dest: "{{ dir.data }}/postgres-{{ postgres.name }}/mon_pwd"
-      content: "{{ pwd }}"
-      group: root
-      owner: root
-      mode: 0100
-    tags: postgres
-    notify:
-      - restart db
-
   - name: Create prom-exporter user
     community.postgresql.postgresql_user:
       login_host: "{{ postgres_host | trim }}"
       login_password: "{{ postgres.password }}"
       login_user: "{{ postgres.username }}"
       name: "prom-exporter"
-      password: "{{ pwd }}"
+      password: "{{ mon_pwd }}"
     tags: postgres
 
   - name: Give monitoring privileges
@@ -64,4 +34,4 @@
 - name: Clear monitoring password
   tags: postgres
   set_fact:
-    pwd: ''
+    mon_pwd: ''
