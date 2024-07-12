@@ -1,3 +1,7 @@
+{% set hosts = [] %}
+{% for h in minio.hosts %}
+  {{ hosts.append(h.name) }}
+{% endfor %}
 networks:
   minio:
     name: minio
@@ -10,9 +14,9 @@ services:
     command: server --console-address ":9001" /data1
     restart: always
     environment:
-      VIRTUAL_HOST: "{{ ','.join([1] | map('extract', minio.hosts | subelements('name', skip_missing=True)) | flatten ) }}"
+      VIRTUAL_HOST: "{{ ','.join(hosts) }}"
       VIRTUAL_PORT: 9000
-      LETSENCRYPT_HOST: "{{ ','.join([1] | map('extract', minio.hosts | subelements('name', skip_missing=True)) | flatten) }}"
+      LETSENCRYPT_HOST: "{{ ','.join(hosts) }}"
       MINIO_ROOT_USER: ${ROOT_USER}
       MINIO_ROOT_PASSWORD: ${ROOT_PASSWORD}
       MINIO_PROMETHEUS_AUTH_TYPE: public
