@@ -18,17 +18,6 @@
       query:
       - grant pg_monitor to prom-exporter
 
-  - name: Rewrite compose file
-    ansible.builtin.template:
-      src: docker-compose.yml
-      dest: "{{ dir.ansible }}/postgres-{{ postgres.name }}/docker-compose.yml"
-      mode: 0700
-    tags: postgres
-  - name: Redeploy postgres container
-    community.docker.docker_compose_v2:
-      project_src: "{{ dir.ansible }}/postgres-{{ postgres.name }}"
-    tags: postgres
-
 - name: Clear monitoring password
   tags: postgres
   set_fact:
