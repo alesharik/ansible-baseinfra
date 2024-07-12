@@ -10,15 +10,13 @@
       password: "{{ mon_pwd }}"
     tags: postgres
 
-  - name: Give monitoring privileges
-    community.postgresql.postgresql_privs:
+  - name: Run several queries against acme db
+    community.postgresql.postgresql_query:
       login_host: "{{ postgres_host | trim }}"
       login_password: "{{ postgres.password }}"
       login_user: "{{ postgres.username }}"
-      privs: pg_monitor
-      role: prom-exporter
-      database: postgres
-    tags: postgres
+      query:
+      - grant pg_monitor to prom-exporter
 
   - name: Rewrite compose file
     ansible.builtin.template:
