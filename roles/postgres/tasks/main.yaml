@@ -106,7 +106,7 @@
     login_password: "{{ postgres.password }}"
     login_user: "{{ postgres.username }}"
     name: "{{ item.name }}"
-    password: "{{ item.value.password }}"
+    password: "{{ item.password }}"
   loop: "{{ postgres.users }}"
   loop_control:
     label: "{{ item.name }}"
