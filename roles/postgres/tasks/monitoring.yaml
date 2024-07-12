@@ -10,7 +10,7 @@
       password: "{{ mon_pwd }}"
     tags: postgres
 
-  - name: Run several queries against acme db
+  - name: Grant pg_monitor to prom-exporter
     community.postgresql.postgresql_query:
       login_host: "{{ postgres_host | trim }}"
       login_password: "{{ postgres.password }}"
