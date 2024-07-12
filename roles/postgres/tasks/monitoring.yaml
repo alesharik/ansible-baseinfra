@@ -47,6 +47,7 @@
       login_user: "{{ postgres.username }}"
       privs: pg_monitor
       role: prom-exporter
+      database: postgres
     tags: postgres
 
   - name: Rewrite compose file
