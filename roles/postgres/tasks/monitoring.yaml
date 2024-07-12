@@ -15,8 +15,7 @@
       login_host: "{{ postgres_host | trim }}"
       login_password: "{{ postgres.password }}"
       login_user: "{{ postgres.username }}"
-      query:
-      - grant pg_monitor to prom-exporter
+      query: grant pg_monitor to prom-exporter
 
 - name: Clear monitoring password
   tags: postgres
