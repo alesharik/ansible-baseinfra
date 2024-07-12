@@ -8,8 +8,6 @@
                 proxy_pass http://minio:9000/{{ item }}/;
               }
     mode: 0755
-  notify:
-    - restart nginx-proxy
   loop: "{{ domain.buckets }}"
 
 - name: Configure vhost location
@@ -18,5 +16,3 @@
     dest: "{{ dir.ansible }}/nginx-proxy/vhost.d/{{ domain.name }}_location"
     content: "return 404;"
     mode: 0755
-  notify:
-    - restart nginx-proxy
