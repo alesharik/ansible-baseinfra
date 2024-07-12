@@ -37,7 +37,6 @@
       login_password: "{{ postgres.password }}"
       login_user: "{{ postgres.username }}"
       name: "prom-exporter"
-      database: postgres
       password: "{{ pwd }}"
     tags: postgres
 
