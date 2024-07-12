@@ -30,7 +30,8 @@
 
 - name: Configure nginx-proxy
   tags: minio
-  include_role: 'vhost.yaml'
+  include_tasks:
+    file: vhost.yaml
   loop: "{{ minio.hosts }}"
   loop_control:
     loop_var: domain
