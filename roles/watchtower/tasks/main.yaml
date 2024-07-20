@@ -8,7 +8,7 @@
 
 - name: Setup password
   tags: watchtower
-  when: "{{ watchtower.vmagent }}"
+  when: "watchtower.vmagent"
   block:
     - name: Read password
       tags: watchtower
