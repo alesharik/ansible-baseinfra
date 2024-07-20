@@ -4,7 +4,7 @@
     - host: unix:///var/run/docker.sock
   relabel_configs:
     - source_labels: [__meta_docker_container_name]
-      regex: watchtower
+      regex: /watchtower
       action: keep
     - regex: __meta_docker_container_name
       action: labelmap
