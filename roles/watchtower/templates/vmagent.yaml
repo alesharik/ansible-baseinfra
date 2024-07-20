@@ -1,5 +1,6 @@
 - job_name: "docker-watchtower"
   scrape_interval: 5s
+  metrics_path: /v1/metrics
   docker_sd_configs:
     - host: unix:///var/run/docker.sock
   relabel_configs:
