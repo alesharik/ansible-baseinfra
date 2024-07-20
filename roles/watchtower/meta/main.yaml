@@ -1,0 +1,4 @@
+---
+dependencies:
+  - role: alesharik.baseinfra.bootstrap
+  - role: alesharik.baseinfra.docker

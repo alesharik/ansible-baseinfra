@@ -1,0 +1,73 @@
+---
+- name: Create compose dir
+  ansible.builtin.file:
+    path: "{{ dir.ansible }}/watchtower"
+    state: directory
+    mode: 0755
+  tags: watchtower
+
+- name: Setup password
+  tags: watchtower
+  when: "{{ watchtower.vmagent }}"
+  block:
+    - name: Read password
+      tags: watchtower
+      shell: |
+        cat {{ dir.ansible }}/watchtower/http_password
+      register: watchtower_http_token
+      ignore_errors: true
+
+    - name: Set password fact
+      tags: watchtower
+      set_fact:
+        watchtower_http_token: "{{ watchtower_http_token.stdout }}"
+      when: watchtower_http_token is defined
+
+    - name: Generate password
+      tags: watchtower
+      set_fact:
+        watchtower_http_token: "{{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}"
+      when: not watchtower_http_token|default(None)
+
+    - name: Write password
+      copy:
+        dest: "{{ dir.ansible }}/watchtower/http_password"
+        content: "{{ watchtower_http_token }}"
+        group: root
+        owner: root
+        mode: 0100
+      tags: watchtower
+      notify:
+        - restart watchtower
+
+- name: Move compose files
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ dir.ansible }}/watchtower/docker-compose.yml"
+    mode: 0755
+  tags: watchtower
+  notify:
+    - restart watchtower
+- name: Move vmagent config
+  when: "{{ watchtower.vmagent }}"
+  ansible.builtin.template:
+    src: vmagent.yaml
+    dest: "{{ dir.ansible }}/vmagent/config/conf.d/watchtower.yml"
+    mode: 0755
+  tags: watchtower
+
+- name: Start watchtower
+  community.docker.docker_compose_v2:
+    project_src: "{{ dir.ansible }}/watchtower"
+    state: present
+  tags: watchtower
+
+- name: Clear password fact
+  tags: watchtower
+  set_fact:
+    watchtower_http_token: ""
+  when: watchtower_http_token is defined
+
+- name: Make sure handlers are flushed immediately
+  ansible.builtin.meta: flush_handlers
+  tags: watchtower

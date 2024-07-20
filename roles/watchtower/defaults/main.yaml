@@ -1,0 +1,6 @@
+---
+watchtower:
+  image: containrrr/watchtower
+  version: 1.7.1
+  vmagent: true
+  interval: 30
