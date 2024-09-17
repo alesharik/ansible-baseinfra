@@ -5,14 +5,14 @@
 - include_tasks: debian.yaml
   when: ansible_distribution == 'Debian'
   tags: docker
-- name: Install py library
-  ansible.builtin.pip:
-    break_system_packages: true
-    name:
-      - docker
-      - docker-compose
-    state: latest
-  tags: docker
+#- name: Install py library
+#  ansible.builtin.pip:
+#    break_system_packages: true
+#    name:
+#      - docker
+#      - docker-compose
+#    state: latest
+#  tags: docker
 - name: Login into registries
   community.docker.docker_login:
     registry_url: "{{ item.key }}"
