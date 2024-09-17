@@ -17,6 +17,10 @@
     name: systemd-timesyncd
     state: stopped
     enabled: false
+  register: stop_service
+  failed_when:
+    - stop_service.failed == true
+    - '"Could not find the requested service" not in stop_service.msg'
 - name: Start chrony
   tags: chrony
   ansible.builtin.systemd:
