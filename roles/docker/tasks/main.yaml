@@ -7,6 +7,7 @@
   tags: docker
 - name: Install py library
   ansible.builtin.pip:
+    break_system_packages: true
     name:
       - docker
       - docker-compose
