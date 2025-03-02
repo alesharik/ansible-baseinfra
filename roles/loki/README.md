@@ -33,6 +33,7 @@ loki:
   migration_dates: # used to migrate old loki from v11 to v13
     v11: "2020-10-24"
     v13: "2024-07-06"
+  listen_hosts: ["127.0.0.1", "192.168.0.1"] # overrides port exposure in docker. Default is `[loki.host]`. Allows to expose container on multiple networks
 ```
 
 ### Effects

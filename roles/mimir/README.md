@@ -22,6 +22,7 @@ mimir:
     - grafana
   log_format: json
   compactor_blocks_retention_period: 4w
+  listen_hosts: ["127.0.0.1", "192.168.0.1"] # overrides port exposure in docker. Default is `[mimir.host]`. Allows to expose container on multiple networks
 ```
 
 ### Effects
