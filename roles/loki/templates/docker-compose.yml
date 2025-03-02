@@ -5,7 +5,9 @@ services:
     restart: always
     command: -config.file=/etc/loki/config.yaml
     ports:
-      - "{{ loki.host }}:3100:3100"
+  {% for h in (loki.listen_hosts | default([loki.host])) %}
+      - "{{ h }}:3100:3100"
+  {% endfor %}
     volumes:
       - "{{ dir.data }}/loki:/var/lib/loki"
       - "{{ dir.ansible }}/loki/config:/etc/loki"
