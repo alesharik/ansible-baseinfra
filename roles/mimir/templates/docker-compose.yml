@@ -5,9 +5,9 @@ services:
     restart: always
     command: -config.file=/etc/mimir/config.yaml -target=all
     ports:
-  {% for h in (mimir.listen_hosts | default([mimir.host])) %}
+{% for h in (mimir.listen_hosts | default([mimir.host])) %}
       - "{{ h }}:9009:9009"
-  {% endfor %}
+{% endfor %}
     volumes:
       - "{{ dir.data }}/mimir:/var/lib/mimir"
       - "{{ dir.ansible }}/mimir/config:/etc/mimir"
