@@ -1,4 +1,4 @@
 ---
 grafana:
   image: grafana/grafana-oss
-  version: 11.1.0
+  version: 12.0.2

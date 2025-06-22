@@ -1,7 +1,7 @@
 # nginx-proxy
 __Tags - `grafana`__
 
-Deploys grafana
+Deploys grafana (default version - `12.0.2`)
 
 ### Usage
 ```yaml
