@@ -1,7 +1,7 @@
 ---
 mimir:
   image: grafana/mimir
-  version: 2.13.0
+  version: 2.16.0
   tls_hostname: mimir.infra.local
   clients:
     - grafana

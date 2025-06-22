@@ -1,7 +1,7 @@
 # loki
 __Tags - `mimir`__
 
-Deploys mimir
+Deploys mimir (default version - `2.16.0`)
 
 ### Usage
 ```yaml
