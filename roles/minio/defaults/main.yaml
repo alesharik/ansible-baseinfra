@@ -2,7 +2,4 @@
 minio:
   image: quay.io/minio/minio
   version: RELEASE.2024-07-04T14-25-45Z
-  hosts:
-    api.nplone.com:
-      buckets:
-        - nplone-prod
+  hosts: {}
