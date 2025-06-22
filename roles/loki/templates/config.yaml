@@ -13,6 +13,10 @@ server:
 common:
   path_prefix: /var/lib/loki
   replication_factor: 1
+  storage:
+    object_store:
+      filesystem:
+        dir: /var/lib/loki/chunks
   ring:
     instance_addr: 127.0.0.1
     kvstore:
@@ -39,9 +43,6 @@ limits_config:
 
 storage_config:
   use_thanos_objstore: true
-  object_store:
-    filesystem:
-      dir: /var/lib/loki/chunks
   tsdb_shipper:
     active_index_directory: /var/lib/loki/tsdb-index
     cache_location: /var/lib/loki/tsdb-cache
