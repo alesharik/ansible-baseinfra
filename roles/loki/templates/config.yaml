@@ -13,9 +13,10 @@ server:
 common:
   path_prefix: /var/lib/loki
   storage:
-    filesystem:
-      chunks_directory: /var/lib/loki/chunks
-      rules_directory: /var/lib/loki/rules
+    object_store:
+      filesystem:
+        chunks_directory: /var/lib/loki/chunks
+        rules_directory: /var/lib/loki/rules
   replication_factor: 1
   ring:
     instance_addr: 127.0.0.1
@@ -42,6 +43,7 @@ limits_config:
   {{ loki.retention | to_nice_yaml | indent(2) }}
 
 storage_config:
+  use_thanos_objstore: true
   tsdb_shipper:
     active_index_directory: /var/lib/loki/tsdb-index
     cache_location: /var/lib/loki/tsdb-cache

@@ -1,11 +1,11 @@
 # loki
 __Tags - `loki`__
 
-Deploys loki
+Deploys loki (default version - `3.5`)
 
 ### Usage
 ```yaml
-    - alesharik.baseinfra.loko
+    - alesharik.baseinfra.loki
 ```
 ```yaml
 loki:
