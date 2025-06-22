@@ -50,7 +50,6 @@ table_manager:
   retention_deletes_enabled: true
   retention_period: {{ loki.retention.retention_period }}
 
-  storage:
 schema_config:
   configs:
 {% if loki.migrate_from_v11 %}
