@@ -1,0 +1,7 @@
+---
+- name: restart headscale
+  community.docker.docker_compose_v2:
+    project_src: "{{ dir.ansible }}/headscale"
+    state: restarted
+    pull: always
+  tags: headscale

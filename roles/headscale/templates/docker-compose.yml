@@ -1,0 +1,23 @@
+networks:
+  proxy:
+    name: nginx-proxy
+    external: true
+services:
+  controller:
+    image: "{{ headscale.image }}:{{ headscale.version }}"
+    restart: always
+    volumes:
+      - "{{ dir.data }}/headscale:/var/lib/headscale"
+      - "{{ dir.ansible }}/headscale/config:/etc/headscale"
+    environment:
+      VIRTUAL_HOST: "{{ headscale.host }}"
+      VIRTUAL_PORT: 8080
+      LETSENCRYPT_HOST: "{{ headscale.host }}"
+    networks:
+      - proxy
+    command:
+      - serve
+    labels:
+      prometheus.io.path: /metrics
+      prometheus.io.port: 9090
+      prometheus.io.network: nginx-proxy

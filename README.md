@@ -47,3 +47,4 @@ prometheus.io.address: 127.0.0.1:9586 # full address to server
 | `vmagent`                | `v1.101.0`                       |              |              |
 | `watchtower`             | `1.7.1`                          |              |              |
 | `wg_exporter`            | `3.6.6`                          |              |              |
+| `headscale`              | `v0.25.1`                        | 2025-071-12  | 2025-071-12  |
