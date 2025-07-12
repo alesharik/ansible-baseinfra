@@ -2,3 +2,4 @@
 dependencies:
   - role: alesharik.baseinfra.bootstrap
   - role: alesharik.baseinfra.docker
+  - role: alesharik.baseinfra.nginx_proxy_base

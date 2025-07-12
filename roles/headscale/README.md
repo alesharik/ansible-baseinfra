@@ -10,6 +10,7 @@ Deploys headscale server. Runs as user `0`.
 ```yaml
 headscale:
   host: hs.example.com
+  base: example.local # Internal domain base
 ```
 
 ### Vars
