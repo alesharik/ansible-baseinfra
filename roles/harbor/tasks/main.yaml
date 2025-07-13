@@ -28,13 +28,19 @@
   register: tls_files
   tags: harbor
 
+- name: Check if root cert exists
+  tags: harbor
+  ansible.builtin.stat:
+    path: "{{ dir.ansible }}/harbor/tls/core.crt"
+  register: core_crt_stat
+
 - name: Get certificate information
   tags: harbor
   community.crypto.x509_certificate_info:
     path: "{{ dir.ansible }}/harbor/tls/core.crt"
     valid_at:
       future: "+7d"
-  ignore_errors: true
+  when: core_crt_stat.stat.exists
   register: core_crt
 
 - name: Setup TLS certs
@@ -48,7 +54,7 @@
         target: /cert
         type: bind
   tags: harbor
-  when: (tls_files.matched|int < 28) or (core_crt.rc == 0 and not core_crt.valid_at.future)
+  when: (tls_files.matched|int < 28) or (core_crt_stat.stat.exists and not core_crt.valid_at.future)
 
 - name: Set TLS files permissions
   tags: harbor
