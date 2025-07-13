@@ -43,6 +43,30 @@
   when: core_crt_stat.stat.exists
   register: core_crt
 
+- name: Get CA certificate information
+  tags: harbor
+  community.crypto.x509_certificate_info:
+    path: "{{ dir.ansible }}/harbor/tls/harbor_internal_ca.crt"
+    valid_at:
+      future: "+7d"
+  when: core_crt_stat.stat.exists
+  register: ca_crt
+
+- name: Remove expired TLS certs dir
+  tags: harbor
+  when: not ca_crt.valid_at.future
+  ansible.builtin.file:
+    state: absent
+    path: "{{ dir.ansible }}/harbor/tls"
+
+- name: Create tls certs dir again
+  when: not ca_crt.valid_at.future
+  ansible.builtin.file:
+    path: "{{ dir.ansible }}/harbor/tls"
+    state: directory
+    mode: 0755
+  tags: harbor
+
 - name: Setup TLS certs
   community.docker.docker_container:
     name: harbor-tls
