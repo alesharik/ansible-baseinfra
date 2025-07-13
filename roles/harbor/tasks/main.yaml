@@ -28,6 +28,14 @@
   register: tls_files
   tags: harbor
 
+- name: Get certificate information
+  community.crypto.x509_certificate_info:
+    path: "{{ dir.ansible }}/harbor/tls/core.crt"
+    valid_at:
+      future: "+7d"
+  ignore_errors: true
+  register: core_crt
+
 - name: Setup TLS certs
   community.docker.docker_container:
     name: harbor-tls
@@ -39,7 +47,7 @@
         target: /cert
         type: bind
   tags: harbor
-  when: tls_files.matched|int < 28
+  when: (tls_files.matched|int < 28) or (core_crt.rc == 0 and not core_crt.valid_at.future)
 
 - name: Set TLS files permissions
   tags: harbor
