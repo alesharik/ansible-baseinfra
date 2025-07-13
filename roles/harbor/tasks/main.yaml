@@ -54,13 +54,13 @@
 
 - name: Remove expired TLS certs dir
   tags: harbor
-  when: not ca_crt.valid_at.future
+  when: core_crt_stat.stat.exists and not ca_crt.valid_at.future
   ansible.builtin.file:
     state: absent
     path: "{{ dir.ansible }}/harbor/tls"
 
 - name: Create tls certs dir again
-  when: not ca_crt.valid_at.future
+  when: core_crt_stat.stat.exists and not ca_crt.valid_at.future
   ansible.builtin.file:
     path: "{{ dir.ansible }}/harbor/tls"
     state: directory
