@@ -29,6 +29,7 @@
   tags: harbor
 
 - name: Get certificate information
+  tags: harbor
   community.crypto.x509_certificate_info:
     path: "{{ dir.ansible }}/harbor/tls/core.crt"
     valid_at:
