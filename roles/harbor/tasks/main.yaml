@@ -121,6 +121,18 @@
   notify:
     - restart harbor
 
+- name: Copy Core
+  ansible.builtin.copy:
+    src: "{{ dir.ansible }}/harbor/tls/core.crt"
+    dest: "{{ dir.ansible }}/harbor/common/config/shared/trust-certificates/core.crt"
+    owner: 10000
+    group: 10000
+    mode: 0611
+    remote_src: true
+  tags: harbor
+  notify:
+    - restart harbor
+
 - name: Start harbor
   community.docker.docker_compose_v2:
     project_src: "{{ dir.ansible }}/harbor"
