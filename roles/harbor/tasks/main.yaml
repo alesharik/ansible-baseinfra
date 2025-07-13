@@ -39,7 +39,7 @@
         target: /cert
         type: bind
   tags: harbor
-  when: (tls_files.matched|int < 28) or harbor.cert_rotate|default(false)
+  when: tls_files.matched|int < 28
 
 - name: Set TLS files permissions
   tags: harbor
