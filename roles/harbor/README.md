@@ -29,6 +29,7 @@ harbor:
 ```yaml
 harbor:
   version: 2.11.0 # harbor version
+  cert_rotate: "false" # force rotate certificates
 ```
 
 ### Effects
