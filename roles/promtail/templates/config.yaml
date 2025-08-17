@@ -8,7 +8,7 @@ positions:
 
 clients:
   - url: "https://{{ loki.host }}:3100/loki/api/v1/push"
-    batchsize: 4194304
+    batchsize: 100000
     external_labels:
       hostname: "{{ inventory_hostname }}"
     tls_config:
