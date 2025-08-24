@@ -9,7 +9,7 @@
   tags: docker
   ansible.builtin.get_url:
     url: "https://download.docker.com/linux/debian/gpg"
-    dest: /usr/share/keyrings/cker.gpg
+    dest: /usr/share/keyrings/docker.gpg
     mode: '0644'
     force: true
 - name: docker/get repo string
