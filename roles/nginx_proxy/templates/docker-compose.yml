@@ -27,10 +27,20 @@ services:
     volumes:
       - certs:/etc/nginx/certs
       - html:/usr/share/nginx/html
+      - acme:/etc/acme.sh
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./vhost.d/:/etc/nginx/vhost.d/
     environment:
-      - NGINX_PROXY_CONTAINER=nginx-proxy
+      NGINX_PROXY_CONTAINER: nginx-proxy
+{% if nginx.proxy.dns_01 %}
+      DEFAULT_EMAIL: "{{ nginx.proxy.dns_01.email }}"
+      ACME_CHALLENGE: "DNS-01"
+      ACMESH_DNS_API_CONFIG: |-
+        DNS_API: "{{ nginx.proxy.dns_01.api }}"
+        CF_Key: "{{ nginx.proxy.dns_01.cf_key }}"
+        CF_Email: "{{ nginx.proxy.dns_01.cf_email }}"
+{% endif %}
 volumes:
   certs:
   html:
+  acme:
