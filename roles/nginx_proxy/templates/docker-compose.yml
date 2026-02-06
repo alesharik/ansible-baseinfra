@@ -32,6 +32,7 @@ services:
       - ./vhost.d/:/etc/nginx/vhost.d/
     environment:
       NGINX_PROXY_CONTAINER: nginx-proxy
+      DEBUG: 1
 {% if nginx.proxy.dns_01 %}
       DEFAULT_EMAIL: "{{ nginx.proxy.dns_01.email }}"
       ACME_CHALLENGE: "DNS-01"
