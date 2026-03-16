@@ -9,12 +9,12 @@
   tags: docker
   ansible.builtin.get_url:
     url: "https://download.docker.com/linux/debian/gpg"
-    dest: /usr/share/keyrings/docker.gpg
+    dest: /usr/share/keyrings/docker.asc
     mode: '0644'
     force: true
 - name: docker/get repo string
   ansible.builtin.shell: >
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker.gpg] https://download.docker.com/linux/debian  $(lsb_release -cs) stable"
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker.asc] https://download.docker.com/linux/debian  $(lsb_release -cs) stable"
   register: docker_repo
   changed_when: docker_repo.rc != 0
 - name: docker/add repo
