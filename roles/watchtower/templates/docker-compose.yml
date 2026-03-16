@@ -1,5 +1,5 @@
-networks:
 {% if watchtower_http_token is not defined %}
+networks:
   default:
     external: true
     name: none
