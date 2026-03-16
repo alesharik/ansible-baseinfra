@@ -1,3 +1,9 @@
+networks:
+{% if watchtower_http_token is not defined %}
+  default:
+    external: true
+    name: none
+{% endif %}
 services:
   watchtower:
     container_name: watchtower
