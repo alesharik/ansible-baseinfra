@@ -2,8 +2,11 @@ networks:
 {% if docker.registry.server.network %}
   proxy:
     external: true
-    name: docker.registry.server.network
+    name: "{{ docker.registry.server.network }}"
 {% endif %}
+  default:
+    external: true
+    name: none
 services:
   registry:
     container_name: docker-registry
