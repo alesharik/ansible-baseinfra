@@ -1,9 +1,8 @@
-version: '3.9'
 networks:
-{% if 'alesharik.baseinfra.nginx_proxy_base' in ansible_role_names %}
+{% if docker.registry.server.network %}
   proxy:
-    external:
-      name: nginx-proxy
+    external: true
+    name: docker.registry.server.network
 {% endif %}
 services:
   registry:
@@ -23,6 +22,6 @@ services:
       - "{{ dir.data }}/docker-registry:/var/lib/registry"
       - "{{ dir.ansible }}/docker-registry/htpasswd:/htpasswd"
     networks:
-{% if 'alesharik.baseinfra.nginx_proxy_base' in ansible_role_names %}
+{% if docker.registry.server.network %}
       - proxy
 {% endif %}
