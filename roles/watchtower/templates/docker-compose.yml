@@ -1,4 +1,4 @@
-{% if watchtower_http_token is not defined %}
+{% if not watchtower.vmagent %}
 networks:
   default:
     external: true
@@ -15,7 +15,7 @@ services:
 {% if watchtower.notification_url is defined %}
       WATCHTOWER_NOTIFICATION_URL: '{{ watchtower.notification_url }}'
 {% endif %}
-{% if watchtower_http_token is defined %}
+{% if watchtower.vmagent %}
       WATCHTOWER_LABEL_ENABLE: 'true'
       WATCHTOWER_HTTP_API_METRICS: 'true'
       WATCHTOWER_HTTP_API_TOKEN: "{{ watchtower_http_token }}"

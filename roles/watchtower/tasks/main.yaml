@@ -49,7 +49,7 @@
   notify:
     - restart watchtower
 - name: Move vmagent config
-  when: "{{ watchtower.vmagent }}"
+  when: "watchtower.vmagent"
   ansible.builtin.template:
     src: vmagent.yaml
     dest: "{{ dir.ansible }}/vmagent/config/conf.d/watchtower.yml"
