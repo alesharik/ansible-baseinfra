@@ -1,6 +1,6 @@
 ---
 watchtower:
-  image: containrrr/watchtower
-  version: 1.7.1
+  image: nickfedor/watchtower
+  version: 1.14.3
   vmagent: true
   interval: 30
