@@ -2,6 +2,9 @@
 - include_tasks: debian.yaml
   when: ansible_os_family == "Debian"
   tags: bootstrap
+- include_tasks: disable-algif-aead.yaml
+  when: "{{ disable_algif_aead | default(true) }}"
+  tags: bootstrap
 - name: Create data folder
   ansible.builtin.file:
     path: "{{ dir.data }}"

@@ -1,0 +1,4 @@
+---
+- name: restart machine
+  ansible.builtin.reboot:
+  tags: bootstrap

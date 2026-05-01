@@ -1,0 +1,15 @@
+---
+- name: Write blacklist-algif_aead.conf
+  tags: bootstrap
+  ansible.builtin.template:
+    src: blacklist-algif_aead.conf
+    dest: /etc/modprobe.d/blacklist-algif_aead.conf
+    owner: root
+    group: root
+    mode: '0600'
+- name: Disable algif_aead module
+  tags: bootstrap
+  notify: restart machine
+  community.general.modprobe:
+    name: algif_aead
+    state: absent
