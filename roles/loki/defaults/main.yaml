@@ -2,9 +2,7 @@
 loki:
   image: grafana/loki
   version: 3.5
-  tls_hostname: loki.infra.local
-  clients:
-    - grafana
+  networks: []
   allow_structured_metadata: true
   log_format: json
   retention:

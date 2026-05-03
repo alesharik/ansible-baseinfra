@@ -18,6 +18,8 @@ grafana:
 grafana:
   image: grafana/grafana-oss
   version: 11.1.0
+  networks: # Join container to specified networks 
+    - proxy
 ```
 
 ### Effects
@@ -26,11 +28,11 @@ grafana:
 - deploys docker compose project `grafana`
 
 #### Docker networks
-- connect to `nginx-proxy`
+- connect to specified networks
 
 ### Networking
-- exposes 80 port through `nginx-proxy` with host specified in config 
-- connects to network `nginx-proxy`
+- exposes 3000 port
+- connects to specified networks
 
 ### Handlers
 - `restart grafana` - restarts registry

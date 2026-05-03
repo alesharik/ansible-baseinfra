@@ -2,3 +2,4 @@
 grafana:
   image: grafana/grafana-oss
   version: 12.0.2
+  networks: []

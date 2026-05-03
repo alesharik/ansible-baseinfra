@@ -7,10 +7,6 @@ Deploys loki (default version - `3.5`)
 ```yaml
     - alesharik.baseinfra.loki
 ```
-```yaml
-loki:
-  host: 0.0.0.0 # external IP
-```
 
 ### Vars
 ```yaml
@@ -18,8 +14,8 @@ loki:
 loki:
   image: grafana/loki
   version: 3.1.0
-  clients:  # generate TLS creds for:
-    - grafana
+  networks: # Join container to specified networks 
+    - proxy
   allow_structured_metadata: true
   log_format: json
   retention:
@@ -32,7 +28,6 @@ loki:
   migration_dates: # used to migrate old loki from v11 to v13
     v11: "2020-10-24"
     v13: "2024-07-06"
-  listen_hosts: ["127.0.0.1", "192.168.0.1"] # overrides port exposure in docker. Default is `[loki.host]`. Allows to expose container on multiple networks
 ```
 
 ### Effects
@@ -40,8 +35,12 @@ loki:
 - creates `{{ dir.data }}/loki`
 - deploys docker compose project `loki`
 
+#### Docker networks
+- connect to specified networks
+
 ### Networking
-- exposes 3100 port on `{{ loki.host }}`
+- exposes 3100 port
+- connects to network specified networks
 
 ### Handlers
 - `restart loki` - restarts loki

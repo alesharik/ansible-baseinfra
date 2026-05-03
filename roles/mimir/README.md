@@ -7,21 +7,16 @@ Deploys mimir (default version - `2.16.0`)
 ```yaml
     - alesharik.baseinfra.mimir
 ```
-```yaml
-mimir:
-  host: 0.0.0.0 # external IP
-```
 
 ### Vars
 ```yaml
 mimir:
   image: grafana/mimir
   version: 2.13.0
-  clients:  # generate TLS creds for:
-    - grafana
+  networks: # Join container to specified networks 
+    - proxy
   log_format: json
   compactor_blocks_retention_period: 4w
-  listen_hosts: ["127.0.0.1", "192.168.0.1"] # overrides port exposure in docker. Default is `[mimir.host]`. Allows to expose container on multiple networks
 ```
 
 ### Effects
@@ -29,8 +24,12 @@ mimir:
 - creates `{{ dir.data }}/mimir`
 - deploys docker compose project `mimir`
 
+#### Docker networks
+- connect to specified networks
+
 ### Networking
-- exposes 9009 port on `{{ loki.host }}`
+- exposes 9009 port
+- connects to specified networks
 
 ### Handlers
 - `restart mimir` - restarts mimir

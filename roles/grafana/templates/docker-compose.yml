@@ -1,7 +1,11 @@
+{% if grafana.networks is defined and grafana.networks|length > 0 %}
 networks:
-  proxy:
-    name: nginx-proxy
+{% for net in grafana.networks %}
+  "{{ net }}":
+    name: "{{ net }}"
     external: true
+{% endfor %}
+{% endif %}
 services:
   grafana:
     image: "{{ grafana.image }}:{{ grafana.version }}"
@@ -15,8 +19,12 @@ services:
       - "{{ dir.data }}/grafana:/var/lib/grafana"
     secrets:
       - admin_password
+{% if grafana.networks is defined and grafana.networks|length > 0 %}
     networks:
-      - proxy
+{% for net in grafana.networks %}
+      - "{{ net }}"
+{% endfor %}
+{% endif %}
 secrets:
    admin_password:
      file: admin_password.txt

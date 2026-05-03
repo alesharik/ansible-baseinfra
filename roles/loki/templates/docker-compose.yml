@@ -1,13 +1,22 @@
-version: '3.9'
+{% if loki.networks is defined and loki.networks|length > 0 %}
+networks:
+{% for net in loki.networks %}
+  "{{ net }}":
+    name: "{{ net }}"
+    external: true
+{% endfor %}
+{% endif %}
 services:
   loki:
     image: "{{ loki.image }}:{{ loki.version }}"
     restart: always
     command: -config.file=/etc/loki/config.yaml
-    ports:
-{% for h in (loki.listen_hosts | default([loki.host])) %}
-      - "{{ h }}:3100:3100"
-{% endfor %}
     volumes:
       - "{{ dir.data }}/loki:/var/lib/loki"
       - "{{ dir.ansible }}/loki/config:/etc/loki"
+{% if loki.networks is defined and loki.networks|length > 0 %}
+    networks:
+{% for net in loki.networks %}
+      - "{{ net }}"
+{% endfor %}
+{% endif %}

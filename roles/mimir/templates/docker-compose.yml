@@ -1,13 +1,22 @@
-version: '3.9'
+{% if mimir.networks is defined and mimir.networks|length > 0 %}
+networks:
+{% for net in mimir.networks %}
+  "{{ net }}":
+    name: "{{ net }}"
+    external: true
+{% endfor %}
+{% endif %}
 services:
   mimir:
     image: "{{ mimir.image }}:{{ mimir.version }}"
     restart: always
     command: -config.file=/etc/mimir/config.yaml -target=all
-    ports:
-{% for h in (mimir.listen_hosts | default([mimir.host])) %}
-      - "{{ h }}:9009:9009"
-{% endfor %}
     volumes:
       - "{{ dir.data }}/mimir:/var/lib/mimir"
       - "{{ dir.ansible }}/mimir/config:/etc/mimir"
+{% if mimir.networks is defined and mimir.networks|length > 0 %}
+    networks:
+{% for net in mimir.networks %}
+      - "{{ net }}"
+{% endfor %}
+{% endif %}
