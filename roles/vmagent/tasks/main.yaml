@@ -77,55 +77,6 @@
     pwd: ''
   tags: vmagent
 
-- name: Create private key
-  tags: vmagent
-  community.crypto.openssl_privatekey:
-    path: "{{ dir.ansible }}/vmagent/config/client.key"
-    group: root
-    owner: root
-    mode: 0550
-  notify:
-    - restart vmagent
-- name: Create certificate signing request (CSR) for new certificate
-  tags: vmagent
-  community.crypto.openssl_csr_pipe:
-    privatekey_path: "{{ dir.ansible }}/vmagent/config/client.key"
-  register: csr
-- name: Sign certificate with our CA
-  tags: vmagent
-  become: no
-  vars:
-    ansible_remote_tmp: "{{ playbook_dir }}/tmp"
-  community.crypto.x509_certificate_pipe:
-    csr_content: "{{ csr.csr }}"
-    provider: ownca
-    ownca_path: "{{ playbook_dir }}/certs/mimir_ca.pem"
-    ownca_privatekey_path: "{{ playbook_dir }}/certs/mimir_ca.key"
-    ownca_not_after: +365d  # valid for one year
-    ownca_not_before: "-1d"  # valid since yesterday
-  delegate_to: 127.0.0.1
-  register: cert
-- name: Write certificate
-  copy:
-    dest: "{{ dir.ansible }}/vmagent/config/client.cer"
-    content: "{{ cert.certificate }}"
-    group: root
-    owner: root
-    mode: 0550
-  tags: vmagent
-  notify:
-    - restart vmagent
-- name: Write CA
-  copy:
-    src: "{{ playbook_dir }}/certs/mimir_ca.pem"
-    dest: "{{ dir.ansible }}/vmagent/config/ca.pem"
-    owner: root
-    group: root
-    mode: 0550
-  tags: vmagent
-  notify:
-    - restart vmagent
-
 - name: Start vmagent
   community.docker.docker_compose_v2:
     project_src: "{{ dir.ansible }}/vmagent"

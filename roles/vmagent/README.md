@@ -8,9 +8,9 @@ Deploys vmagent. **Uses `mimir` role certs and vars**
     - alesharik.baseinfra.vmagent
 ```
 ```yaml
-mimir:
-  host: 0.0.0.0 # external IP
-  tls_hostname: loki.infra.local
+vmagent:
+  remoteWrite:
+    url: https://{{ mimir.host }}:9009/api/v1/push
 ```
 
 ### Vars

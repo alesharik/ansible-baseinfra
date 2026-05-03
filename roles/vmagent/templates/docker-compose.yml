@@ -8,11 +8,9 @@ services:
       - "{{ dir.data }}/vmagent:/vmagent"
       - "/var/run/docker.sock:/var/run/docker.sock"
     command:
-      - '-remoteWrite.url=https://{{ mimir.host }}:9009/api/v1/push'
-      - '-remoteWrite.tlsCAFile=/etc/vmagent/ca.pem'
-      - '-remoteWrite.tlsCertFile=/etc/vmagent/client.cer'
-      - '-remoteWrite.tlsKeyFile=/etc/vmagent/client.key'
-      - '-remoteWrite.tlsServerName={{ mimir.tls_hostname }}'
+{% for key, value in vmagent.remoteWrite.items() %}
+      - '-remoteWrite.{{ key }}={{ value }}'
+{% endfor %}
       - '-httpListenAddr=127.0.0.1:8429'
       - '-httpAuth.username=vmagent-auth'
       - '-httpAuth.password=file:///etc/vmagent/password'
