@@ -16,12 +16,16 @@ compactor:
       store: memberlist
 
 distributor:
+  instance_limits:
+    max_ingestion_rate: "{{ mimir.max_ingestion_rate }}"
   ring:
     instance_addr: 127.0.0.1
     kvstore:
       store: memberlist
 
 ingester:
+  instance_limits:
+    max_ingestion_rate: "{{ mimir.max_ingestion_rate }}"
   ring:
     instance_addr: 127.0.0.1
     kvstore:
