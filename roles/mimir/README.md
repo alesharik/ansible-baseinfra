@@ -17,7 +17,6 @@ mimir:
 mimir:
   image: grafana/mimir
   version: 2.13.0
-  tls_hostname: loki.infra.local # server hostname for DNS SAN in TLS cert
   clients:  # generate TLS creds for:
     - grafana
   log_format: json
@@ -28,7 +27,6 @@ mimir:
 ### Effects
 - creates and manages `{{ dir.ansible }}/mimir`
 - creates `{{ dir.data }}/mimir`
-- creates `{{ playbook_dir }}/certs/mimir_ca.key`, `{{ playbook_dir }}/certs/mimir_server.key`, `{{ playbook_dir }}/certs/mimir_{{ client }}.key` to manage keys
 - deploys docker compose project `mimir`
 
 ### Networking

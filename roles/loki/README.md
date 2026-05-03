@@ -18,7 +18,6 @@ loki:
 loki:
   image: grafana/loki
   version: 3.1.0
-  tls_hostname: loki.infra.local # server hostname for DNS SAN in TLS cert
   clients:  # generate TLS creds for:
     - grafana
   allow_structured_metadata: true
@@ -39,7 +38,6 @@ loki:
 ### Effects
 - creates and manages `{{ dir.ansible }}/loki`
 - creates `{{ dir.data }}/loki`
-- creates `{{ playbook_dir }}/certs/loki_ca.key`, `{{ playbook_dir }}/certs/loki_server.key`, `{{ playbook_dir }}/certs/loki_grafana.key` to manage keys
 - deploys docker compose project `loki`
 
 ### Networking

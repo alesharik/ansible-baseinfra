@@ -37,11 +37,6 @@ server:
   http_listen_port: 9009
   log_level: warn
   log_format: {{ mimir.log_format }}
-  http_tls_config:
-    cert_file: /etc/mimir/server.cer
-    key_file: /etc/mimir/server.key
-    client_auth_type: RequireAndVerifyClientCert
-    client_ca_file: /etc/mimir/ca.pem
 
 limits:
   # Delete from storage metrics data older than 1 year.

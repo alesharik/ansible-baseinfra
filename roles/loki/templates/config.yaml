@@ -4,11 +4,6 @@ server:
   http_listen_port: 3100
   grpc_listen_port: 0
   log_format: {{ loki.log_format }}
-  http_tls_config:
-    cert_file: "/etc/loki/server.cer"
-    key_file: "/etc/loki/server.key"
-    client_auth_type: "RequireAndVerifyClientCert"
-    client_ca_file: "/etc/loki/ca.pem"
 
 common:
   path_prefix: /var/lib/loki
