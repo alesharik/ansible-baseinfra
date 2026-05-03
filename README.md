@@ -41,7 +41,6 @@ prometheus.io.address: 127.0.0.1:9586 # full address to server
 | `nginx_static_git`       | `1.23.1-alpine`                  |              |              |
 | `node_exporter`          | `v1.8.1`                         |              |              |
 | `postgres`               | `16.3`, exporter - `v0.15.0`     |              |              |
-| `promtail`               | `3.1.0`                          |              |              |
 | `rabbitmq`               | `3.9.21`                         |              |              |
 | `redis`                  | `7.2.5`                          |              |              |
 | `vmagent`                | `v1.101.0`                       |              |              |
