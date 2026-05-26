@@ -1,5 +1,7 @@
 ---
 - name: Install pg-devel
   ansible.builtin.apt:
-    name: libpq-dev
+    name:
+      - libpq-dev
+      - python3-psycopg2
   tags: postgres
