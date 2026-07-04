@@ -1,0 +1,46 @@
+---
+name: Ansible Molecule
+
+on:
+  push:
+    tags_ignore:
+      - '*'
+  pull_request:
+
+env:
+  ANSIBLE_FORCE_COLOR: '1'
+  PY_COLORS: '1'
+
+jobs:
+  discover-scenarios:
+    runs-on: ubuntu-24.04
+    outputs:
+      scenarios: ${{ steps.set-scenarios.outputs.scenarios }}
+    steps:
+      - name: Check out codebase
+        uses: actions/checkout@v4
+
+      - name: Discover scenarios
+        id: set-scenarios
+        # Find path to all scenarios
+        run: |
+          scenarios="[`for x in $(ls -1 molecule -I _tests -I '*.yml'); do echo "'$x'"; done | tr '\n' ',' | sed '$s/,$//'`]"
+          echo "scenarios=$scenarios" >> $GITHUB_OUTPUT
+
+  test:
+    needs:
+      - discover-scenarios
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: ${{ fromJson(needs.discover-scenarios.outputs.scenarios) }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: molecule
+        uses: gofrolist/molecule-action@v2
+        with:
+          molecule_working_dir: .
+          molecule_command: test
+          molecule_args: --scenario-name ${{ matrix.scenario }}

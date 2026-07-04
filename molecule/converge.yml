@@ -1,0 +1,11 @@
+---
+- name: Converge
+  hosts: all
+  environment:
+    # docker bind-mounts /etc/hosts, /etc/hostname, /etc/resolv.conf — atomic
+    # rename fails there, let modules fall back to in-place writes
+    ANSIBLE_UNSAFE_WRITES: "1"
+  tasks:
+    - name: Include role under test
+      ansible.builtin.include_role:
+        name: "alesharik.baseinfra.{{ lookup('env', 'MOLECULE_SCENARIO_NAME') }}"

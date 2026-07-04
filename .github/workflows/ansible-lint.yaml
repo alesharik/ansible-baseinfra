@@ -1,9 +1,16 @@
+---
 name: Ansible Lint
-on: [push, pull_request]
+on:
+  push:
+    tags_ignore:
+      - '*'
+  pull_request:
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  lint:
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - name: Run ansible-lint
-        uses: ansible-community/ansible-lint-action@v6
+        uses: ansible/ansible-lint@main
+        with:
+          requirements_file: molecule/requirements.yml

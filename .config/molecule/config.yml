@@ -1,0 +1,27 @@
+---
+dependency:
+  name: galaxy
+  options:
+    requirements-file: molecule/requirements.yml
+driver:
+  name: docker
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      callbacks_enabled: timer,profile_tasks
+      fact_caching: jsonfile
+      fact_caching_connection: ./cache
+      forks: 100
+    connection:
+      pipelining: true
+  env:
+    # Collection under test is symlinked here by molecule/prepare.yml;
+    # galaxy deps from molecule/requirements.yml install here too.
+    ANSIBLE_COLLECTIONS_PATH: ${MOLECULE_EPHEMERAL_DIRECTORY}/collections
+  playbooks:
+    prepare: ../prepare.yml
+    converge: ../converge.yml
+    verify: ../verify.yml
+verifier:
+  name: ansible

@@ -1,0 +1,17 @@
+---
+- name: Prepare controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Create collection namespace directory in ephemeral collections path
+      ansible.builtin.file:
+        path: "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/collections/ansible_collections/alesharik"
+        state: directory
+        mode: "0755"
+
+    - name: Link collection under test into collections path
+      ansible.builtin.file:
+        src: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}"
+        dest: "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/collections/ansible_collections/alesharik/baseinfra"
+        state: link

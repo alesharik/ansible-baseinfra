@@ -1,0 +1,6 @@
+---
+- name: Verify
+  hosts: all
+  tasks:
+    - name: Run scenario verify tasks
+      ansible.builtin.include_tasks: "{{ lookup('env', 'MOLECULE_SCENARIO_DIRECTORY') }}/tests.yml"
