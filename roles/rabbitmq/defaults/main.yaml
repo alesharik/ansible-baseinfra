@@ -1,6 +1,0 @@
----
-rabbitmq:
-  version: 3.9.21
-  directory: "{{ dir.data }}/rabbitmq"
-  vhosts: []
-  users: {}
