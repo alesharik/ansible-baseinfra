@@ -5,6 +5,14 @@
     state: directory
     mode: 0700
   tags: clickhouse
+
+- name: Create compose dir
+  ansible.builtin.file:
+    path: "{{ dir.ansible }}/clickhouse/users"
+    state: directory
+    mode: 0700
+  tags: clickhouse
+
 - name: Move compose files
   ansible.builtin.template:
     src: docker-compose.yml
@@ -25,6 +33,16 @@
   ansible.builtin.template:
     src: init-defaults.sh
     dest: "{{ dir.ansible }}/clickhouse/init-defaults.sh"
+    mode: 0700
+    owner: 1002
+  tags: clickhouse
+  notify:
+    - restart clickhouse
+
+- name: Move users.xml file
+  ansible.builtin.template:
+    src: users.xml
+    dest: "{{ dir.ansible }}/clickhouse/users/users.xml"
     mode: 0700
     owner: 1002
   tags: clickhouse

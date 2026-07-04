@@ -12,17 +12,13 @@ services:
         hard: 262144
     user: 1002:1002
     environment:
-{% for u in (clickhouse.users | dict2items) %}
-      {{ u.key | upper }}_PASSWORD: {%raw%}${{%endraw%}{{ u.key | upper }}{%raw%}_PASSWORD}{%endraw%}
-
-{% endfor %}
-
       CLICKHOUSE_USER: ${CLICKHOUSE_USER}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
       CLICKHOUSE_INIT_TIMEOUT: 300
     volumes:
       - ./init-defaults.sh:/docker-entrypoint-initdb.d/init-defaults.sh:ro
       - "{{ dir.data }}/clickhouse:/var/lib/clickhouse:cached"
+      - "{{ dir.ansible }}/clickhouse/users:/etc/clickhouse-server/users.d/"
     networks:
       - clickhouse
     healthcheck:
