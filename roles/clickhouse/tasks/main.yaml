@@ -6,11 +6,12 @@
     mode: 0700
   tags: clickhouse
 
-- name: Create compose dir
+- name: Create users dir
   ansible.builtin.file:
     path: "{{ dir.ansible }}/clickhouse/users"
     state: directory
     mode: 0700
+    owner: 1002
   tags: clickhouse
 
 - name: Move compose files
