@@ -1,4 +1,0 @@
----
-nexus:
-  version: 3.39.0
-  directory: "{{ dir.data }}/nexus"
