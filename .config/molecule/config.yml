@@ -16,9 +16,11 @@ provisioner:
     connection:
       pipelining: true
   env:
-    # Collection under test is symlinked here by molecule/prepare.yml;
-    # galaxy deps from molecule/requirements.yml install here too.
-    ANSIBLE_COLLECTIONS_PATH: ${MOLECULE_EPHEMERAL_DIRECTORY}/collections
+    # Ephemeral dir first: collection under test is symlinked there by
+    # molecule/prepare.yml. Default paths must stay in the list — the
+    # dependency step installs molecule/requirements.yml collections into
+    # ~/.ansible/collections.
+    ANSIBLE_COLLECTIONS_PATH: ${MOLECULE_EPHEMERAL_DIRECTORY}/collections:~/.ansible/collections:/usr/share/ansible/collections
   playbooks:
     prepare: ../prepare.yml
     converge: ../converge.yml
