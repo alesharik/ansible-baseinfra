@@ -36,12 +36,9 @@ prometheus.io.address: 127.0.0.1:9586 # full address to server
 | `loki`                   | `3.5`                            | 2025-06-22   | 2025-06-22   |
 | `mimir`                  | `2.16.0`                         | 2025-06-22   | 2025-06-22   |
 | `minio`                  | `RELEASE.2024-07-04T14-25-45Z`   |              |              |
-| `nexus`                  | `3.39.0`                         |              |              |
 | `nginx_proxy`            | nginx - `1.7-alpine`, le - `2.5` |              |              |
-| `nginx_static_git`       | `1.23.1-alpine`                  |              |              |
 | `node_exporter`          | `v1.8.1`                         |              |              |
 | `postgres`               | `16.3`, exporter - `v0.15.0`     |              |              |
-| `rabbitmq`               | `3.9.21`                         |              |              |
 | `redis`                  | `7.2.5`                          |              |              |
 | `vmagent`                | `v1.101.0`                       |              |              |
 | `watchtower`             | `1.7.1`                          |              |              |
