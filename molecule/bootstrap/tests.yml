@@ -1,0 +1,198 @@
+---
+# --- debian.yaml -------------------------------------------------------------
+- name: Query base packages
+  ansible.builtin.command: "dpkg-query --show --showformat=${Status} {{ item }}"
+  register: base_packages
+  changed_when: false
+  failed_when: false
+  loop:
+    - ca-certificates
+    - curl
+    - gnupg
+    - lsb-release
+    - python3-pip
+    - acl
+
+- name: Check base packages are installed
+  ansible.builtin.assert:
+    that:
+      - item.stdout == 'install ok installed'
+    fail_msg: "{{ item.item }} is not installed: {{ item.stdout | default('') }}"
+  loop: "{{ base_packages.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# --- main.yaml: data dirs ----------------------------------------------------
+- name: Stat managed directories
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: managed_dirs
+  loop:
+    - "{{ dir.data }}"
+    - "{{ dir.ansible }}"
+
+- name: Check managed directories exist
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isdir
+      - item.stat.mode == '0755'
+  loop: "{{ managed_dirs.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# --- set-hostname.yaml -------------------------------------------------------
+- name: Get current hostname
+  ansible.builtin.command: hostname
+  changed_when: false
+  register: current_hostname
+
+- name: Check hostname matches inventory name
+  ansible.builtin.assert:
+    that:
+      - current_hostname.stdout == inventory_hostname
+
+- name: Read /etc/hosts
+  ansible.builtin.slurp:
+    src: /etc/hosts
+  register: etc_hosts
+
+- name: Check /etc/hosts resolves the hostname
+  vars:
+    hosts_content: "{{ etc_hosts.content | b64decode }}"
+  ansible.builtin.assert:
+    that:
+      - "('127.0.0.1 localhost ' + inventory_hostname) in hosts_content"
+      - "(ansible_default_ipv4.address + ' ' + inventory_hostname) in hosts_content"
+
+# --- set-pam-limits.yaml -----------------------------------------------------
+- name: Read /etc/security/limits.conf
+  ansible.builtin.slurp:
+    src: /etc/security/limits.conf
+  register: limits_conf
+
+- name: Check nofile limits are set
+  vars:
+    limits_content: "{{ limits_conf.content | b64decode }}"
+  ansible.builtin.assert:
+    that:
+      - limits_content is search('(?m)^\*\s+soft\s+nofile\s+' ~ bootstrap.limits.nofile.soft ~ '\s*$')
+      - limits_content is search('(?m)^\*\s+hard\s+nofile\s+' ~ bootstrap.limits.nofile.hard ~ '\s*$')
+
+# --- setup-users.yaml --------------------------------------------------------
+- name: Read groups
+  ansible.builtin.getent:
+    database: group
+
+- name: Check the test user landed in the expected groups
+  ansible.builtin.assert:
+    that:
+      - "'ansible-managed' in ansible_facts.getent_group"
+      - "'moleculetest' in ansible_facts.getent_group['ansible-managed'][2].split(',')"
+      - "'moleculetest' in ansible_facts.getent_group['sudo'][2].split(',')"
+
+- name: Read passwd entry of the test user
+  ansible.builtin.getent:
+    database: passwd
+    key: moleculetest
+
+- name: Check the test user account
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.getent_passwd['moleculetest'][5] == '/bin/bash'
+      - ansible_facts.getent_passwd['moleculetest'][4] == '/home/moleculetest'
+
+- name: Read authorized_keys of the test user
+  ansible.builtin.slurp:
+    src: /home/moleculetest/.ssh/authorized_keys
+  register: authorized_keys
+
+- name: Check the public key was deployed
+  ansible.builtin.assert:
+    that:
+      - lookup('file', playbook_dir + '/ssh_keys/moleculetest.pub') in (authorized_keys.content | b64decode)
+
+# --- setup-sudo.yaml ---------------------------------------------------------
+- name: Check sudo is installed
+  ansible.builtin.command: "dpkg-query --show --showformat=${Status} sudo"
+  register: sudo_package
+  changed_when: false
+  failed_when: sudo_package.stdout != 'install ok installed'
+
+- name: Check the procusers group exists
+  ansible.builtin.assert:
+    that:
+      - "'procusers' in ansible_facts.getent_group"
+
+- name: Read sudoers drop-ins
+  ansible.builtin.slurp:
+    src: "/etc/sudoers.d/{{ item }}"
+  register: sudoers_files
+  loop:
+    - sudo-group
+    - procusers-access
+
+- name: Check sudoers drop-ins grant passwordless access
+  vars:
+    sudo_group: "{{ (sudoers_files.results | selectattr('item', 'eq', 'sudo-group') | first).content | b64decode }}"
+    procusers_access: "{{ (sudoers_files.results | selectattr('item', 'eq', 'procusers-access') | first).content | b64decode }}"
+  ansible.builtin.assert:
+    that:
+      - sudo_group is search('%sudo')
+      - sudo_group is search('NOPASSWD')
+      - procusers_access is search('%sudo')
+      - procusers_access is search('%procusers')
+      - procusers_access is search('NOPASSWD')
+
+- name: Validate the sudoers configuration
+  ansible.builtin.command: /usr/sbin/visudo --check --quiet
+  changed_when: false
+
+# --- teardown-thb.yaml -------------------------------------------------------
+# disable_transparent_huge_pages is false, so the service planted by
+# prepare_tasks.yml must be stopped and disabled - but its unit file kept
+- name: Stat the disable-thp unit
+  ansible.builtin.stat:
+    path: /etc/systemd/system/disable-transparent-huge-pages.service
+  register: thp_unit
+
+- name: Get the state of the disable-thp service
+  ansible.builtin.command: "systemctl {{ item }} disable-transparent-huge-pages"
+  register: thp_state
+  changed_when: false
+  failed_when: false
+  loop:
+    - is-enabled
+    - is-active
+
+- name: Check the disable-thp service is kept but switched off
+  ansible.builtin.assert:
+    that:
+      - thp_unit.stat.exists
+      - (thp_state.results | selectattr('item', 'eq', 'is-enabled') | first).stdout == 'disabled'
+      - (thp_state.results | selectattr('item', 'eq', 'is-active') | first).stdout == 'inactive'
+
+# --- features gated off in this scenario -------------------------------------
+# disable_algif_aead and swap.enabled are false here (they would reach the host
+# kernel from a privileged container), so the role must have left their
+# artifacts alone - and the swap leftovers planted by prepare_tasks.yml must
+# have been cleaned up by teardown-swap.yaml during converge.
+- name: Stat artifacts of the disabled features
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: disabled_artifacts
+  loop:
+    - /etc/modprobe.d/blacklist-algif_aead.conf
+    - /etc/systemd/system/basic.target.wants/disable-transparent-huge-pages.service
+    - "/etc/systemd/system/{{ bootstrap.swap.file[1:] }}.swap"
+    - "/etc/systemd/system/basic.target.wants/{{ bootstrap.swap.file[1:] }}.swap"
+    - "{{ bootstrap.swap.file }}"
+
+- name: Check disabled features left no artifacts
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists
+    fail_msg: "{{ item.item }} exists although the feature that creates it is disabled"
+  loop: "{{ disabled_artifacts.results }}"
+  loop_control:
+    label: "{{ item.item }}"

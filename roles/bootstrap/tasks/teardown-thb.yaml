@@ -1,0 +1,16 @@
+---
+- name: Check if disable-thp service is present
+  ansible.builtin.stat:
+    path: /etc/systemd/system/disable-transparent-huge-pages.service
+  register: thp_service
+  tags: bootstrap
+
+# the unit file is left in place on purpose, only stopped and disabled, so that
+# flipping bootstrap.disable_transparent_huge_pages back on is a no-op
+- name: Disable disable-thp service
+  ansible.builtin.systemd:
+    name: disable-transparent-huge-pages
+    state: stopped
+    enabled: false
+  when: thp_service.stat.exists
+  tags: bootstrap

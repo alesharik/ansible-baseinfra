@@ -2,3 +2,4 @@
 /.venv
 /cache
 CLAUDE.md
+/.ansible

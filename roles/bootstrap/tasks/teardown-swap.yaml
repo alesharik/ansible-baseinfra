@@ -1,0 +1,49 @@
+---
+- name: Check if swap unit is present
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/{{ bootstrap.swap.file[1:] }}.swap"
+  register: swap_unit
+  tags: bootstrap
+
+# stop and disable before removing the unit file - systemctl disable cannot
+# clean up the .wants symlink once the unit itself is gone. Stopping the unit
+# already runs swapoff on {{ bootstrap.swap.file }}
+- name: Disable swap unit
+  ansible.builtin.systemd:
+    name: "{{ bootstrap.swap.file[1:] }}.swap"
+    state: stopped
+    enabled: false
+  when: swap_unit.stat.exists
+  tags: bootstrap
+
+- name: Remove swap unit
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ bootstrap.swap.file[1:] }}.swap"
+    state: absent
+  when: swap_unit.stat.exists
+  tags: bootstrap
+
+- name: Reload systemd after removing swap unit
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: swap_unit.stat.exists
+  tags: bootstrap
+
+- name: Ensure swap exists
+  ansible.builtin.command: swapon --show=NAME --noheadings
+  register: active_swap
+  changed_when: false
+  tags: bootstrap
+
+# covers a swap file that was activated outside of the systemd unit
+- name: Disable swap file
+  ansible.builtin.command: swapoff {{ bootstrap.swap.file }}
+  when: bootstrap.swap.file in (active_swap.stdout_lines | map('trim') | list)
+  changed_when: true
+  tags: bootstrap
+
+- name: Remove swap file
+  ansible.builtin.file:
+    path: "{{ bootstrap.swap.file }}"
+    state: absent
+  tags: bootstrap

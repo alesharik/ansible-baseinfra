@@ -22,9 +22,10 @@ jobs:
 
       - name: Discover scenarios
         id: set-scenarios
-        # Find path to all scenarios
+        # A scenario is any molecule/ subdir holding a molecule.yml — other
+        # subdirs (molecule/ssh_keys) are shared fixtures, not scenarios
         run: |
-          scenarios="[`for x in $(ls -1 molecule -I _tests -I '*.yml'); do echo "'$x'"; done | tr '\n' ',' | sed '$s/,$//'`]"
+          scenarios="[`for x in molecule/*/molecule.yml; do basename "$(dirname "$x")" | sed "s/.*/'&'/"; done | tr '\n' ',' | sed '$s/,$//'`]"
           echo "scenarios=$scenarios" >> $GITHUB_OUTPUT
 
   test:

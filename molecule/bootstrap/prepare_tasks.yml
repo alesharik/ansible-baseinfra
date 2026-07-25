@@ -1,0 +1,73 @@
+---
+# disable_transparent_huge_pages and swap.enabled are false in this scenario, so
+# on a clean instance the teardown tasks would find nothing and skip. Fake the
+# leftovers of a host that did have both enabled, so that converge exercises
+# teardown-thb.yaml / teardown-swap.yaml and verify can assert they are gone.
+#
+# The units are enabled but deliberately never started: starting them would set
+# transparent huge pages on the host kernel and add a swap file to the host's
+# swap, both of which are shared with a privileged container.
+- name: Create leftover disable-thp unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/disable-transparent-huge-pages.service
+    mode: "0755"
+    content: |
+      [Unit]
+      Description=Disable Transparent Huge Pages
+      DefaultDependencies=no
+      After=sysinit.target local-fs.target
+      Before=basic.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/bin/bash -c 'echo never > /sys/kernel/mm/transparent_hugepage/enabled'
+
+      [Install]
+      WantedBy=basic.target
+
+- name: Create leftover swap unit
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ bootstrap.swap.file[1:] }}.swap"
+    mode: "0755"
+    content: |
+      [Unit]
+      Description=Primary swap
+
+      [Swap]
+      What={{ bootstrap.swap.file }}
+      TimeoutSec=10s
+
+      [Install]
+      WantedBy=basic.target
+
+- name: Create leftover swap file
+  ansible.builtin.command: "dd if=/dev/zero of={{ bootstrap.swap.file }} bs=1M count=1 creates='{{ bootstrap.swap.file }}'"
+
+- name: Enable the leftover units without starting them
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    daemon_reload: true
+  loop:
+    - disable-transparent-huge-pages.service
+    - "{{ bootstrap.swap.file[1:] }}.swap"
+
+- name: Stat the leftovers
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: leftovers
+  loop:
+    - /etc/systemd/system/disable-transparent-huge-pages.service
+    - /etc/systemd/system/basic.target.wants/disable-transparent-huge-pages.service
+    - "/etc/systemd/system/{{ bootstrap.swap.file[1:] }}.swap"
+    - "/etc/systemd/system/basic.target.wants/{{ bootstrap.swap.file[1:] }}.swap"
+    - "{{ bootstrap.swap.file }}"
+
+- name: Check the leftovers are in place before converge runs
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+    fail_msg: "{{ item.item }} was not created, the teardown assertions in tests.yml would be vacuous"
+  loop: "{{ leftovers.results }}"
+  loop_control:
+    label: "{{ item.item }}"

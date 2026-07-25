@@ -1,0 +1,41 @@
+---
+platforms:
+  - name: debian-13
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+
+provisioner:
+  inventory:
+    group_vars:
+      all:
+        # `bootstrap` is a plain dict override — it replaces the role defaults
+        # wholesale, so every key the role reads has to be listed here.
+        bootstrap:
+          # the three flags below would reach the host kernel through the
+          # privileged container, so they stay off and are verified as gated
+          disable_algif_aead: false
+          disable_transparent_huge_pages: false
+          set_hostname: true
+          setup_users: true
+          setup_sudo: true
+          limits:
+            enabled: true
+            nofile:
+              soft: 8192
+              hard: 1048576
+          swap:
+            enabled: false
+            file: /swapfile
+            size_mb: 4096
+        dir:
+          data: /data
+          ansible: /data/ansible
+        # public key comes from molecule/ssh_keys/<user>.pub, which is where
+        # the role looks it up ({{ playbook_dir }}/ssh_keys/)
+        users:
+          moleculetest:
+            groups: sudo
+            create_home: true

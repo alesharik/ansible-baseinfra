@@ -19,6 +19,10 @@
   when: "{{ bootstrap.disable_transparent_huge_pages }}"
   tags: bootstrap
 
+- include_tasks: teardown-thb.yaml
+  when: not bootstrap.disable_transparent_huge_pages
+  tags: bootstrap
+
 - include_tasks: setup-users.yaml
   when: "{{ bootstrap.setup_users }}"
   tags: bootstrap
@@ -29,6 +33,10 @@
 
 - include_tasks: setup-swap.yaml
   when: "{{ bootstrap.swap.enabled }}"
+  tags: bootstrap
+
+- include_tasks: teardown-swap.yaml
+  when: not bootstrap.swap.enabled
   tags: bootstrap
 
 - name: Create data folder

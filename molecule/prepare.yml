@@ -15,3 +15,26 @@
         src: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}"
         dest: "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/collections/ansible_collections/alesharik/baseinfra"
         state: link
+
+# A scenario that needs the instance to be in some state before converge puts
+# the tasks in <scenario>/prepare_tasks.yml, same way verify.yml picks up
+# <scenario>/tests.yml. Scenarios without that file skip this play.
+- name: Prepare instance
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Look for scenario prepare tasks
+      ansible.builtin.stat:
+        path: "{{ lookup('env', 'MOLECULE_SCENARIO_DIRECTORY') }}/prepare_tasks.yml"
+      delegate_to: localhost
+      register: scenario_prepare
+
+    - name: Wait for systemd to come up
+      ansible.builtin.wait_for:
+        path: /run/systemd/system
+        timeout: 60
+      when: scenario_prepare.stat.exists
+
+    - name: Run scenario prepare tasks
+      ansible.builtin.include_tasks: "{{ lookup('env', 'MOLECULE_SCENARIO_DIRECTORY') }}/prepare_tasks.yml"
+      when: scenario_prepare.stat.exists
