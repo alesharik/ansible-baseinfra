@@ -7,6 +7,24 @@
 # The units are enabled but deliberately never started: starting them would set
 # transparent huge pages on the host kernel and add a swap file to the host's
 # swap, both of which are shared with a privileged container.
+
+# /proc/swaps is shared with the docker host, so `swapon --show` here lists the
+# host's active swap too. If bootstrap.swap.file matched one of those entries,
+# teardown-swap.yaml would run `swapoff` on a file this container never
+# activated and fail with EINVAL - fail here instead, with a usable message.
+- name: Read the swap visible from inside the container
+  ansible.builtin.command: swapon --show=NAME --noheadings
+  register: visible_swap
+  changed_when: false
+
+- name: Check the scenario swap file does not collide with the host swap
+  ansible.builtin.assert:
+    that:
+      - bootstrap.swap.file not in (visible_swap.stdout_lines | map('trim') | list)
+    fail_msg: >-
+      {{ bootstrap.swap.file }} is active swap on the docker host; pick a
+      bootstrap.swap.file for this scenario that the host does not use
+
 - name: Create leftover disable-thp unit
   ansible.builtin.copy:
     dest: /etc/systemd/system/disable-transparent-huge-pages.service

@@ -28,7 +28,13 @@ provisioner:
               hard: 1048576
           swap:
             enabled: false
-            file: /swapfile
+            # NOT /swapfile: /proc/swaps is not namespaced, so `swapon --show`
+            # in the container lists the docker *host's* active swap, and GitHub
+            # runners swap on a file at /swapfile. teardown-swap.yaml would then
+            # match that entry and swapoff a file this container never activated.
+            # The name also becomes a systemd unit ({{ file[1:] }}.swap), so it
+            # must contain no dash - systemd escapes those to \x2d.
+            file: /molecule_swapfile
             size_mb: 4096
         dir:
           data: /data
