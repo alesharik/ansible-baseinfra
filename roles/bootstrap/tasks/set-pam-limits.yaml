@@ -6,6 +6,6 @@
     limit_item: "{{ item.item }}"
     value: "{{ item.value }}"
   loop:
-    - { type: soft, item: nofile, value: "{{ limits.nofile.soft }}" }
-    - { type: hard, item: nofile, value: "{{ limits.nofile.hard }}" }
-  tags: pam-limits
+    - { type: soft, item: nofile, value: "{{ bootstrap.limits.nofile.soft }}" }
+    - { type: hard, item: nofile, value: "{{ bootstrap.limits.nofile.hard }}" }
+  tags: bootstrap

@@ -1,6 +1,8 @@
 # nginx-proxy
 __Tags - `nginx_proxy`__
 
+**deprecated**
+
 Deploys nginx-proxy
 
 ### Usage

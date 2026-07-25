@@ -3,7 +3,8 @@
   ansible.builtin.group:
     name: ansible-managed
     state: present
-  tags: users
+  tags: bootstrap
+
 - name: Add user
   ansible.builtin.user:
     name: "{{ item.key }}"
@@ -13,7 +14,7 @@
   loop: "{{ users | dict2items }}"
   loop_control:
     label: "{{ item.key }}"
-  tags: users
+  tags: bootstrap
 - name: Add authorized keys
   ansible.builtin.authorized_key:
     user: "{{ item.key }}"
@@ -22,7 +23,7 @@
   loop: "{{ users | dict2items }}"
   loop_control:
     label: "{{ item.key }}"
-  tags: users
+  tags: bootstrap
 - name: Determine existing users
   ansible.builtin.shell: >
     set -o pipefail;
@@ -31,11 +32,11 @@
     executable: /bin/bash
   changed_when: false
   register: existing_users
-  tags: users
+  tags: bootstrap
 - name: Determine removed users
   ansible.builtin.set_fact:
     removed_users: "{{ existing_users.stdout_lines | difference(users.keys()) }}"
-  tags: users
+  tags: bootstrap
 - name: Delete removed user accounts
   ansible.builtin.user:
     name: "{{ item }}"

@@ -2,3 +2,10 @@
 - name: restart machine
   ansible.builtin.reboot:
   tags: bootstrap
+
+- name: restart disable-thp
+  ansible.builtin.systemd:
+    daemon_reload: true
+    name: disable-transparent-huge-pages
+    state: restarted
+    enabled: true

@@ -7,6 +7,7 @@
     owner: root
     group: root
     mode: '0600'
+
 - name: Disable algif_aead module
   tags: bootstrap
   notify: restart machine

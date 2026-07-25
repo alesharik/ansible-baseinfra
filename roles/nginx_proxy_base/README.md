@@ -1,6 +1,8 @@
 # nginx-proxy-base
 __Tags - `nginx_proxy_base`__
 
+**deprecated**
+
 Creates config and vhost directory for nginx-proxy
 
 ### Usage

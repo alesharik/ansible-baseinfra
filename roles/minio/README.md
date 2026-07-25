@@ -1,6 +1,8 @@
 # minio
 __Tags - `minio`__
 
+**deprecated**
+
 Deploys MinIO
 
 ### Usage

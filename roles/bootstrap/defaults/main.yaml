@@ -1,0 +1,20 @@
+---
+dir:
+  data: /data
+  ansible: /data/ansible
+bootstrap:
+  disable_algif_aead: true
+  set_hostname: true
+  setup_users: true
+  setup_sudo: true
+  disable_transparent_huge_pages: true
+  limits:
+    enabled: true
+    nofile:
+      soft: 8192
+      hard: 1048576
+  swap:
+    enabled: true
+    file: /swapfile
+    size_mb: 4096
+users: {}

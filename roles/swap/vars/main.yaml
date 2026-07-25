@@ -1,4 +1,0 @@
----
-swap:
-  file: /swapfile
-  size_mb: 4096
