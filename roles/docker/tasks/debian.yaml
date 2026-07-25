@@ -1,29 +1,69 @@
 ---
-- name: docker/ensure apt keyrings dir exists
+# Cleanup runs first, before anything touches apt: apt_repository (used before
+# deb822_repository) wrote /etc/apt/sources.list.d/download_docker_com_*.list,
+# and such a leftover both makes apt read the docker repo twice and breaks
+# every apt run if the keyring it points at is gone.
+- name: find legacy repo files
+  ansible.builtin.find:
+    paths: /etc/apt/sources.list.d
+    patterns: "*.list"
+    # read_whole_file makes contains a re.search; line-by-line it is a
+    # re.match, which would only match at the start of a line and never fire
+    read_whole_file: true
+    contains: 'download\.docker\.com'
+  register: docker_legacy_repos
+  tags: docker
+
+- name: remove legacy repo files
   ansible.builtin.file:
-    path: /etc/apt/keyrings
-    state: directory
-    mode: 0755
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ docker_legacy_repos.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: docker_legacy_removed
   tags: docker
-- name: Add key
-  tags: docker
-  ansible.builtin.get_url:
-    url: "https://download.docker.com/linux/debian/gpg"
-    dest: /usr/share/keyrings/docker.asc
-    mode: '0644'
-    force: true
-- name: docker/get repo string
-  ansible.builtin.shell: >
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker.asc] https://download.docker.com/linux/debian  $(lsb_release -cs) stable"
-  register: docker_repo
-  changed_when: docker_repo.rc != 0
-- name: docker/add repo
-  ansible.builtin.apt_repository:
-    repo: "{{ docker_repo.stdout }}"
+
+# deb822_repository parses sources with the python debian library and fails
+# without it. Its own install_python_debian option is core >= 2.20 only, and
+# skips the cache refresh a fresh host needs.
+- name: install repo module dependency
+  ansible.builtin.apt:
+    name: python3-debian
     state: present
     update_cache: true
+    cache_valid_time: 3600
   tags: docker
-- name: docker/install packages
+
+- name: detect dpkg architecture
+  ansible.builtin.command: dpkg --print-architecture
+  register: docker_dpkg_arch
+  changed_when: false
+  tags: docker
+
+# deb822_repository fetches the key named by signed_by and stores it itself, so
+# no separate keyring task is needed
+- name: add repo
+  ansible.builtin.deb822_repository:
+    name: docker
+    types: deb
+    uris: https://download.docker.com/linux/debian
+    suites: "{{ ansible_facts['distribution_release'] }}"
+    components: stable
+    architectures: "{{ docker_dpkg_arch.stdout }}"
+    signed_by: https://download.docker.com/linux/debian/gpg
+    state: present
+    enabled: true
+  register: docker_repo
+  tags: docker
+
+- name: update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+  when: docker_repo is changed or docker_legacy_removed is changed
+  tags: docker
+
+- name: install packages
   ansible.builtin.apt:
     name:
       - docker-ce
@@ -32,7 +72,8 @@
       - docker-compose-plugin
     state: present
   tags: docker
-- name: docker/enable and start docker service
+
+- name: enable and start docker service
   ansible.builtin.systemd:
     daemon_reload: true
     enabled: true

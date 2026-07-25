@@ -1,0 +1,28 @@
+---
+# The role used to configure the repo with apt_repository, which writes a
+# .list file. It now uses deb822_repository (.sources) and cleans the old file
+# up. Plant what the old code left behind, so converge exercises that cleanup
+# and tests.yml can assert apt is not left reading the docker repo twice.
+- name: Gather facts for the legacy repo file
+  ansible.builtin.setup:
+    gather_subset: min
+
+- name: Create the legacy apt .list repo file
+  vars:
+    distro: "{{ ansible_facts['distribution'] | lower }}"
+  ansible.builtin.copy:
+    dest: "/etc/apt/sources.list.d/download_docker_com_linux_{{ distro }}.list"
+    mode: "0644"
+    content: |
+      deb [signed-by=/usr/share/keyrings/docker.asc] https://download.docker.com/linux/{{ distro }} {{ ansible_facts['distribution_release'] }} stable
+
+- name: Stat the legacy repo file
+  ansible.builtin.stat:
+    path: "/etc/apt/sources.list.d/download_docker_com_linux_{{ ansible_facts['distribution'] | lower }}.list"
+  register: legacy_repo
+
+- name: Check the legacy repo file is in place before converge runs
+  ansible.builtin.assert:
+    that:
+      - legacy_repo.stat.exists
+    fail_msg: the cleanup assertion in tests.yml would be vacuous without it

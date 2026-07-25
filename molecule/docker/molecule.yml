@@ -1,0 +1,17 @@
+---
+# Two platforms on purpose: roles/docker/tasks/main.yaml branches on
+# ansible_facts['distribution'], so ubuntu.yaml and debian.yaml are separate
+# code paths and each needs a host to run on.
+platforms:
+  - name: debian-13
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+  - name: ubuntu-24.04
+    image: dokken/ubuntu-24.04
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice

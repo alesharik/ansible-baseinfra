@@ -1,0 +1,171 @@
+---
+# --- ubuntu.yaml / debian.yaml: repo configuration ---------------------------
+# NB: assertions comparing against deb822 field names must be quoted - a bare
+# YAML scalar containing ": " parses as a mapping.
+- name: Read the deb822 repo file
+  ansible.builtin.slurp:
+    src: /etc/apt/sources.list.d/docker.sources
+  register: docker_sources
+
+- name: Read the dpkg architecture
+  ansible.builtin.command: dpkg --print-architecture
+  changed_when: false
+  register: dpkg_arch
+
+- name: Check the repo is configured for this distribution
+  vars:
+    sources: "{{ docker_sources.content | b64decode }}"
+    distro: "{{ ansible_facts['distribution'] | lower }}"
+  ansible.builtin.assert:
+    that:
+      - "('URIs: https://download.docker.com/linux/' ~ distro) in sources"
+      - "('Suites: ' ~ ansible_facts['distribution_release']) in sources"
+      - "('Architectures: ' ~ dpkg_arch.stdout) in sources"
+      - "'Components: stable' in sources"
+      - "'Types: deb' in sources"
+      - "'Enabled: yes' in sources"
+      - "'Signed-By: /etc/apt/keyrings/docker.asc' in sources"
+
+- name: Stat the keyring deb822_repository fetched from signed_by
+  ansible.builtin.stat:
+    path: /etc/apt/keyrings/docker.asc
+  register: docker_keyring
+
+- name: Check the repo key was fetched
+  ansible.builtin.assert:
+    that:
+      - docker_keyring.stat.exists
+      - docker_keyring.stat.size > 0
+
+# converge must have removed the .list file planted by prepare_tasks.yml -
+# otherwise apt reads the docker repo from both files
+- name: Find leftover .list repo files
+  ansible.builtin.find:
+    paths: /etc/apt/sources.list.d
+    patterns: "*.list"
+    # without read_whole_file, contains is a re.match and never fires here -
+    # which would make the assertion below pass vacuously
+    read_whole_file: true
+    contains: 'download\.docker\.com'
+  register: leftover_lists
+
+- name: Check no legacy .list repo file survived
+  ansible.builtin.assert:
+    that:
+      - leftover_lists.files | length == 0
+    fail_msg: >-
+      apt still reads the docker repo from
+      {{ leftover_lists.files | map(attribute='path') | list }} as well as
+      from docker.sources
+
+# proves the repo is not just written but usable: a bad Signed-By key would
+# make apt drop the repo and this lookup would not find download.docker.com
+- name: Check apt resolves docker-ce from the docker repo
+  ansible.builtin.command: apt-cache policy docker-ce
+  register: docker_policy
+  changed_when: false
+  failed_when: "'download.docker.com' not in docker_policy.stdout"
+
+# --- ubuntu.yaml / debian.yaml: packages and service -------------------------
+- name: Query docker packages
+  ansible.builtin.command: "dpkg-query --show --showformat=${Status} {{ item }}"
+  register: docker_packages
+  changed_when: false
+  failed_when: false
+  loop:
+    - docker-ce
+    - docker-ce-cli
+    - containerd.io
+    - docker-compose-plugin
+
+- name: Check docker packages are installed
+  ansible.builtin.assert:
+    that:
+      - item.stdout == 'install ok installed'
+    fail_msg: "{{ item.item }} is not installed: {{ item.stdout | default('') }}"
+  loop: "{{ docker_packages.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Get the state of the docker service
+  ansible.builtin.command: "systemctl {{ item }} docker"
+  register: docker_service
+  changed_when: false
+  failed_when: false
+  loop:
+    - is-enabled
+    - is-active
+
+- name: Check the docker service is enabled and running
+  ansible.builtin.assert:
+    that:
+      - (docker_service.results | selectattr('item', 'eq', 'is-enabled') | first).stdout == 'enabled'
+      - (docker_service.results | selectattr('item', 'eq', 'is-active') | first).stdout == 'active'
+
+# --- the daemon actually answers ---------------------------------------------
+# systemctl is-active above only says the unit reached "started". These talk to
+# the daemon over its API socket, which is what every consumer of this role
+# actually needs. `--format json` avoids Go template braces colliding with Jinja.
+- name: Stat the docker API socket
+  ansible.builtin.stat:
+    path: /var/run/docker.sock
+  register: docker_socket
+
+- name: Check the docker API socket is a socket
+  ansible.builtin.assert:
+    that:
+      - docker_socket.stat.exists
+      - docker_socket.stat.issock
+
+# the unit can be active for a moment before the daemon binds the socket
+- name: Wait for the docker daemon to answer
+  ansible.builtin.command: docker version --format json
+  register: docker_version_raw
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: docker_version_raw.rc == 0
+
+- name: Check the daemon completed a client/server handshake
+  vars:
+    server: "{{ (docker_version_raw.stdout | from_json).Server }}"
+  ansible.builtin.assert:
+    that:
+      - server.Version | length > 0
+      - server.ApiVersion | length > 0
+      - server.Os == 'linux'
+    fail_msg: "docker CLI got no usable Server section: {{ docker_version_raw.stdout }}"
+
+# the engine's own health endpoint, hit directly rather than through the CLI
+- name: Ping the docker engine API over the unix socket
+  ansible.builtin.command: >-
+    curl --silent --show-error --fail
+    --unix-socket /var/run/docker.sock http://localhost/_ping
+  register: docker_ping
+  changed_when: false
+
+- name: Check the engine API reports itself healthy
+  ansible.builtin.assert:
+    that:
+      - docker_ping.stdout | trim == 'OK'
+    fail_msg: "GET /_ping returned '{{ docker_ping.stdout | trim }}' instead of OK"
+
+- name: Read the docker daemon info
+  ansible.builtin.command: docker info --format json
+  register: docker_info_raw
+  changed_when: false
+
+- name: Check the daemon reports a healthy engine
+  vars:
+    info: "{{ docker_info_raw.stdout | from_json }}"
+  ansible.builtin.assert:
+    that:
+      # `--format json` omits null keys, so these need defaults: a daemon the
+      # CLI cannot reach reports an empty ServerVersion and no Driver at all
+      - info.ServerErrors | default([]) | length == 0
+      - info.ServerVersion | default('') | length > 0
+      - info.Driver | default('') | length > 0
+      - info.DockerRootDir | default('') | length > 0
+    fail_msg: >-
+      docker daemon is not healthy:
+      {{ info.ServerErrors | default('ServerVersion=' ~ (info.ServerVersion | default('') | string)) }}

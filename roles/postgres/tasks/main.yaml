@@ -1,9 +1,9 @@
 ---
 - include_tasks: debian.yaml
-  when: ansible_os_family == "Debian"
+  when: ansible_facts['os_family'] == "Debian"
   tags: postgres
 - name: Install psycopg2
-  when: ansible_os_family != "Debian"
+  when: ansible_facts['os_family'] != "Debian"
   ansible.builtin.pip:
     name: psycopg2-binary
     state: present

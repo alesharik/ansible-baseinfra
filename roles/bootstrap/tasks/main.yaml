@@ -1,22 +1,22 @@
 ---
 - include_tasks: debian.yaml
-  when: ansible_os_family == "Debian"
+  when: ansible_facts['os_family'] == "Debian"
   tags: bootstrap
 
 - include_tasks: disable-algif-aead.yaml
-  when: "{{ bootstrap.disable_algif_aead }}"
+  when: bootstrap.disable_algif_aead
   tags: bootstrap
 
 - include_tasks: set-hostname.yaml
-  when: "{{ bootstrap.set_hostname }}"
+  when: bootstrap.set_hostname
   tags: bootstrap
 
 - include_tasks: set-pam-limits.yaml
-  when: "{{ bootstrap.limits.enabled }}"
+  when: bootstrap.limits.enabled
   tags: bootstrap
 
 - include_tasks: disable-thb.yaml
-  when: "{{ bootstrap.disable_transparent_huge_pages }}"
+  when: bootstrap.disable_transparent_huge_pages
   tags: bootstrap
 
 - include_tasks: teardown-thb.yaml
@@ -24,15 +24,15 @@
   tags: bootstrap
 
 - include_tasks: setup-users.yaml
-  when: "{{ bootstrap.setup_users }}"
+  when: bootstrap.setup_users
   tags: bootstrap
 
 - include_tasks: setup-sudo.yaml
-  when: "{{ bootstrap.setup_sudo }}"
+  when: bootstrap.setup_sudo
   tags: bootstrap
 
 - include_tasks: setup-swap.yaml
-  when: "{{ bootstrap.swap.enabled }}"
+  when: bootstrap.swap.enabled
   tags: bootstrap
 
 - include_tasks: teardown-swap.yaml

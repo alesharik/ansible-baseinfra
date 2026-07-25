@@ -63,7 +63,7 @@
   ansible.builtin.assert:
     that:
       - "('127.0.0.1 localhost ' + inventory_hostname) in hosts_content"
-      - "(ansible_default_ipv4.address + ' ' + inventory_hostname) in hosts_content"
+      - "(ansible_facts['default_ipv4']['address'] + ' ' + inventory_hostname) in hosts_content"
 
 # --- set-pam-limits.yaml -----------------------------------------------------
 - name: Read /etc/security/limits.conf

@@ -19,7 +19,7 @@
   ansible.builtin.authorized_key:
     user: "{{ item.key }}"
     state: present
-    key: "{{ lookup('file', '{{ playbook_dir }}/ssh_keys/{{ item.key }}.pub') }}"
+    key: "{{ lookup('file', playbook_dir ~ '/ssh_keys/' ~ item.key ~ '.pub') }}"
   loop: "{{ users | dict2items }}"
   loop_control:
     label: "{{ item.key }}"
