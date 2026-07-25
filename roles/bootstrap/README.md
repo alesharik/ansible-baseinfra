@@ -52,6 +52,23 @@ users: {}
   runs `swapoff` on `{{ bootstrap.swap.file }}` and deletes it. Switching swap off on a loaded machine moves
   swapped out pages back into RAM
 
+### SystemD services
+- `disable-transparent-huge-pages.service` - disables transparent huge pages on system start
+- `swapfile.swap` - sets up swap file
+
+### Users and groups
+This role creates and manages users specified in config. It also can create homes for users, and set up their groups.
+If user is not in config list, and was created by ansible - it will be removed
+
+For root access, `sudo` group should be used.
+
+#### `ansible-managed` user group
+This group is assigned to all users who are created or managed by current ansible role
+
+#### `procusers` user group
+This group exists for users assigned to processes (like nginx, postgres, etc).
+`sudo` group is allowed to log in as users in this group without password.
+
 ### Handlers
 - `restart machine` - restarts host
 - `restart disable-thp` - restarts `disable-transparent-huge-pages` systemd service

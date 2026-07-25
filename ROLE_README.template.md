@@ -24,6 +24,22 @@ Deploys ABCD
 - deploys docker compose project `docker-registry`
 - logges in created docker registry with specified creds 
 
+### SystemD services
+- `disable-transparent-huge-pages.service` - disables transparent huge pages on system start
+
+### Users and groups
+This role creates and manages users specified in config. It also can create homes for users, and set up their groups.
+If user is not in config list, and was created by ansible - it will be removed
+
+For root access, `sudo` group should be used.
+
+#### `ansible-managed` user group
+This group is assigned to all users who are created or managed by current ansible role
+
+#### `procusers` user group
+This group exists for users assigned to processes (like nginx, postgres, etc).
+`sudo` group is allowed to log in as users in this group without password.
+
 #### Docker networks
 - connect to `nginx-proxy` if role `nginx_proxy_base` is deployed
 
