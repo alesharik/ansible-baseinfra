@@ -1,11 +1,20 @@
 # Ansible Collection - alesharik.baseinfra
 
 ## Base roles
-- `bootstrap` installs base utils
-- `chrony` - setup chrony NTP server
-- `docker` - setup chrony NTP server
+- [`bootstrap`](./roles/bootstrap/README.md) installs base utils, configures hostname, swap, users, sudo
+- [`chrony`](./roles/chrony/README.md) - setup chrony NTP server
+- [`docker`](./roles/docker/README.md) - install docker
 
 ### Roles
+
+## Users and groups
+This role creates and manages users specified in config. It also can create homes for users, and set up their groups.
+If user is not in config list, and was created by ansible - it will be removed
+
+For root access, `sudo` group should be used.
+
+### `ansible-managed` user group
+This group is assigned to all users who are created or managed by current ansible role
 
 ### `procusers` user group
 This group exists for users assigned to processes (like nginx, postgres, etc).
