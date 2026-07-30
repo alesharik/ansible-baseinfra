@@ -1,0 +1,16 @@
+---
+chrony:
+  # each entry becomes one `pool` line. For individual servers rather than a
+  # pool, put `server ...` lines in extra_config
+  pools:
+    - pool.ntp.org iburst burst
+  # step the clock instead of slewing it when the offset exceeds threshold
+  # seconds; limit is how many times, -1 for no limit
+  makestep:
+    threshold: 0.1
+    limit: -1
+  minsources: 2
+  maxupdateskew: 5
+  # appended verbatim to the end of chrony.conf, so it can add directives or
+  # override the ones above (e.g. `allow 10.0.0.0/8` to serve a LAN)
+  extra_config: ""

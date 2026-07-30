@@ -1,0 +1,91 @@
+---
+# Two platforms on purpose: the same image twice, differing only in whether the
+# `chrony` var is overridden. One host proves roles/chrony/defaults/main.yaml
+# renders what it claims, the other proves every key is actually wired through
+# the template. The shared converge.yml includes the role by scenario name, so a
+# second scenario is not an option - a scenario is a role name here.
+platforms:
+  - name: chrony-defaults
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+  - name: chrony-custom
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+
+provisioner:
+  inventory:
+    group_vars:
+      all:
+        # chrony's meta pulls in bootstrap, so this scenario has to satisfy it.
+        # `bootstrap` is a plain dict override - it replaces the role defaults
+        # wholesale, so every key the role reads has to be listed here.
+        bootstrap:
+          # would reach the host kernel through the privileged container
+          disable_algif_aead: false
+          disable_transparent_huge_pages: false
+          # nothing under test here needs users or sudoers
+          setup_users: false
+          setup_sudo: false
+          set_hostname: true
+          limits:
+            enabled: true
+            nofile:
+              soft: 8192
+              hard: 1048576
+          swap:
+            enabled: false
+            # NOT /swapfile: /proc/swaps is not namespaced, so teardown-swap.yaml
+            # would match the docker *host's* active swap and swapoff a file this
+            # container never activated. See molecule/bootstrap/molecule.yml.
+            file: /molecule_swapfile
+            size_mb: 4096
+        dir:
+          data: /data
+          ansible: /data/ansible
+    # expected_chrony is what tests.yml asserts against, spelled out per host
+    # rather than derived from `chrony`. Role defaults are not visible to
+    # verify.yml (it does not include the role), and deriving the expectation
+    # from the same var the template reads would let a broken template agree
+    # with a broken test.
+    host_vars:
+      chrony-defaults:
+        # deliberately no `chrony` override - this host runs on role defaults,
+        # and the values below pin what those defaults are supposed to be
+        expected_chrony:
+          pools:
+            - pool.ntp.org iburst burst
+          makestep: "0.1 -1"
+          minsources: 2
+          maxupdateskew: 5
+          extra: []
+      chrony-custom:
+        chrony:
+          pools:
+            - 0.pool.ntp.org iburst
+            - 1.pool.ntp.org iburst
+          makestep:
+            threshold: 1.5
+            limit: 7
+          minsources: 1
+          maxupdateskew: 42
+          # `allow` after the role's `deny all` is the realistic case for this:
+          # extra_config lands last, so it can narrow or undo what came before
+          extra_config: |
+            allow 10.0.0.0/8
+            logchange 0.5
+        expected_chrony:
+          pools:
+            - 0.pool.ntp.org iburst
+            - 1.pool.ntp.org iburst
+          makestep: "1.5 7"
+          minsources: 1
+          maxupdateskew: 42
+          extra:
+            - allow 10.0.0.0/8
+            - logchange 0.5

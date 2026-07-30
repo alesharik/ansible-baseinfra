@@ -1,0 +1,72 @@
+---
+# A privileged container shares the host's clock, and this role ships
+# `makestep 0.1 -1` - step the clock whenever the offset exceeds 0.1s, with no
+# limit on how many times. Left alone, running this scenario would let chronyd
+# discipline the clock of the machine running the tests (a laptop, a CI runner).
+#
+# `-x` makes chronyd run as a monitor: it reads the config, resolves and polls
+# its sources, and answers chronyc, but never calls adjtimex/clock_settime. Every
+# assertion in tests.yml still holds; only clock control is off. Same reasoning
+# as the disable_algif_aead / disable_transparent_huge_pages gates in
+# molecule/bootstrap/molecule.yml.
+#
+# The package is installed here rather than left to converge because
+# /etc/default/chrony is a dpkg conffile: with chrony already at the requested
+# version, converge's `apt: state=present` is a no-op and dpkg never gets the
+# chance to overwrite the edit below.
+#
+# Installing before the -x edit is only safe because the dokken images ship
+# /usr/sbin/policy-rc.d returning 101, so chrony's postinst cannot start the
+# daemon and there is no window where it runs with clock control. The assertion
+# after the edit checks the file; this one checks that assumption, because on an
+# image without policy-rc.d the daemon would already be stepping the host clock
+# by the time we got here.
+- name: Install chrony ahead of converge
+  ansible.builtin.apt:
+    name: chrony
+    state: present
+    update_cache: true
+
+- name: Get the state of chronyd straight after install
+  ansible.builtin.command: systemctl is-active chronyd
+  register: chronyd_after_install
+  changed_when: false
+  failed_when: false
+
+- name: Check the install did not start the daemon
+  ansible.builtin.assert:
+    that:
+      - chronyd_after_install.stdout | trim != 'active'
+    fail_msg: >-
+      chrony's postinst started the daemon before DAEMON_OPTS was pinned to -x,
+      so it is running with clock control in a privileged container and can step
+      the clock of the machine running these tests
+
+- name: Stop chronyd from disciplining the host clock
+  ansible.builtin.lineinfile:
+    path: /etc/default/chrony
+    regexp: '^\s*DAEMON_OPTS='
+    line: 'DAEMON_OPTS="-F 1 -x"'
+    state: present
+
+- name: Read back the chrony defaults file
+  ansible.builtin.slurp:
+    src: /etc/default/chrony
+  register: chrony_defaults
+
+# lineinfile appends when the regexp matches nothing, which would leave a second
+# DAEMON_OPTS line - the last one assigned wins in a shell-sourced file, so that
+# is still safe, but a *pre-existing* line after ours would not be.
+- name: Check exactly one DAEMON_OPTS line is in effect and it carries -x
+  vars:
+    opts_lines: >-
+      {{ (chrony_defaults.content | b64decode).splitlines()
+         | select('match', '\s*DAEMON_OPTS=') | list }}
+  ansible.builtin.assert:
+    that:
+      - opts_lines | length == 1
+      - "'-x' in opts_lines[0]"
+    fail_msg: >-
+      /etc/default/chrony does not pin DAEMON_OPTS to a single -x line
+      ({{ opts_lines }}); chronyd could still step the clock of the machine
+      running these tests

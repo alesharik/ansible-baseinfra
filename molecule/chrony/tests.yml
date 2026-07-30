@@ -1,0 +1,368 @@
+---
+# --- Install chrony ----------------------------------------------------------
+- name: Query the chrony package
+  ansible.builtin.command: dpkg-query --show --showformat=${Status} chrony
+  register: chrony_package
+  changed_when: false
+  failed_when: false
+
+- name: Check chrony is installed
+  ansible.builtin.assert:
+    that:
+      - chrony_package.stdout == 'install ok installed'
+    fail_msg: "chrony is not installed: {{ chrony_package.stdout | default('') }}"
+
+# --- Setup config: the file on disk ------------------------------------------
+- name: Stat the managed config
+  ansible.builtin.stat:
+    path: /etc/chrony/chrony.conf
+  register: chrony_conf
+
+- name: Check the config is owned by root and not world readable
+  ansible.builtin.assert:
+    that:
+      - chrony_conf.stat.exists
+      - chrony_conf.stat.isreg
+      - chrony_conf.stat.pw_name == 'root'
+      - chrony_conf.stat.gr_name == 'root'
+      - chrony_conf.stat.mode == '0500'
+    fail_msg: >-
+      /etc/chrony/chrony.conf is not a root-owned 0500 regular file
+      (exists={{ chrony_conf.stat.exists }},
+      mode={{ chrony_conf.stat.mode | default('-') }})
+
+- name: Read the managed config
+  ansible.builtin.slurp:
+    src: /etc/chrony/chrony.conf
+  register: chrony_conf_raw
+
+- name: Split the managed config into trimmed lines
+  ansible.builtin.set_fact:
+    chrony_file_lines: >-
+      {{ (chrony_conf_raw.content | b64decode).splitlines() | map('trim') | list }}
+
+# The role used to template to /etc/chrony.conf, which Debian's chronyd never
+# reads (its sysconfdir is /etc/chrony). A host upgraded from that version keeps
+# the stale file, where it reads as the live config to anyone looking.
+- name: Stat the pre-sysconfdir config path
+  ansible.builtin.stat:
+    path: /etc/chrony.conf
+  register: stale_conf
+
+- name: Check the stale /etc/chrony.conf is gone
+  ansible.builtin.assert:
+    that:
+      - not stale_conf.stat.exists
+    fail_msg: >-
+      /etc/chrony.conf still exists; chronyd does not read it, so it is a
+      misleading copy of the real config at /etc/chrony/chrony.conf
+
+# --- Setup config: the config chronyd actually loads --------------------------
+# `chronyd -p` parses the config from its compiled-in default path and prints
+# the directives it accepted, then exits without touching the clock. Run without
+# -f, it answers two questions at once: does the file the role wrote sit where
+# chronyd looks for it, and does every directive in it parse. A typo anywhere in
+# the template ends this with rc=1 and "Fatal error : Invalid directive".
+- name: Print the config chronyd loads from its default path
+  ansible.builtin.command: /usr/sbin/chronyd -p
+  register: chronyd_config
+  changed_when: false
+  failed_when: false
+
+- name: Check chronyd parses its default config without a fatal error
+  ansible.builtin.assert:
+    that:
+      - chronyd_config.rc == 0
+    fail_msg: >-
+      chronyd rejected the config it loads by default:
+      {{ chronyd_config.stderr | default('') }} {{ chronyd_config.stdout | default('') }}
+
+# whole-line matching, not substring: `'minsources 2' in stdout` would also pass
+# on a rendered `minsources 20`
+- name: Split the loaded config into trimmed lines
+  ansible.builtin.set_fact:
+    chrony_loaded_lines: "{{ chronyd_config.stdout_lines | map('trim') | list }}"
+
+- name: Check the loaded config is the role's file, not the packaged one
+  ansible.builtin.assert:
+    that:
+      - "'deny all' in chrony_loaded_lines"
+      - "'keyfile /etc/chrony/chrony.keys' in chrony_loaded_lines"
+      # the giveaway that chronyd fell back to the packaged config
+      - "'2.debian.pool.ntp.org' not in chronyd_config.stdout"
+    fail_msg: >-
+      chronyd loads a different config than the role wrote:
+      {{ chronyd_config.stdout }}
+
+# --- Setup config: chrony.pools / makestep / minsources / maxupdateskew -------
+# expected_chrony comes from molecule.yml host_vars. On chrony-defaults it pins
+# what roles/chrony/defaults/main.yaml should render; on chrony-custom it pins
+# the overrides that host sets. Same assertions run on both.
+- name: Check every configured pool reached the loaded config
+  ansible.builtin.assert:
+    that:
+      - "('pool ' ~ item) in chrony_loaded_lines"
+    fail_msg: >-
+      "pool {{ item }}" is missing from the config chronyd loaded:
+      {{ chronyd_config.stdout }}
+  loop: "{{ expected_chrony.pools }}"
+
+- name: Check no pool beyond the configured ones was rendered
+  vars:
+    rendered_pools: "{{ chrony_loaded_lines | select('match', 'pool\\s') | list }}"
+  ansible.builtin.assert:
+    that:
+      - rendered_pools | length == expected_chrony.pools | length
+    fail_msg: >-
+      expected {{ expected_chrony.pools | length }} pool line(s), got
+      {{ rendered_pools }}
+
+- name: Check the tunable directives carry the configured values
+  ansible.builtin.assert:
+    that:
+      - "('makestep ' ~ expected_chrony.makestep) in chrony_loaded_lines"
+      - "('minsources ' ~ expected_chrony.minsources) in chrony_loaded_lines"
+      - "('maxupdateskew ' ~ expected_chrony.maxupdateskew) in chrony_loaded_lines"
+    fail_msg: >-
+      expected makestep "{{ expected_chrony.makestep }}", minsources
+      {{ expected_chrony.minsources }}, maxupdateskew
+      {{ expected_chrony.maxupdateskew }} - loaded config is:
+      {{ chronyd_config.stdout }}
+
+# --- Setup config: chrony.extra_config ---------------------------------------
+- name: Check every extra_config line reached the loaded config
+  ansible.builtin.assert:
+    that:
+      - item in chrony_loaded_lines
+    fail_msg: >-
+      extra_config line "{{ item }}" is missing from the config chronyd loaded:
+      {{ chronyd_config.stdout }}
+  loop: "{{ expected_chrony.extra }}"
+
+# the point of extra_config is that it lands last and so can narrow or undo the
+# managed directives - `allow 10.0.0.0/8` only means anything after `deny all`.
+# Slicing at the marker rather than using .index(item) keeps this correct when a
+# fixture deliberately repeats a managed directive to test overriding it, since
+# .index() would find the managed line first and read as "not appended".
+- name: Split out the lines below the extra_config marker
+  when: expected_chrony.extra | length > 0
+  ansible.builtin.set_fact:
+    chrony_extra_lines: >-
+      {{ chrony_file_lines[chrony_file_lines.index('# chrony.extra_config') + 1:] }}
+
+- name: Check the extra_config marker sits below the managed directives
+  when: expected_chrony.extra | length > 0
+  ansible.builtin.assert:
+    that:
+      - >-
+        chrony_file_lines.index('# chrony.extra_config')
+        > chrony_file_lines.index('deny all')
+      - >-
+        chrony_file_lines.index('# chrony.extra_config')
+        > chrony_file_lines.index('maxupdateskew' ~ ' ' ~ expected_chrony.maxupdateskew)
+    fail_msg: >-
+      the extra_config block is not below the managed directives, so it cannot
+      override them
+
+- name: Check every extra_config line is inside that block
+  ansible.builtin.assert:
+    that:
+      - item in chrony_extra_lines
+    fail_msg: >-
+      extra_config line "{{ item }}" is not in the block below the marker
+      ({{ chrony_extra_lines }})
+  loop: "{{ expected_chrony.extra }}"
+
+- name: Check the extra_config block appears only when it has content
+  vars:
+    marker_present: "{{ '# chrony.extra_config' in (chrony_conf_raw.content | b64decode) }}"
+  ansible.builtin.assert:
+    that:
+      - marker_present | bool == (expected_chrony.extra | length > 0)
+    fail_msg: >-
+      extra_config block marker present={{ marker_present }} but this host has
+      {{ expected_chrony.extra | length }} extra line(s); an empty extra_config
+      must not leave a stray block in chrony.conf
+
+# leapsectz needs the right/ zones, which Debian 13 moved out of tzdata into
+# tzdata-legacy. `chronyd -p` will not catch that: it echoes directives it
+# parsed without resolving their arguments, so a leap second source that is not
+# installed prints cleanly here and rc stays 0. The daemon only downgrades it to
+# a "failed leap second check, ignoring" warning at startup and then runs with no
+# leap second source at all. Resolve the path the directive names and stat it.
+- name: Find the leap second directive in the loaded config
+  ansible.builtin.set_fact:
+    chrony_leap_line: >-
+      {{ (chronyd_config.stdout_lines
+          | select('match', '\s*leapsec(list|tz)\s')
+          | list | first | default('')) | trim }}
+
+- name: Check the config names a leap second source
+  ansible.builtin.assert:
+    that:
+      - chrony_leap_line | length > 0
+      - chrony_leap_line.split() | length == 2
+    fail_msg: >-
+      no usable leapseclist/leapsectz directive in the loaded config
+      ("{{ chrony_leap_line }}"); chrony would track no leap seconds at all
+
+# leapsectz names a zone under /usr/share/zoneinfo, leapseclist names a path
+- name: Resolve the leap second directive to a path on disk
+  ansible.builtin.set_fact:
+    chrony_leap_path: >-
+      {{ ('/usr/share/zoneinfo/' ~ chrony_leap_line.split()[1])
+         if chrony_leap_line.split()[0] == 'leapsectz'
+         else chrony_leap_line.split()[1] }}
+
+- name: Stat the leap second source the config points at
+  ansible.builtin.stat:
+    path: "{{ chrony_leap_path }}"
+  register: chrony_leap_source
+
+# stat on a missing path returns {"exists": false} with no other keys, so the
+# message has to use the fact rather than chrony_leap_source.stat.path
+- name: Check the leap second source is actually installed
+  ansible.builtin.assert:
+    that:
+      - chrony_leap_source.stat.exists
+    fail_msg: >-
+      "{{ chrony_leap_line }}" points at {{ chrony_leap_path }}, which no
+      package in this collection installs; chronyd would log "failed leap
+      second check, ignoring" and run without leap seconds
+
+# --- Start chrony ------------------------------------------------------------
+# The role manages the unit as `chronyd`, which on Debian is an Alias= of
+# chrony.service rather than a unit of its own. Queried by its alias name,
+# `systemctl is-enabled` answers "alias" instead of "enabled", so the state has
+# to be read off the canonical unit - and the alias checked separately, since
+# that is the name the role passes to systemd.
+- name: Resolve the unit name the role manages
+  ansible.builtin.command: systemctl show chronyd --property=Id --value
+  register: chronyd_id
+  changed_when: false
+
+- name: Check chronyd resolves to the packaged chrony unit
+  ansible.builtin.assert:
+    that:
+      - chronyd_id.stdout | trim == 'chrony.service'
+    fail_msg: >-
+      systemd resolves "chronyd" to "{{ chronyd_id.stdout | trim }}"; the role
+      enables a unit that is not the one chrony ships
+
+- name: Get the state of the chrony service
+  ansible.builtin.command: "systemctl {{ item }} chrony.service"
+  register: chronyd_service
+  changed_when: false
+  failed_when: false
+  loop:
+    - is-enabled
+    - is-active
+
+- name: Check chrony is enabled and running
+  ansible.builtin.assert:
+    that:
+      - (chronyd_service.results | selectattr('item', 'eq', 'is-enabled') | first).stdout == 'enabled'
+      - (chronyd_service.results | selectattr('item', 'eq', 'is-active') | first).stdout == 'active'
+
+# systemctl is-active only says the unit reached "started". These talk to the
+# running daemon over its command socket, which is what proves it came up on the
+# config above rather than dying on it.
+- name: Ask the running daemon for its tracking state
+  ansible.builtin.command: /usr/bin/chronyc -n tracking
+  register: chronyc_tracking
+  changed_when: false
+  retries: 6
+  delay: 5
+  until: chronyc_tracking.rc == 0
+
+- name: Check the daemon answers with a tracking report
+  ansible.builtin.assert:
+    that:
+      - "'Reference ID' in chronyc_tracking.stdout"
+      - "'Stratum' in chronyc_tracking.stdout"
+    fail_msg: "chronyc tracking returned no usable report: {{ chronyc_tracking.stdout }}"
+
+- name: Ask the running daemon for its source activity
+  ansible.builtin.command: /usr/bin/chronyc -n activity
+  register: chronyc_activity
+  changed_when: false
+
+- name: Check the daemon reports on its sources
+  ansible.builtin.assert:
+    that:
+      - "'sources online' in chronyc_activity.stdout"
+    fail_msg: "chronyc activity returned no usable report: {{ chronyc_activity.stdout }}"
+
+# Guards the guard: prepare_tasks.yml pins DAEMON_OPTS to -x so this privileged
+# container cannot step the clock of the machine running the tests. If that ever
+# stops reaching the daemon, every run above here silently gets clock control
+# back - fail here instead.
+- name: Read the running daemon's command line
+  ansible.builtin.shell: >-
+    tr '\0' ' ' < /proc/$(systemctl show chronyd --property=MainPID --value)/cmdline
+  register: chronyd_cmdline
+  changed_when: false
+
+- name: Check the daemon runs without clock control
+  ansible.builtin.assert:
+    that:
+      - "' -x' in chronyd_cmdline.stdout"
+    fail_msg: >-
+      chronyd runs as "{{ chronyd_cmdline.stdout | trim }}" - without -x it
+      disciplines the clock of the docker host, not of this container
+
+# --- restarted -> started + handler ------------------------------------------
+# `chronyd -p` parses the file in a separate process, and is-active / chronyc
+# tracking answer the same whether or not the daemon reloaded - so none of them
+# notice one still running an older config. side_effect.yml changed the config
+# under the already-running daemon; `state: started` is a no-op in that
+# situation, so the start time can only have moved if the handler fired.
+- name: Read how long the running daemon has been up
+  ansible.builtin.shell: >-
+    ps -o etimes= -p "$(systemctl show chronyd --property=MainPID --value)"
+  register: chronyd_uptime
+  changed_when: false
+
+- name: Read the current clock
+  ansible.builtin.command: date +%s
+  register: chrony_now
+  changed_when: false
+
+- name: Read the start time side_effect recorded before it changed the config
+  ansible.builtin.slurp:
+    src: /root/chronyd_start_before_change
+  register: chronyd_start_before
+
+- name: Check the handler restarted the daemon when the config changed
+  vars:
+    before: "{{ (chronyd_start_before.content | b64decode) | trim | int }}"
+    after: "{{ (chrony_now.stdout | int) - (chronyd_uptime.stdout | trim | int) }}"
+  ansible.builtin.assert:
+    that:
+      - after | int > before | int
+    fail_msg: >-
+      chronyd has been running since {{ after }} and side_effect changed the
+      config at {{ before }} or later; the daemon was never restarted, so it is
+      serving a config it has not read - the restart handler did not fire
+
+# --- Stop systemd-timesyncd --------------------------------------------------
+# dokken/debian-13 ships no systemd-timesyncd, so the role's task takes its
+# "Could not find the requested service" branch. Asserting on the end state
+# rather than the branch keeps this honest on images that do ship it.
+- name: Get the state of systemd-timesyncd
+  ansible.builtin.command: "systemctl {{ item }} systemd-timesyncd"
+  register: timesyncd_service
+  changed_when: false
+  failed_when: false
+  loop:
+    - is-enabled
+    - is-active
+
+- name: Check systemd-timesyncd is neither enabled nor running
+  ansible.builtin.assert:
+    that:
+      - (timesyncd_service.results | selectattr('item', 'eq', 'is-enabled') | first).stdout != 'enabled'
+      - (timesyncd_service.results | selectattr('item', 'eq', 'is-active') | first).stdout != 'active'
+    fail_msg: >-
+      systemd-timesyncd is still in play alongside chrony, two daemons
+      competing for the clock

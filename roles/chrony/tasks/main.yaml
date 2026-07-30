@@ -1,16 +1,46 @@
+---
 - name: Install chrony
   tags: chrony
   ansible.builtin.apt:
     name: chrony
     state: present
+# The leap second directive is version dependent: leapseclist landed in chrony
+# 4.6 and is a fatal "Invalid directive" on anything older (Debian 12 ships 4.3,
+# Ubuntu 24.04 ships 4.5), while leapsectz - which 4.6 still accepts - needs the
+# right/ zones Debian 13 moved out of tzdata into tzdata-legacy. Every release
+# old enough to need leapsectz still ships right/UTC in plain tzdata, so the two
+# branches cover each other and no extra package is needed.
+- name: Read the installed chrony version
+  tags: chrony
+  ansible.builtin.command: /usr/sbin/chronyd --version
+  register: chrony_version_raw
+  changed_when: false
+- name: Store the installed chrony version
+  tags: chrony
+  ansible.builtin.set_fact:
+    chrony_version: "{{ chrony_version_raw.stdout | regex_search('version ([0-9.]+)', '\\1') | first }}"
 - name: Setup config
   tags: chrony
   ansible.builtin.template:
     src: chrony.conf
-    dest: /etc/chrony.conf
+    # NOT /etc/chrony.conf: the Debian package builds chrony with sysconfdir
+    # /etc/chrony, so that is the only path chronyd reads by default
+    dest: /etc/chrony/chrony.conf
     mode: 0500
     owner: root
     group: root
+    # extra_config is written verbatim, so reject a broken file here rather
+    # than leaving one on disk for the handler restart to trip over
+    validate: /usr/sbin/chronyd -p -f %s
+  notify:
+    - restart chrony
+# left behind by the versions of this role that templated to /etc/chrony.conf,
+# where it reads as the live config although chronyd never loads it
+- name: Remove pre-sysconfdir config
+  tags: chrony
+  ansible.builtin.file:
+    path: /etc/chrony.conf
+    state: absent
 - name: Stop systemd-timesyncd
   tags: chrony
   ansible.builtin.systemd:
@@ -21,9 +51,17 @@
   failed_when:
     - stop_service.failed == true
     - '"Could not find the requested service" not in stop_service.msg'
+# started, not restarted: an unconditional restart reports changed on every
+# run. Config changes come back through the handler instead.
 - name: Start chrony
   tags: chrony
   ansible.builtin.systemd:
     name: chronyd
-    state: restarted
+    state: started
     enabled: true
+# without this the restart is deferred to the end of the play, and a later role
+# failing drops it - leaving the new config on disk unread, and the next run
+# reporting ok because the template no longer changes
+- name: Make sure handlers are flushed immediately
+  ansible.builtin.meta: flush_handlers
+  tags: chrony

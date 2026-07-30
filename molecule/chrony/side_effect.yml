@@ -1,0 +1,47 @@
+---
+# Covers the restarted -> started + handler change, which nothing else can see.
+# On a first converge the daemon is started by the role's `Start chrony` task
+# anyway, so "daemon is newer than the config" holds whether or not the handler
+# fired. Only a config change against an *already running* daemon tells them
+# apart: `state: started` is a no-op there, so if the start time moves, the
+# handler is the only thing that could have moved it.
+- name: Side effect
+  hosts: all
+  environment:
+    ANSIBLE_UNSAFE_WRITES: "1"
+  tasks:
+    # split rather than piped into one shell line: a pipeline hides a failing
+    # `ps` behind a successful `tr`, which would silently record a nonsense
+    # start time and make the assertion in tests.yml pass for the wrong reason
+    - name: Read how long the running daemon has been up
+      ansible.builtin.shell: >-
+        ps -o etimes= -p "$(systemctl show chronyd --property=MainPID --value)"
+      register: chronyd_uptime_before
+      changed_when: false
+
+    - name: Read the current clock
+      ansible.builtin.command: date +%s
+      register: chrony_now_before
+      changed_when: false
+
+    # tests.yml reads this back, so it has to outlive the play
+    - name: Save the daemon start time for verify
+      ansible.builtin.copy:
+        content: >-
+          {{ (chrony_now_before.stdout | int)
+             - (chronyd_uptime_before.stdout | trim | int) }}
+        dest: /root/chronyd_start_before_change
+        mode: "0600"
+
+    # makes the template task see a difference on the re-run below, so it
+    # reports changed and notifies the handler
+    - name: Perturb the managed config
+      ansible.builtin.lineinfile:
+        path: /etc/chrony/chrony.conf
+        line: "# perturbed by molecule side_effect"
+        insertafter: EOF
+        state: present
+
+    - name: Re-run the role so the template rewrites the config
+      ansible.builtin.include_role:
+        name: alesharik.baseinfra.chrony
