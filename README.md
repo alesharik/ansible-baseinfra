@@ -6,6 +6,7 @@
 - [`docker`](./roles/docker/README.md) - install docker
 
 ### Roles
+- [`traefik`](./roles/traefik/README.md) - deploy traefik reverse proxy
 
 ## Users and groups
 This role creates and manages users specified in config. It also can create homes for users, and set up their groups.
@@ -47,4 +48,5 @@ prometheus.io.address: 127.0.0.1:9586 # full address to server
 | `vmagent`                | `v1.101.0`                       |              |              |
 | `watchtower`             | `1.7.1`                          |              |              |
 | `wg_exporter`            | `3.6.6`                          |              |              |
-| `headscale`              | `v0.25.1`                        | 2025-071-12  | 2025-071-12  |
+| `headscale`              | `v0.25.1`                        | 2025-07-12   | 2025-07-12   |
+| `traefik`                | `v3.6.15`                        | 2026-07-30   | 2026-07-30   |

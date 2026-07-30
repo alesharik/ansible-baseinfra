@@ -1,0 +1,26 @@
+---
+traefik: # noqa: var-naming[no-role-prefix]
+  image: traefik
+  version: "v3.6.15"
+  entrypoints:
+    web:
+      address: :80
+      http:
+        redirections:
+          entryPoint:
+            to: websecure
+            scheme: https
+            permanent: true
+    websecure:
+      address: ":443"
+      http:
+        tls: { }
+  listen_ips:
+    - "0.0.0.0:443:443"
+    - "0.0.0.0:80:80"
+  networks: []
+  env: []
+  directories:
+    configs: "{{ playbook_dir }}/traefik"
+    ansible: "{{ dir.ansible }}/traefik"
+    acme: "{{ dir.data }}/traefik-acme"

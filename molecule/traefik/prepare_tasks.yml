@@ -1,0 +1,17 @@
+---
+# The role deletes anything in confs/ that is not in directories.configs. Plant a
+# file there before converge so that path is actually exercised - without this,
+# "no unmanaged conf survived" would pass vacuously.
+- name: Create the confs directory ahead of the role
+  ansible.builtin.file:
+    path: "{{ dir.ansible }}/traefik/confs"
+    state: directory
+    mode: "0755"
+
+- name: Plant an unmanaged conf
+  ansible.builtin.copy:
+    content: |
+      http:
+        routers: {}
+    dest: "{{ dir.ansible }}/traefik/confs/stale.yml"
+    mode: "0400"

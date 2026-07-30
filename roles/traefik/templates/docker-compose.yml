@@ -1,0 +1,46 @@
+{% if traefik.networks is defined and traefik.networks|length > 0 %}
+networks:
+{% for net in traefik.networks %}
+  "{{ net }}":
+    name: "{{ net }}"
+    external: true
+{% endfor %}
+{% endif %}
+services:
+  traefik:
+    image: "{{ traefik.image }}:{{ traefik.version }}"
+    container_name: traefik
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "traefik", "healthcheck" ]
+      interval: 5s
+      timeout: 10s
+      retries: 3
+{% if traefik.env is defined and traefik.env|length > 0 %}
+    environment:
+{% for item in traefik.env %}
+      - {{ item }}
+{% endfor %}
+{% endif %}
+    volumes:
+      - "{{ traefik.directories.ansible }}/traefik.yml:/etc/traefik/traefik.yml"
+      - "{{ traefik.directories.ansible }}/confs:/etc/traefik/confs"
+      - "{{ traefik.directories.acme }}:/acme"
+    labels:
+      prometheus.io.path: /metrics
+      prometheus.io.port: 8080
+{% if traefik.networks is defined and traefik.networks|length > 0 %}
+      prometheus.io.network: "{{ traefik.networks[0] }}"
+{% endif %}
+{% if traefik.listen_ips is defined and traefik.listen_ips|length > 0 %}
+    ports:
+{% for item in traefik.listen_ips %}
+      - "{{ item }}"
+{% endfor %}
+{% endif %}
+{% if traefik.networks is defined and traefik.networks|length > 0 %}
+    networks:
+{% for net in traefik.networks %}
+      - "{{ net }}"
+{% endfor %}
+{% endif %}

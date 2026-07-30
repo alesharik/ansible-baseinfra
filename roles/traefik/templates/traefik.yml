@@ -1,0 +1,33 @@
+metrics:
+  prometheus:
+    buckets:
+      - 0.1
+      - 0.3
+      - 1.2
+      - 5.0
+entryPoints:
+  {{ traefik.entrypoints | to_nice_yaml(indent=2) | trim | indent(2) }}
+providers:
+  file:
+    directory: "/etc/traefik/confs"
+log:
+  level: INFO
+  format: json
+ping: {}
+accessLog:
+  format: json
+  filters:
+    retryAttempts: true
+    minDuration: "10ms"
+  fields:
+    defaultMode: keep
+    names:
+      ClientUsername: drop
+    headers:
+      defaultMode: keep
+      names:
+        Authorization: drop
+{% if traefik.certificatesResolvers is defined %}
+certificatesResolvers:
+  {{ traefik.certificatesResolvers | to_nice_yaml(indent=2) | trim | indent(2) }}
+{% endif %}

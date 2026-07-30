@@ -1,0 +1,26 @@
+---
+# A dynamic (file provider) config fixture. The role runs every file in
+# directories.configs through the template engine, so the Jinja below renders
+# per host - which is how tests.yml tells "templated" apart from "copied".
+http:
+  routers:
+    molecule:
+      rule: "PathPrefix(`/molecule`)"
+      # entrypoint names differ per host, so the router has to be told which one
+      entryPoints:
+        - "{{ molecule_tls_entrypoint }}"
+      middlewares:
+        - molecule-redirect
+      service: molecule-noop
+  middlewares:
+    molecule-redirect:
+      redirectRegex:
+        regex: ".*"
+        replacement: "https://{{ inventory_hostname }}/redirected"
+        permanent: false
+  services:
+    molecule-noop:
+      loadBalancer:
+        servers:
+          # never reached - the middleware answers before the service is called
+          - url: "http://127.0.0.1:9"

@@ -1,0 +1,81 @@
+---
+- name: Create compose dir
+  tags: traefik
+  ansible.builtin.file:
+    path: "{{ traefik.directories.ansible }}"
+    state: directory
+    mode: "0755"
+
+- name: Create acme dir
+  tags: traefik
+  ansible.builtin.file:
+    path: "{{ traefik.directories.acme }}"
+    state: directory
+    mode: "0700"
+
+- name: Move traefik.yml
+  tags: traefik
+  ansible.builtin.template:
+    src: traefik.yml
+    dest: "{{ traefik.directories.ansible }}/traefik.yml"
+    mode: "0400"
+  notify:
+    - restart traefik
+
+- name: Create confs dir
+  tags: traefik
+  ansible.builtin.file:
+    path: "{{ traefik.directories.ansible }}/confs"
+    state: directory
+    mode: "0400"
+- name: List confs
+  ansible.builtin.command: "ls {{ traefik.directories.configs }}"
+  tags: traefik
+  delegate_to: 127.0.0.1
+  become: false
+  register: traefik_confs
+  changed_when: false
+
+- name: Move confs
+  tags: traefik
+  with_items: "{{ traefik_confs.stdout_lines }}"
+  when: traefik_confs is iterable
+  ansible.builtin.template:
+    src: "{{ traefik.directories.configs }}/{{ item }}"
+    dest: "{{ traefik.directories.ansible }}/confs/{{ item }}"
+    mode: "0400"
+  notify:
+    - restart traefik
+
+- name: Find all confs
+  ansible.builtin.command: "ls -1 {{ traefik.directories.ansible }}/confs/"
+  register: traefik_confs_contents
+  tags: traefik
+  changed_when: false
+
+- name: Remove unmanaged conf
+
+  ansible.builtin.file:
+    path: "{{ traefik.directories.ansible }}/confs/{{ item }}"
+    state: absent
+  with_items: "{{ traefik_confs_contents.stdout_lines }}"
+  when: "item not in traefik_confs.stdout_lines"
+  tags: traefik
+- name: Move compose files
+  tags: traefik
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ traefik.directories.ansible }}/docker-compose.yml"
+    mode: "0700"
+  notify:
+    - restart traefik
+
+- name: Start traefik
+  tags: traefik
+  community.docker.docker_compose_v2:
+    project_src: "{{ traefik.directories.ansible }}"
+    state: present
+
+- name: Make sure handlers are flushed immediately
+  ansible.builtin.meta: flush_handlers
+  tags: traefik

@@ -1,0 +1,188 @@
+---
+# --- defaults have not drifted from what this scenario pins ------------------
+# traefik-defaults copies roles/traefik/defaults/main.yaml into host_vars because
+# `traefik` is a wholesale dict override and directories.configs has to be
+# redirected. That copy is only worth anything if it still matches the role.
+- name: Read the role defaults from the controller
+  ansible.builtin.slurp:
+    src: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}/roles/traefik/defaults/main.yaml"
+  delegate_to: localhost
+  become: false
+  register: role_defaults_raw
+  when: inventory_hostname == 'traefik-defaults'
+
+- name: Check the pinned entrypoints and listen_ips still equal the role defaults
+  vars:
+    role_defaults: "{{ role_defaults_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - role_defaults.traefik.entrypoints == traefik.entrypoints
+      - role_defaults.traefik.listen_ips == traefik.listen_ips
+    fail_msg: >-
+      roles/traefik/defaults/main.yaml has changed - the "defaults" host is
+      pinning something else now
+  when: inventory_hostname == 'traefik-defaults'
+
+# --- traefik.yml -------------------------------------------------------------
+- name: Read the rendered traefik.yml
+  ansible.builtin.slurp:
+    src: "{{ dir.ansible }}/traefik/traefik.yml"
+  register: traefik_static_raw
+
+- name: Check entrypoints reach traefik.yml unchanged
+  vars:
+    static: "{{ traefik_static_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - static.entryPoints == expected_entrypoints
+    fail_msg: >-
+      entryPoints rendered as {{ static.entryPoints | default('<unparseable>') }},
+      expected {{ expected_entrypoints }}
+
+- name: Check the rest of the static config survived
+  vars:
+    static: "{{ traefik_static_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - static.providers.file.directory == '/etc/traefik/confs'
+      - static.ping is defined
+      - static.metrics.prometheus.buckets | length == 4
+      - static.log.level == 'INFO'
+      - static.accessLog.fields.headers.names.Authorization == 'drop'
+
+# --- docker-compose.yml ------------------------------------------------------
+- name: Read the rendered docker-compose.yml
+  ansible.builtin.slurp:
+    src: "{{ dir.ansible }}/traefik/docker-compose.yml"
+  register: traefik_compose_raw
+
+- name: Check listen_ips reach compose unchanged
+  vars:
+    compose: "{{ traefik_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      # the service used to be named after a different role entirely
+      - compose.services | list == ['traefik']
+      - compose.services.traefik.ports == expected_listen_ips
+    fail_msg: >-
+      compose ports are {{ compose.services.traefik.ports | default('<unset>') }},
+      expected {{ expected_listen_ips }}
+
+- name: Stat the acme directory
+  ansible.builtin.stat:
+    path: /data/traefik-acme
+  register: traefik_acme
+
+# these were two different paths: tasks/main.yaml created one directory and the
+# compose file bind-mounted another, so acme storage never survived a restart
+- name: Check the acme directory the role creates is the one compose mounts
+  vars:
+    compose: "{{ traefik_compose_raw.content | b64decode | from_yaml }}"
+    volumes: "{{ compose.services.traefik.volumes }}"
+  ansible.builtin.assert:
+    that:
+      - traefik_acme.stat.exists
+      - traefik_acme.stat.isdir
+      - "'/data/traefik-acme:/acme' in volumes"
+      - "'/data/ansible/traefik/traefik.yml:/etc/traefik/traefik.yml' in volumes"
+      - "'/data/ansible/traefik/confs:/etc/traefik/confs' in volumes"
+    fail_msg: "compose mounts {{ volumes }}"
+
+# --- dynamic confs -----------------------------------------------------------
+- name: Read the templated dynamic conf
+  ansible.builtin.slurp:
+    src: "{{ dir.ansible }}/traefik/confs/redirect.yml"
+  register: traefik_conf_raw
+
+- name: Check the dynamic conf was templated, not copied
+  vars:
+    conf: "{{ traefik_conf_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - conf.http.routers.molecule.entryPoints == [molecule_tls_entrypoint]
+      - >-
+        conf.http.middlewares['molecule-redirect'].redirectRegex.replacement
+        == 'https://' ~ inventory_hostname ~ '/redirected'
+
+- name: Stat the unmanaged conf planted by prepare_tasks.yml
+  ansible.builtin.stat:
+    path: "{{ dir.ansible }}/traefik/confs/stale.yml"
+  register: traefik_stale
+
+- name: Check the unmanaged conf was removed
+  ansible.builtin.assert:
+    that:
+      - not traefik_stale.stat.exists
+    fail_msg: confs/ still holds a file that is not in directories.configs
+
+# --- the container actually runs the config it was handed --------------------
+# healthy means the compose healthcheck (`traefik healthcheck`) succeeded, which
+# means traefik parsed traefik.yml and its ping endpoint answers
+- name: Wait for the traefik container to report healthy
+  ansible.builtin.command: docker inspect traefik
+  register: traefik_inspect_raw
+  changed_when: false
+  retries: 24
+  delay: 5
+  # `and` short-circuits, so from_json never sees an empty stdout
+  until: >-
+    traefik_inspect_raw.rc == 0 and
+    (traefik_inspect_raw.stdout | from_json)[0].State.Health.Status == 'healthy'
+
+- name: Check docker bound exactly the addresses in listen_ips
+  vars:
+    # unpublished ports appear here too, with a null value - the traefik image
+    # EXPOSEs 80 and 443 whatever this role configures
+    ports: "{{ (traefik_inspect_raw.stdout | from_json)[0].NetworkSettings.Ports }}"
+    published: "{{ ports | dict2items | rejectattr('value', 'none') | items2dict }}"
+  ansible.builtin.assert:
+    that:
+      # an entrypoint missing from listen_ips must not get a binding
+      - published | length == expected_bindings | length
+      # selected rather than indexed: binding 0.0.0.0 makes docker add a second
+      # entry for :: when the daemon has ipv6 on
+      - >-
+        published[item.key]
+        | selectattr('HostIp', 'eq', item.value.split(':')[0])
+        | selectattr('HostPort', 'eq', item.value.split(':')[1])
+        | list | length == 1
+    fail_msg: "docker bound {{ published }}, expected {{ expected_bindings }}"
+  loop: "{{ expected_bindings | dict2items }}"
+
+# --- traefik answers on the ports it was told to listen on -------------------
+- name: Request the redirecting entrypoint over http
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ molecule_http_port }}/"
+    follow_redirects: none
+    status_code: [301, 302, 307, 308]
+  register: traefik_redirect
+
+- name: Check the http entrypoint redirects to the tls entrypoint
+  ansible.builtin.assert:
+    that:
+      - traefik_redirect.location is match('^https://')
+    fail_msg: "redirected to {{ traefik_redirect.location | default('nowhere') }}"
+
+# a completed TLS handshake is the assertion: `tls: {}` reached the entrypoint.
+# 404 is traefik's answer when no router matches, which is the case for /
+- name: Request an unrouted path over the tls entrypoint
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ molecule_tls_port }}/"
+    validate_certs: false
+    status_code: 404
+
+- name: Request the path the dynamic conf routes
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ molecule_tls_port }}/molecule"
+    validate_certs: false
+    follow_redirects: none
+    status_code: 302
+  register: traefik_dynamic
+
+- name: Check the file provider loaded the templated conf
+  ansible.builtin.assert:
+    that:
+      - traefik_dynamic.location == 'https://' ~ inventory_hostname ~ '/redirected'
+    fail_msg: >-
+      the fixture router answered with
+      {{ traefik_dynamic.location | default('no Location') }}
