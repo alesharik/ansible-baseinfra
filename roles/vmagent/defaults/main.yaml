@@ -1,5 +1,11 @@
 ---
-vmagent:
+vmagent: # noqa: var-naming[no-role-prefix]
   image: victoriametrics/vmagent
   version: v1.101.0
   remoteWrite: {}
+  directories:
+    # `<ansible>/config` hangs off this and is bind-mounted at /etc/vmagent, so
+    # everything vmagent reads moves with it: config.yml, password, and the
+    # conf.d other roles drop scrape configs into
+    ansible: "{{ dir.ansible }}/vmagent"
+    data: "{{ dir.data }}/vmagent"

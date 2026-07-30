@@ -1,0 +1,203 @@
+---
+# --- every directory in the var, and nothing outside it ----------------------
+- name: Stat the directories the role should have created
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: vmagent_dirs
+  loop:
+    - "{{ expected_compose_dir }}"
+    - "{{ expected_data_dir }}"
+    - "{{ expected_config_dir }}"
+    - "{{ expected_conf_d_dir }}"
+
+- name: Check each directory exists
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isdir
+    fail_msg: "{{ item.item }} is not a directory"
+  loop: "{{ vmagent_dirs.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Check the data dir is owned by the uid vmagent runs as
+  vars:
+    data_dir: "{{ vmagent_dirs.results | selectattr('item', 'eq', expected_data_dir) | first }}"
+  ansible.builtin.assert:
+    that:
+      - data_dir.stat.uid == 10001
+    fail_msg: "{{ expected_data_dir }} is owned by uid {{ data_dir.stat.uid }}, expected 10001"
+
+# the whole point of the vars: a path still derived from dir.ansible/dir.data
+# would show up here even though every assertion above passed
+- name: Stat the default paths the role must no longer use
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: vmagent_defaults
+  loop: "{{ unexpected_paths }}"
+
+- name: Check the role wrote nothing outside vmagent.directories
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists
+    fail_msg: >-
+      {{ item.item }} exists - something in the role still derives its path from
+      dir.ansible/dir.data instead of vmagent.directories
+  loop: "{{ vmagent_defaults.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# --- docker-compose.yml ------------------------------------------------------
+- name: Read the rendered docker-compose.yml
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/docker-compose.yml"
+  register: vmagent_compose_raw
+
+- name: Check compose mounts the directories from the vars
+  vars:
+    compose: "{{ vmagent_compose_raw.content | b64decode | from_yaml }}"
+    volumes: "{{ compose.services.vmagent.volumes }}"
+  ansible.builtin.assert:
+    that:
+      - compose.services | list == ['vmagent']
+      - "expected_config_dir ~ ':/etc/vmagent' in volumes"
+      - "expected_data_dir ~ ':/vmagent' in volumes"
+      - "'/var/run/docker.sock:/var/run/docker.sock' in volumes"
+    fail_msg: "compose mounts {{ volumes }}"
+
+- name: Check remoteWrite became a flag
+  vars:
+    compose: "{{ vmagent_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - "'-remoteWrite.url=' ~ vmagent.remoteWrite.url in compose.services.vmagent.command"
+    fail_msg: "compose command is {{ compose.services.vmagent.command }}"
+
+# --- config.yml --------------------------------------------------------------
+- name: Read the rendered config.yml
+  ansible.builtin.slurp:
+    src: "{{ expected_config_dir }}/config.yml"
+  register: vmagent_config_raw
+
+# conf.d is not a var: it is fixed on the container's side of the mount. This
+# pins the contract between the two - the mount source is <ansible>/config and
+# the glob is relative to where that lands, so a change to either has to move
+# with the other
+- name: Check the conf.d glob matches the mount
+  vars:
+    config: "{{ vmagent_config_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - config.scrape_config_files == [expected_conf_d_glob]
+    fail_msg: >-
+      config.yml globs {{ config.scrape_config_files | default('<unset>') }},
+      expected {{ [expected_conf_d_glob] }}
+
+- name: Read the generated password
+  ansible.builtin.slurp:
+    src: "{{ expected_config_dir }}/password"
+  register: vmagent_password_raw
+  no_log: true
+
+- name: Check the password is non-empty and is the one config.yml self-scrapes with
+  vars:
+    config: "{{ vmagent_config_raw.content | b64decode | from_yaml }}"
+    password: "{{ vmagent_password_raw.content | b64decode }}"
+    self_scrape: "{{ config.scrape_configs | selectattr('job_name', 'eq', 'vmagent') | first }}"
+  ansible.builtin.assert:
+    that:
+      - password | length == 24
+      - self_scrape.basic_auth.username == 'vmagent-auth'
+      - self_scrape.basic_auth.password | string == password
+    fail_msg: config.yml does not carry the password that was written to disk
+  no_log: true
+
+# --- the container runs the config it was handed -----------------------------
+- name: Wait for the vmagent container to report running
+  ansible.builtin.command: docker inspect vmagent
+  register: vmagent_inspect_raw
+  changed_when: false
+  retries: 24
+  delay: 5
+  # `and` short-circuits, so from_json never sees an empty stdout
+  until: >-
+    vmagent_inspect_raw.rc == 0 and
+    (vmagent_inspect_raw.stdout | from_json)[0].State.Running
+
+- name: Check the container uses the host network
+  vars:
+    host_config: "{{ (vmagent_inspect_raw.stdout | from_json)[0].HostConfig }}"
+  ansible.builtin.assert:
+    that:
+      - host_config.NetworkMode == 'host'
+    fail_msg: "container network mode is {{ host_config.NetworkMode }}"
+
+# the rendered file only proves the template; this proves docker acted on it
+- name: Check docker bound the directories from the vars
+  vars:
+    binds: "{{ (vmagent_inspect_raw.stdout | from_json)[0].HostConfig.Binds }}"
+    # docker appends the access mode, so a bind reads host:container:rw here
+    bind_paths: "{{ binds | map('regex_replace', '^([^:]+:[^:]+).*$', '\\1') | list }}"
+  ansible.builtin.assert:
+    that:
+      - "expected_config_dir ~ ':/etc/vmagent' in bind_paths"
+      - "expected_data_dir ~ ':/vmagent' in bind_paths"
+    fail_msg: "docker bound {{ binds }}"
+
+- name: Request the API without credentials
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8429/metrics
+    status_code: 401
+  retries: 24
+  delay: 5
+  register: vmagent_unauthed
+  until: vmagent_unauthed.status is defined and vmagent_unauthed.status == 401
+
+- name: Request the API with the generated password
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8429/metrics
+    url_username: vmagent-auth
+    url_password: "{{ vmagent_password_raw.content | b64decode }}"
+    force_basic_auth: true
+    return_content: true
+  register: vmagent_metrics
+  no_log: true
+
+- name: Check vmagent reloaded its scrape config without error
+  ansible.builtin.assert:
+    that:
+      - "'vm_promscrape_config_last_reload_successful 1' in vmagent_metrics.content"
+    fail_msg: vmagent did not report a successful scrape config reload
+
+# the end-to-end assertion for conf_d: the fixture prepare_tasks.yml dropped in
+# there is only reachable if the glob in config.yml resolved to the moved
+# directory and compose mounted it where the container looks
+- name: Read the active scrape targets
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8429/api/v1/targets
+    url_username: vmagent-auth
+    url_password: "{{ vmagent_password_raw.content | b64decode }}"
+    force_basic_auth: true
+  register: vmagent_targets
+  retries: 12
+  delay: 5
+  until: >-
+    vmagent_targets.json is defined and
+    molecule_extra_job in (
+      vmagent_targets.json.data.activeTargets
+      | default([]) | map(attribute='labels')
+      | selectattr('job', 'defined') | map(attribute='job') | list
+    )
+
+- name: Check the job from conf.d is the one that showed up
+  vars:
+    jobs: >-
+      {{ vmagent_targets.json.data.activeTargets | default([])
+         | map(attribute='labels') | selectattr('job', 'defined')
+         | map(attribute='job') | list }}
+  ansible.builtin.assert:
+    that:
+      - molecule_extra_job in jobs
+    fail_msg: >-
+      vmagent scrapes {{ jobs }} - the config dropped into
+      {{ expected_conf_d_dir }} was never loaded

@@ -1,0 +1,47 @@
+---
+# Both optional pieces exist on watchtower-defaults and on neither other host.
+# The role never creates either one, so without this the "conf was dropped" and
+# "config.json was mounted" assertions would have nothing to assert against, and
+# the skip branches on watchtower-custom would pass for the wrong reason.
+
+# Owned by the vmagent role in real deployments. That role is not in this
+# scenario, so stand in for it.
+- name: Create the vmagent conf.d directory
+  ansible.builtin.file:
+    path: "{{ expected_conf_d_dir }}"
+    state: directory
+    mode: "0755"
+  when: expect_vmagent_conf
+
+# Written by whatever logs the host into a registry. Docker would materialise a
+# *directory* here for a missing bind source, so the role only mounts it when a
+# real file is already in place.
+- name: Create the docker CLI config directory
+  ansible.builtin.file:
+    path: /root/.docker
+    state: directory
+    mode: "0700"
+  when: expect_docker_config_mount
+
+- name: Create the docker CLI config
+  ansible.builtin.copy:
+    dest: /root/.docker/config.json
+    content: |
+      {"auths":{}}
+    mode: "0600"
+  when: expect_docker_config_mount
+
+- name: Check the docker CLI config is absent where the skip is expected
+  ansible.builtin.stat:
+    path: /root/.docker/config.json
+  register: watchtower_prepared_docker_config
+  when: not expect_docker_config_mount
+
+- name: Check nothing left a docker CLI config behind on the skip host
+  ansible.builtin.assert:
+    that:
+      - not watchtower_prepared_docker_config.stat.exists
+    fail_msg: >-
+      /root/.docker/config.json already exists, so the "mount is omitted"
+      assertion in tests.yml would pass for the wrong reason
+  when: not expect_docker_config_mount

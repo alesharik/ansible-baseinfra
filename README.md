@@ -7,6 +7,8 @@
 
 ### Roles
 - [`traefik`](./roles/traefik/README.md) - deploy traefik reverse proxy
+- [`vmagent`](./roles/vmagent/README.md) - deploy vmagent metrics scraper
+- [`watchtower`](./roles/watchtower/README.md) - deploy watchtower container updater
 
 ## Users and groups
 This role creates and manages users specified in config. It also can create homes for users, and set up their groups.
@@ -46,7 +48,7 @@ prometheus.io.address: 127.0.0.1:9586 # full address to server
 | `postgres`               | `16.3`, exporter - `v0.15.0`     |              |              |
 | `redis`                  | `7.2.5`                          |              |              |
 | `vmagent`                | `v1.101.0`                       |              |              |
-| `watchtower`             | `1.7.1`                          |              |              |
+| `watchtower`             | `1.14.3`                         | 2026-07-30   | 2026-07-30   |
 | `wg_exporter`            | `3.6.6`                          |              |              |
 | `headscale`              | `v0.25.1`                        | 2025-07-12   | 2025-07-12   |
 | `traefik`                | `v3.6.15`                        | 2026-07-30   | 2026-07-30   |

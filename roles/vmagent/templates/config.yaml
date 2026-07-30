@@ -6,7 +6,7 @@ scrape_configs:
     scrape_interval: 15s
     basic_auth:
       username: 'vmagent-auth'
-      password: {{ pwd }}
+      password: {{ vmagent_password }}
     static_configs:
       - targets: ["localhost:8429"]
         labels:

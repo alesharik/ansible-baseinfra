@@ -1,0 +1,23 @@
+---
+# vmagent globs conf.d once at startup, so a fixture dropped after converge
+# would not be picked up without a restart. The role creates this directory
+# itself, but not until it runs - planting it here is what lets converge start a
+# container that has already read an extra scrape config.
+- name: Create the conf.d directory ahead of the role
+  ansible.builtin.file:
+    path: "{{ expected_conf_d_dir }}"
+    state: directory
+    mode: "0755"
+
+# No basic_auth: the password does not exist until converge generates it. The
+# target answers 401 and stays unhealthy, which is fine - the assertion is that
+# vmagent *found and parsed* this file, not that the scrape succeeded.
+- name: Drop an extra scrape config
+  ansible.builtin.copy:
+    dest: "{{ expected_conf_d_dir }}/molecule.yml"
+    mode: "0644"
+    content: |
+      - job_name: "{{ molecule_extra_job }}"
+        scrape_interval: 5s
+        static_configs:
+          - targets: ["127.0.0.1:8429"]

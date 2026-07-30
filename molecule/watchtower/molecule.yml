@@ -1,0 +1,127 @@
+---
+# Two platforms on purpose. `watchtower-defaults` leaves `watchtower` entirely
+# alone, so it runs the real role defaults and cannot drift from them, and it is
+# the host where the optional pieces are present: a vmagent conf.d to drop into
+# and a docker CLI config to mount. `watchtower-custom` moves every directory,
+# takes both optional pieces away, and disables the default network - so the
+# skip branches and the `none` network are covered by the same converge. The
+# shared converge.yml includes the role by scenario name, so a second scenario is
+# not an option - a scenario is a role name here.
+platforms:
+  - name: watchtower-defaults
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+    # This scenario runs docker inside the instance, and overlayfs refuses to
+    # stack on overlayfs: without a real filesystem under the image store, the
+    # inner daemon fails every pull with "invalid argument" on the overlay
+    # mount. Anonymous volumes are host-backed, which is enough. Docker >= 25
+    # keeps snapshots in containerd, older ones in /var/lib/docker - mount both
+    # so this does not depend on which one the instance installs.
+    volumes:
+      - /var/lib/docker
+      - /var/lib/containerd
+    # anonymous volumes are kept by default; nothing here should outlive destroy
+    keep_volumes: false
+  - name: watchtower-custom
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+    volumes:
+      - /var/lib/docker
+      - /var/lib/containerd
+    keep_volumes: false
+
+provisioner:
+  inventory:
+    group_vars:
+      all:
+        # watchtower's meta pulls in bootstrap, so this scenario has to satisfy
+        # it. `bootstrap` is a plain dict override - it replaces the role
+        # defaults wholesale, so every key the role reads has to be listed here.
+        bootstrap:
+          # would reach the host kernel through the privileged container
+          disable_algif_aead: false
+          disable_transparent_huge_pages: false
+          # nothing under test here needs users or sudoers
+          setup_users: false
+          setup_sudo: false
+          set_hostname: true
+          limits:
+            enabled: true
+            nofile:
+              soft: 8192
+              hard: 1048576
+          swap:
+            enabled: false
+            # NOT /swapfile: /proc/swaps is not namespaced, so teardown-swap.yaml
+            # would match the docker *host's* active swap and swapoff a file this
+            # container never activated. See molecule/bootstrap/molecule.yml.
+            file: /molecule_swapfile
+            size_mb: 4096
+        dir:
+          data: /data
+          ansible: /data/ansible
+        # port the watchtower HTTP API listens on inside the container
+        molecule_api_port: 8080
+    # expected_* is what tests.yml asserts against, spelled out per host rather
+    # than derived from `watchtower`. Deriving the expectation from the same var
+    # the templates read would let a broken template agree with a broken test.
+    host_vars:
+      watchtower-defaults:
+        # `watchtower` is deliberately NOT set: this host runs the role defaults
+        # as published, so it cannot pin a stale copy of them.
+        #
+        # Only `directories.ansible` is set, and nothing includes the vmagent
+        # role - this stands in for the one case where its defaults are in
+        # scope, both roles listed in the same play. A non-default path proves
+        # watchtower.directories.vmagent reads this rather than rebuilding the
+        # path from dir.ansible.
+        vmagent:
+          directories:
+            ansible: /data/ansible/vm/agent
+        expected_compose_dir: /data/ansible/watchtower
+        expected_conf_d_dir: /data/ansible/vm/agent/config/conf.d
+        # this host runs the role defaults rather than a copy of them, and the
+        # verify play does not include the role, so `watchtower` is not in scope
+        # there. tests.yml re-reads the defaults file to prove this still matches.
+        expected_interval: 30
+        # prepare_tasks.yml creates conf.d and the docker CLI config on this
+        # host, so both optional pieces are expected to be wired up
+        expect_vmagent_conf: true
+        expect_docker_config_mount: true
+        expect_network_mode_none: false
+        # compose names the project after project_src, so this is the network it
+        # creates for the role when the flag is off
+        expected_networks:
+          - watchtower_default
+      watchtower-custom:
+        watchtower:
+          image: nickfedor/watchtower
+          version: 1.14.3
+          # left on: the skip below has to be the *conf.d is missing* branch,
+          # not the "vmagent integration is off" branch. The token is still
+          # generated and the metrics API still enabled.
+          vmagent: true
+          interval: 30
+          disable_default_network: true
+          directories:
+            ansible: /data/ansible/wt/updater
+            # never created by anything in this scenario - the role must skip
+            # the drop rather than fail or create it
+            vmagent: /data/ansible/nowhere/conf.d
+        expected_compose_dir: /data/ansible/wt/updater
+        expected_conf_d_dir: /data/ansible/nowhere/conf.d
+        expected_interval: 30
+        expect_vmagent_conf: false
+        expect_docker_config_mount: false
+        expect_network_mode_none: true
+        expected_networks:
+          - none
+        # the default path the role must no longer touch on this host
+        unexpected_paths:
+          - /data/ansible/watchtower

@@ -4,8 +4,8 @@ services:
     image: "{{ vmagent.image }}:{{ vmagent.version }}"
     restart: always
     volumes:
-      - "{{ dir.ansible }}/vmagent/config:/etc/vmagent"
-      - "{{ dir.data }}/vmagent:/vmagent"
+      - "{{ vmagent.directories.ansible }}/config:/etc/vmagent"
+      - "{{ vmagent.directories.data }}:/vmagent"
       - "/var/run/docker.sock:/var/run/docker.sock"
     command:
 {% for key, value in vmagent.remoteWrite.items() %}

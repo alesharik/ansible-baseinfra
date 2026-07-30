@@ -1,5 +1,5 @@
 ---
-watchtower:
+watchtower: # noqa: var-naming[no-role-prefix]
   image: nickfedor/watchtower
   version: 1.14.3
   vmagent: true
@@ -15,3 +15,14 @@ watchtower:
   # `none` rejects aliases, so a service that declares no networks of its own
   # cannot start that way at all.
   disable_default_network: false
+  directories:
+    ansible: "{{ dir.ansible }}/watchtower"
+    # Where the scrape config is dropped. conf.d hangs off the vmagent role's
+    # compose dir, so this follows `vmagent.directories.ansible` - visible here
+    # only when that role is in the same play's `roles:` list, the one case
+    # where its defaults are in scope. Under `include_role` they are not, and a
+    # wholesale `vmagent:` override can drop the key; the fallback is where that
+    # role puts it by default, so neither case changes where the file lands. The
+    # role never creates this directory: when it does not exist the scrape
+    # config is skipped, not templated into thin air.
+    vmagent: "{{ vmagent.directories.ansible | default(dir.ansible ~ '/vmagent') }}/config/conf.d"

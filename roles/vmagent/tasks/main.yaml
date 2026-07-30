@@ -1,56 +1,57 @@
 ---
 - name: Create compose dir
   ansible.builtin.file:
-    path: "{{ dir.ansible }}/vmagent"
+    path: "{{ vmagent.directories.ansible }}"
     state: directory
-    mode: 0755
+    mode: "0755"
   tags: vmagent
 - name: Create data dir
   ansible.builtin.file:
-    path: "{{ dir.data }}/vmagent"
+    path: "{{ vmagent.directories.data }}"
     state: directory
     owner: '10001'
-    mode: 0700
+    mode: "0700"
   tags: vmagent
 - name: Make config folder
   ansible.builtin.file:
-    path: "{{ dir.ansible }}/vmagent/config"
+    path: "{{ vmagent.directories.ansible }}/config"
     state: directory
-    mode: 0755
+    mode: "0755"
   tags: vmagent
 - name: Make extended config folder
   ansible.builtin.file:
-    path: "{{ dir.ansible }}/vmagent/config/conf.d"
+    path: "{{ vmagent.directories.ansible }}/config/conf.d"
     state: directory
-    mode: 0755
+    mode: "0755"
   tags: vmagent
 
 - name: Read password
   tags: vmagent
-  shell: |
-    cat {{ dir.ansible }}/vmagent/config/password
-  register: pwd
+  ansible.builtin.shell: |
+    cat {{ vmagent.directories.ansible }}/config/password
+  register: vmagent_password_raw
+  changed_when: false
   ignore_errors: true
 
 - name: Set password fact
   tags: vmagent
-  set_fact:
-    pwd: "{{ pwd.stdout }}"
-  when: pwd is defined
+  ansible.builtin.set_fact:
+    vmagent_password: "{{ vmagent_password_raw.stdout }}"
+  when: vmagent_password_raw is defined
 
 - name: Generate password
   tags: vmagent
-  set_fact:
-    pwd: "{{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}"
-  when: not pwd|default(None)
+  ansible.builtin.set_fact:
+    vmagent_password: "{{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}"
+  when: not vmagent_password | default(None)
 
 - name: Write password
-  copy:
-    dest: "{{ dir.ansible }}/vmagent/config/password"
-    content: "{{ pwd }}"
+  ansible.builtin.copy:
+    dest: "{{ vmagent.directories.ansible }}/config/password"
+    content: "{{ vmagent_password }}"
     group: root
     owner: root
-    mode: 0550
+    mode: "0550"
   tags: vmagent
   notify:
     - restart vmagent
@@ -58,28 +59,28 @@
 - name: Move compose files
   ansible.builtin.template:
     src: docker-compose.yml
-    dest: "{{ dir.ansible }}/vmagent/docker-compose.yml"
-    mode: 0755
+    dest: "{{ vmagent.directories.ansible }}/docker-compose.yml"
+    mode: "0755"
   tags: vmagent
   notify:
     - restart vmagent
 - name: Move config
   ansible.builtin.template:
     src: config.yaml
-    dest: "{{ dir.ansible }}/vmagent/config/config.yml"
-    mode: 0755
+    dest: "{{ vmagent.directories.ansible }}/config/config.yml"
+    mode: "0755"
   tags: vmagent
   notify:
     - restart vmagent
 
 - name: Clear password
-  set_fact:
-    pwd: ''
+  ansible.builtin.set_fact:
+    vmagent_password: ''
   tags: vmagent
 
 - name: Start vmagent
   community.docker.docker_compose_v2:
-    project_src: "{{ dir.ansible }}/vmagent"
+    project_src: "{{ vmagent.directories.ansible }}"
     state: present
   tags: vmagent
 
