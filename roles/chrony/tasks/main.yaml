@@ -30,8 +30,20 @@
     owner: root
     group: root
     # extra_config is written verbatim, so reject a broken file here rather
-    # than leaving one on disk for the handler restart to trip over
-    validate: /usr/sbin/chronyd -p -f %s
+    # than leaving one on disk for the handler restart to trip over.
+    # The Debian package ships an AppArmor profile (usr.sbin.chronyd) that
+    # only lets chronyd read /etc/chrony/**, so it cannot open the file
+    # ansible renders into its remote tmp dir - that fails as "Could not
+    # open ... : Permission denied" wherever the profile is loaded, which
+    # is every Debian host with AppArmor on. Stage the candidate inside
+    # /etc/chrony instead; nothing includes it, so it is only ever read by
+    # this check.
+    validate: >-
+      /bin/sh -c 'set -e;
+      t=$(mktemp /etc/chrony/validate.XXXXXX);
+      trap "rm -f $t" EXIT;
+      cat "%s" >"$t";
+      /usr/sbin/chronyd -p -f "$t"'
   notify:
     - restart chrony
 # left behind by the versions of this role that templated to /etc/chrony.conf,
