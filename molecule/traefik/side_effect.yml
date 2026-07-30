@@ -1,0 +1,39 @@
+---
+# Covers traefik.disable_default_network, which converge cannot reach from cold.
+# Compose puts a network-scoped alias on every attachment and docker's built-in
+# `none` network rejects aliases, so a service left on the default network fails
+# to start once that default is `none` - the role is only usable with the flag
+# on when traefik.networks names a network that already exists. Docker itself
+# only exists after converge has run the role's docker dependency, so this is
+# the first hook where the network can be created and the role re-run.
+- name: Side effect
+  hosts: traefik-custom
+  environment:
+    ANSIBLE_UNSAFE_WRITES: "1"
+  tasks:
+    # not community.docker.docker_network: that module needs the docker SDK for
+    # python, and roles/docker installs only the cli and the compose plugin
+    - name: Create the external network the role will attach to
+      ansible.builtin.command: "docker network create {{ molecule_external_network }}"
+      register: traefik_network_create
+      changed_when: traefik_network_create.rc == 0
+      failed_when: >-
+        traefik_network_create.rc != 0 and
+        'already exists' not in traefik_network_create.stderr
+
+    # combine rather than a second literal dict: the whole point of the re-run
+    # is that only these two keys differ from what converge used, and a
+    # hand-copied dict could drift and hide that
+    - name: Build the traefik vars with the default network disabled
+      ansible.builtin.set_fact:
+        traefik_nonet: >-
+          {{ traefik | combine({
+               'networks': [molecule_external_network],
+               'disable_default_network': true
+             }) }}
+
+    - name: Re-run the role with the default network disabled
+      ansible.builtin.include_role:
+        name: alesharik.baseinfra.traefik
+      vars:
+        traefik: "{{ traefik_nonet }}"

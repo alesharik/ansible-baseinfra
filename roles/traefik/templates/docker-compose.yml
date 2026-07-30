@@ -1,10 +1,18 @@
-{% if traefik.networks is defined and traefik.networks|length > 0 %}
+{% set traefik_external_networks = traefik.networks | default([]) %}
+{% set traefik_no_default_network = traefik.disable_default_network | default(false) %}
+{#- both feed the same top-level mapping, so the key is emitted once for either -#}
+{% if traefik_external_networks | length > 0 or traefik_no_default_network %}
 networks:
-{% for net in traefik.networks %}
+{% for net in traefik_external_networks %}
   "{{ net }}":
     name: "{{ net }}"
     external: true
 {% endfor %}
+{% if traefik_no_default_network %}
+  default:
+    external: true
+    name: none
+{% endif %}
 {% endif %}
 services:
   traefik:

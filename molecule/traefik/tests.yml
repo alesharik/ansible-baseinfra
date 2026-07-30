@@ -18,6 +18,7 @@
     that:
       - role_defaults.traefik.entrypoints == traefik.entrypoints
       - role_defaults.traefik.listen_ips == traefik.listen_ips
+      - role_defaults.traefik.disable_default_network == traefik.disable_default_network
     fail_msg: >-
       roles/traefik/defaults/main.yaml has changed - the "defaults" host is
       pinning something else now
@@ -67,6 +68,36 @@
     fail_msg: >-
       compose ports are {{ compose.services.traefik.ports | default('<unset>') }},
       expected {{ expected_listen_ips }}
+
+# --- disable_default_network -------------------------------------------------
+# traefik-defaults names no networks and leaves the flag off, so the template
+# must emit no top-level networks mapping at all. traefik-custom was re-run by
+# side_effect.yml with the flag on and one external network.
+- name: Check no networks are declared when the flag is off
+  vars:
+    compose: "{{ traefik_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - compose.networks is not defined
+    fail_msg: >-
+      compose declares networks {{ compose.networks | default({}) }} on a host
+      that names none and leaves disable_default_network off
+  when: inventory_hostname == 'traefik-defaults'
+
+# spelled out rather than derived from traefik.networks: an expectation built
+# from the same var the template reads would agree with a broken template
+- name: Check the flag points the default network at none
+  vars:
+    compose: "{{ traefik_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - "compose.networks['default'] == {'external': true, 'name': 'none'}"
+      - "compose.networks['molecule-traefik'] == {'external': true, 'name': 'molecule-traefik'}"
+      # the external network has to survive alongside default, not replace it -
+      # a service left on the default network could not start at all
+      - "compose.services.traefik.networks == ['molecule-traefik']"
+    fail_msg: "compose networks are {{ compose.networks | default('<unset>') }}"
+  when: inventory_hostname == 'traefik-custom'
 
 - name: Stat the acme directory
   ansible.builtin.stat:
@@ -128,6 +159,27 @@
   until: >-
     traefik_inspect_raw.rc == 0 and
     (traefik_inspect_raw.stdout | from_json)[0].State.Health.Status == 'healthy'
+
+# the rendered file only proves the template; this proves docker acted on it.
+# compose names the project after project_src, so the network it creates for
+# this role when the flag is off is traefik_default
+- name: Check the container is on the project default network when the flag is off
+  vars:
+    nets: "{{ (traefik_inspect_raw.stdout | from_json)[0].NetworkSettings.Networks | list }}"
+  ansible.builtin.assert:
+    that:
+      - nets == ['traefik_default']
+    fail_msg: "container is attached to {{ nets }}, expected the compose default network"
+  when: inventory_hostname == 'traefik-defaults'
+
+- name: Check the container joined only the external network when the flag is on
+  vars:
+    nets: "{{ (traefik_inspect_raw.stdout | from_json)[0].NetworkSettings.Networks | list }}"
+  ansible.builtin.assert:
+    that:
+      - nets == ['molecule-traefik']
+    fail_msg: "container is attached to {{ nets }}, expected only molecule-traefik"
+  when: inventory_hostname == 'traefik-custom'
 
 - name: Check docker bound exactly the addresses in listen_ips
   vars:

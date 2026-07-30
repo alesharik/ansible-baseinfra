@@ -4,3 +4,14 @@ watchtower:
   version: 1.14.3
   vmagent: true
   interval: 30
+  # Puts the container on docker's built-in `none` network, so compose creates
+  # no project bridge network - one less network, and one less set of iptables
+  # rules, on machines short of memory. Watchtower itself only needs the docker
+  # socket, but with no network it cannot deliver notifications or answer the
+  # metrics API, so leave this off with `vmagent: true` or `notification_url`.
+  #
+  # network_mode rather than a `networks: {default: {external: true, name:
+  # none}}` mapping: compose puts a network-scoped alias on every attachment and
+  # `none` rejects aliases, so a service that declares no networks of its own
+  # cannot start that way at all.
+  disable_default_network: false

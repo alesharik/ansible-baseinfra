@@ -94,12 +94,15 @@ provisioner:
             - "0.0.0.0:443:443"
             - "0.0.0.0:80:80"
           networks: []
+          disable_default_network: false
           env: []
           directories:
-            # NOT the role default of {{ playbook_dir }}/traefik: playbook_dir is
-            # molecule/ here, so the default would template this scenario's own
-            # molecule.yml and tests.yml into confs/
-            configs: "{{ playbook_dir }}/traefik/fixtures/confs"
+            # NOT the role default of {{ playbook_dir }}/traefik, which would
+            # template this scenario's own molecule.yml and tests.yml into
+            # confs/. Anchored to the scenario dir rather than playbook_dir
+            # because playbook_dir is molecule/ under the shared converge.yml
+            # but molecule/traefik/ under this scenario's side_effect.yml.
+            configs: "{{ lookup('env', 'MOLECULE_SCENARIO_DIRECTORY') }}/fixtures/confs"
             ansible: "{{ dir.ansible }}/traefik"
             acme: "{{ dir.data }}/traefik-acme"
         expected_entrypoints:
@@ -156,10 +159,14 @@ provisioner:
           listen_ips:
             - "127.0.0.1:8001:8000"
             - "127.0.0.1:8444:8443"
+          # converge runs with the default network on; side_effect.yml flips
+          # both of these and re-runs the role, so verify sees the disabled
+          # state on this host and the default state on traefik-defaults
           networks: []
+          disable_default_network: false
           env: []
           directories:
-            configs: "{{ playbook_dir }}/traefik/fixtures/confs"
+            configs: "{{ lookup('env', 'MOLECULE_SCENARIO_DIRECTORY') }}/fixtures/confs"
             ansible: "{{ dir.ansible }}/traefik"
             acme: "{{ dir.data }}/traefik-acme"
         expected_entrypoints:
@@ -188,3 +195,7 @@ provisioner:
         molecule_tls_entrypoint: https
         molecule_http_port: 8001
         molecule_tls_port: 8444
+        # side_effect.yml creates this network and re-runs the role attached to
+        # it; a service on the `none` default network cannot start, so the
+        # disabled state is only reachable with an external network to move to
+        molecule_external_network: molecule-traefik

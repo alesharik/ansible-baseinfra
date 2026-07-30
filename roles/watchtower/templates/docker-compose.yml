@@ -3,6 +3,9 @@ services:
     container_name: watchtower
     image: "{{ watchtower.image }}:{{ watchtower.version }}"
     restart: always
+{% if watchtower.disable_default_network | default(false) %}
+    network_mode: none
+{% endif %}
     environment:
       WATCHTOWER_ROLLING_RESTART: 'true'
       WATCHTOWER_NOTIFICATIONS_HOSTNAME: "{{ inventory_hostname }}"

@@ -30,6 +30,7 @@ traefik:
     - "0.0.0.0:443:443"
     - "0.0.0.0:80:80"
   networks: [] # external docker networks to attach to
+  disable_default_network: false # point compose's default network at `none`
   env: [] # environment lines for the container, e.g. "CF_API_EMAIL=me@example.com"
   directories:
     configs: "{{ playbook_dir }}/traefik" # dynamic confs on the controller
@@ -61,6 +62,24 @@ traefik:
     - "0.0.0.0:443:443/udp"
 ```
 
+`disable_default_network` points compose's default network at docker's built-in
+`none`, so no project bridge network is created — one less network, and one less
+set of iptables rules, on machines short of memory.
+
+It only works alongside a non-empty `networks`. Compose puts a network-scoped
+alias on every attachment and `none` rejects aliases, so a container left on the
+default network does not start at all — compose fails the whole project with
+`network-scoped aliases are only supported for user-defined networks`. The
+networks listed are external: they must already exist, the role does not create
+them.
+
+```yaml
+traefik:
+  networks:
+    - proxy
+  disable_default_network: true
+```
+
 `traefik.certificatesResolvers` is optional and, when set, is written into
 `traefik.yml` verbatim too. `directories.acme` is mounted at `/acme`, so that is
 where `storage` should point:
@@ -87,11 +106,14 @@ it through its file provider. Files in `confs/` that are not in
 
 #### Docker networks
 - connect to specified networks
+- with `disable_default_network`, creates no project default network
 
 ### Networking
 - by default, exposes 80 HTTP port on `0.0.0.0.0`
 - by default, exposes 443 HTTPS port on `0.0.0.0.0`
 - connects to specified networks
+- with `disable_default_network`, the compose default network points at `none`,
+  so the container is only ever on the networks named in `networks`
 
 ### Handlers
 - `restart traefik` - restarts registry

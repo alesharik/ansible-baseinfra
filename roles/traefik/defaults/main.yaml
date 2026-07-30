@@ -19,6 +19,12 @@ traefik: # noqa: var-naming[no-role-prefix]
     - "0.0.0.0:443:443"
     - "0.0.0.0:80:80"
   networks: []
+  # Points compose's default network at docker's built-in `none`, so no project
+  # bridge network is created - one less network, and one less set of iptables
+  # rules, on machines short of memory. Only safe with a non-empty `networks`:
+  # compose sets network-scoped aliases on every attachment and `none` rejects
+  # them, so a service left on the default network fails to start.
+  disable_default_network: false
   env: []
   directories:
     configs: "{{ playbook_dir }}/traefik"
