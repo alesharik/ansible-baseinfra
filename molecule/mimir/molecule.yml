@@ -13,7 +13,6 @@ platforms:
     command: /lib/systemd/systemd
     privileged: true
     cgroup_parent: docker.slice
-    dns_servers: ["192.168.3.1"]
     # This scenario runs docker inside the instance, and overlayfs refuses to
     # stack on overlayfs: without a real filesystem under the image store, the
     # inner daemon fails every pull with "invalid argument" on the overlay
@@ -31,7 +30,6 @@ platforms:
     command: /lib/systemd/systemd
     privileged: true
     cgroup_parent: docker.slice
-    dns_servers: ["192.168.3.1"]
     volumes:
       - /var/lib/docker
       - /var/lib/containerd
