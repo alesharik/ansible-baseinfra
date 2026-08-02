@@ -1,43 +1,43 @@
 ---
 - name: Create compose dir
   ansible.builtin.file:
-    path: "{{ dir.ansible }}/mimir"
+    path: "{{ mimir.directories.ansible }}"
     state: directory
-    mode: 0755
+    mode: "0755"
   tags: mimir
 - name: Create data dir
   ansible.builtin.file:
-    path: "{{ dir.data }}/mimir"
+    path: "{{ mimir.directories.data }}"
     state: directory
-    mode: 0755
+    mode: "0755"
     owner: '10001'
   tags: mimir
 - name: Move compose files
   ansible.builtin.template:
     src: docker-compose.yml
-    dest: "{{ dir.ansible }}/mimir/docker-compose.yml"
-    mode: 0755
+    dest: "{{ mimir.directories.ansible }}/docker-compose.yml"
+    mode: "0755"
   tags: mimir
   notify:
     - restart mimir
 - name: Make config folder
   ansible.builtin.file:
-    path: "{{ dir.ansible }}/mimir/config"
+    path: "{{ mimir.directories.ansible }}/config"
     state: directory
-    mode: 0755
+    mode: "0755"
   tags: mimir
 - name: Move config
   ansible.builtin.template:
     src: config.yaml
-    dest: "{{ dir.ansible }}/mimir/config/config.yaml"
-    mode: 0755
+    dest: "{{ mimir.directories.ansible }}/config/config.yaml"
+    mode: "0755"
   tags: mimir
   notify:
     - restart mimir
 
 - name: Start mimir
   community.docker.docker_compose_v2:
-    project_src: "{{ dir.ansible }}/mimir"
+    project_src: "{{ mimir.directories.ansible }}"
     state: present
   tags: mimir
 

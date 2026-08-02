@@ -1,5 +1,24 @@
 ---
-grafana:
+grafana: # noqa: var-naming[no-role-prefix]
   image: grafana/grafana-oss
   version: 13.0.2
   networks: []
+  # Points compose's default network at docker's built-in `none`, so no project
+  # bridge network is created - one less network, and one less set of iptables
+  # rules, on machines short of memory. Only safe with a non-empty `networks`:
+  # compose sets network-scoped aliases on every attachment and `none` rejects
+  # them, so a service left on the default network fails to start.
+  disable_default_network: false
+  # Everything the container is configured with beyond the admin password, which
+  # is a docker secret rather than an env var. Whatever fronts grafana is told
+  # about it here - `VIRTUAL_HOST=`/`LETSENCRYPT_HOST=` for nginx-proxy,
+  # `GF_SERVER_ROOT_URL=` behind traefik - and so is any GF_* setting.
+  env: []
+  directories:
+    # `admin_password.txt` sits next to the compose file and is referenced from
+    # it by relative path, the way compose resolves a `secrets: file:` entry, so
+    # it is not a var of its own - it cannot live anywhere but here. That mount
+    # keeps the host ownership, which is why the role writes it owned by 472.
+    ansible: "{{ dir.ansible }}/grafana"
+    # mounted at /var/lib/grafana - the sqlite database, plugins and dashboards
+    data: "{{ dir.data }}/grafana"

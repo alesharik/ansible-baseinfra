@@ -1,8 +1,24 @@
 ---
-mimir:
+mimir: # noqa: var-naming[no-role-prefix]
   image: grafana/mimir
   version: 2.16.0
   networks: []
+  # Points compose's default network at docker's built-in `none`, so no project
+  # bridge network is created - one less network, and one less set of iptables
+  # rules, on machines short of memory. Only safe with a non-empty `networks`:
+  # compose sets network-scoped aliases on every attachment and `none` rejects
+  # them, so a service left on the default network fails to start.
+  disable_default_network: false
+  env: []
   log_format: json
   compactor_blocks_retention_period: 4w
   max_ingestion_rate: 50000
+  directories:
+    # `<ansible>/config` hangs off this and is bind-mounted at /etc/mimir, so the
+    # only file mimir reads from the host moves with it. It is not a var of its
+    # own: the container is told `-config.file=/etc/mimir/config.yaml`, a path
+    # fixed on its side of the mount.
+    ansible: "{{ dir.ansible }}/mimir"
+    # mounted at /var/lib/mimir - the tsdb, its sync dir, compaction working
+    # files and rules are all configured as subdirectories of it
+    data: "{{ dir.data }}/mimir"

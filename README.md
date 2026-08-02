@@ -6,6 +6,9 @@
 - [`docker`](./roles/docker/README.md) - install docker
 
 ### Roles
+- [`grafana`](./roles/grafana/README.md) - deploy grafana
+- [`loki`](./roles/loki/README.md) - deploy loki log store
+- [`mimir`](./roles/mimir/README.md) - deploy mimir metrics store
 - [`traefik`](./roles/traefik/README.md) - deploy traefik reverse proxy
 - [`vmagent`](./roles/vmagent/README.md) - deploy vmagent metrics scraper
 - [`watchtower`](./roles/watchtower/README.md) - deploy watchtower container updater
@@ -38,10 +41,10 @@ prometheus.io.address: 127.0.0.1:9586 # full address to server
 |--------------------------|----------------------------------|--------------|--------------|
 | `clickhouse`             | `24.6.2.17-alpine`               |              |              |
 | `docker_registry_server` | `2`                              |              |              |
-| `grafana`                | `12.0.2`                         | 2025-06-22   | 2025-06-22   |
+| `grafana`                | `13.0.2`                         | 2026-08-01   | 2026-06-14   |
 | `harbor`                 | `2.11.0`                         |              |              |
-| `loki`                   | `3.5`                            | 2025-06-22   | 2025-06-22   |
-| `mimir`                  | `2.16.0`                         | 2025-06-22   | 2025-06-22   |
+| `loki`                   | `3.5`                            | 2026-08-01   | 2025-06-22   |
+| `mimir`                  | `2.16.0`                         | 2026-08-01   | 2025-06-22   |
 | `minio`                  | `RELEASE.2024-07-04T14-25-45Z`   |              |              |
 | `nginx_proxy`            | nginx - `1.7-alpine`, le - `2.5` |              |              |
 | `node_exporter`          | `v1.8.1`                         |              |              |

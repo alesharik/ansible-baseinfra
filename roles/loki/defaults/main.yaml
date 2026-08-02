@@ -1,8 +1,15 @@
 ---
-loki:
+loki: # noqa: var-naming[no-role-prefix]
   image: grafana/loki
   version: 3.5
   networks: []
+  # Points compose's default network at docker's built-in `none`, so no project
+  # bridge network is created - one less network, and one less set of iptables
+  # rules, on machines short of memory. Only safe with a non-empty `networks`:
+  # compose sets network-scoped aliases on every attachment and `none` rejects
+  # them, so a service left on the default network fails to start.
+  disable_default_network: false
+  env: []
   allow_structured_metadata: true
   log_format: json
   retention:
@@ -15,3 +22,12 @@ loki:
   migration_dates:
     v11: "2020-10-24"
     v13: "2024-07-06"
+  directories:
+    # `<ansible>/config` hangs off this and is bind-mounted at /etc/loki, so the
+    # only file loki reads from the host moves with it. It is not a var of its
+    # own: the container is told `-config.file=/etc/loki/config.yaml`, a path
+    # fixed on its side of the mount.
+    ansible: "{{ dir.ansible }}/loki"
+    # mounted at /var/lib/loki, which the config uses as `common.path_prefix` -
+    # chunks, the tsdb index, compaction and rules all hang off it
+    data: "{{ dir.data }}/loki"

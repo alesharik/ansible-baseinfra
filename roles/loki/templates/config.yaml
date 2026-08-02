@@ -30,7 +30,7 @@ compactor:
 
 limits_config:
   allow_structured_metadata: {{ loki.allow_structured_metadata | lower }}
-  {{ loki.retention | to_nice_yaml | indent(2) }}
+  {{ loki.retention | to_nice_yaml(indent=2) | trim | indent(2) }}
 
 storage_config:
   use_thanos_objstore: true

@@ -1,6 +1,6 @@
 ---
 - name: restart loki
   community.docker.docker_compose_v2:
-    project_src: "{{ dir.ansible }}/loki"
+    project_src: "{{ loki.directories.ansible }}"
     state: restarted
   tags: loki

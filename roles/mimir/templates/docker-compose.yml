@@ -1,22 +1,36 @@
-{% if mimir.networks is defined and mimir.networks|length > 0 %}
+{% set mimir_external_networks = mimir.networks | default([]) %}
+{% set mimir_no_default_network = mimir.disable_default_network | default(false) %}
+{#- both feed the same top-level mapping, so the key is emitted once for either -#}
+{% if mimir_external_networks | length > 0 or mimir_no_default_network %}
 networks:
-{% for net in mimir.networks %}
+{% for net in mimir_external_networks %}
   "{{ net }}":
     name: "{{ net }}"
     external: true
 {% endfor %}
+{% if mimir_no_default_network %}
+  default:
+    external: true
+    name: none
+{% endif %}
 {% endif %}
 services:
   mimir:
     image: "{{ mimir.image }}:{{ mimir.version }}"
     restart: always
     command: -config.file=/etc/mimir/config.yaml -target=all
+{% if mimir.env is defined and mimir.env | length > 0 %}
+    environment:
+{% for item in mimir.env %}
+      - "{{ item }}"
+{% endfor %}
+{% endif %}
     volumes:
-      - "{{ dir.data }}/mimir:/var/lib/mimir"
-      - "{{ dir.ansible }}/mimir/config:/etc/mimir"
-{% if mimir.networks is defined and mimir.networks|length > 0 %}
+      - "{{ mimir.directories.data }}:/var/lib/mimir"
+      - "{{ mimir.directories.ansible }}/config:/etc/mimir"
+{% if mimir_external_networks | length > 0 %}
     networks:
-{% for net in mimir.networks %}
+{% for net in mimir_external_networks %}
       - "{{ net }}"
 {% endfor %}
 {% endif %}

@@ -1,31 +1,40 @@
 ---
 - name: Create compose dir
   ansible.builtin.file:
-    path: "{{ dir.ansible }}/grafana"
+    path: "{{ grafana.directories.ansible }}"
     state: directory
-    mode: 0755
+    mode: "0755"
   tags: grafana
 - name: Create data dir
   ansible.builtin.file:
-    path: "{{ dir.data }}/grafana"
+    path: "{{ grafana.directories.data }}"
     state: directory
-    mode: 0755
+    mode: "0755"
     owner: '472'
   tags: grafana
 
 - name: Move compose files
   ansible.builtin.template:
     src: docker-compose.yml
-    dest: "{{ dir.ansible }}/grafana/docker-compose.yml"
-    mode: 0755
+    dest: "{{ grafana.directories.ansible }}/docker-compose.yml"
+    mode: "0755"
   tags: grafana
   notify:
     - restart grafana
+# 0400, owned by the uid grafana runs as. It used to be 0755 - world readable,
+# for a file whose only content is the admin password.
+#
+# NOT 0400 root: compose bind-mounts a `secrets: file:` entry, so the host
+# ownership is what the container sees, and grafana is uid 472. A root-owned
+# 0400 file is unreadable to it, and grafana then falls back to its built-in
+# default password without saying so - which leaves the instance reachable with
+# admin/admin. molecule/grafana asserts that login is rejected.
 - name: Move admin password
   ansible.builtin.template:
     src: admin_password.txt
-    dest: "{{ dir.ansible }}/grafana/admin_password.txt"
-    mode: 0755
+    dest: "{{ grafana.directories.ansible }}/admin_password.txt"
+    owner: '472'
+    mode: "0400"
   tags: grafana
   notify:
     - restart grafana
@@ -33,7 +42,7 @@
 - name: Start grafana
   tags: grafana
   community.docker.docker_compose_v2:
-    project_src: "{{ dir.ansible }}/grafana"
+    project_src: "{{ grafana.directories.ansible }}"
     state: present
 
 - name: Make sure handlers are flushed immediately

@@ -1,22 +1,36 @@
-{% if loki.networks is defined and loki.networks|length > 0 %}
+{% set loki_external_networks = loki.networks | default([]) %}
+{% set loki_no_default_network = loki.disable_default_network | default(false) %}
+{#- both feed the same top-level mapping, so the key is emitted once for either -#}
+{% if loki_external_networks | length > 0 or loki_no_default_network %}
 networks:
-{% for net in loki.networks %}
+{% for net in loki_external_networks %}
   "{{ net }}":
     name: "{{ net }}"
     external: true
 {% endfor %}
+{% if loki_no_default_network %}
+  default:
+    external: true
+    name: none
+{% endif %}
 {% endif %}
 services:
   loki:
     image: "{{ loki.image }}:{{ loki.version }}"
     restart: always
     command: -config.file=/etc/loki/config.yaml
+{% if loki.env is defined and loki.env | length > 0 %}
+    environment:
+{% for item in loki.env %}
+      - "{{ item }}"
+{% endfor %}
+{% endif %}
     volumes:
-      - "{{ dir.data }}/loki:/var/lib/loki"
-      - "{{ dir.ansible }}/loki/config:/etc/loki"
-{% if loki.networks is defined and loki.networks|length > 0 %}
+      - "{{ loki.directories.data }}:/var/lib/loki"
+      - "{{ loki.directories.ansible }}/config:/etc/loki"
+{% if loki_external_networks | length > 0 %}
     networks:
-{% for net in loki.networks %}
+{% for net in loki_external_networks %}
       - "{{ net }}"
 {% endfor %}
 {% endif %}

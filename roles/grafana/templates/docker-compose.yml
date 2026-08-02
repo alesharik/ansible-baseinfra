@@ -1,30 +1,42 @@
-{% if grafana.networks is defined and grafana.networks|length > 0 %}
+{% set grafana_external_networks = grafana.networks | default([]) %}
+{% set grafana_no_default_network = grafana.disable_default_network | default(false) %}
+{#- both feed the same top-level mapping, so the key is emitted once for either. -#}
+{#- `environment` is rendered as a list, not a mapping: `env` lines are already -#}
+{#- KEY=value, and compose takes one style or the other, not both in a service. -#}
+{#- `secrets.admin_password.file` is relative, so compose resolves it against -#}
+{#- this file's own directory - which is why it is not a var of its own. -#}
+{% if grafana_external_networks | length > 0 or grafana_no_default_network %}
 networks:
-{% for net in grafana.networks %}
+{% for net in grafana_external_networks %}
   "{{ net }}":
     name: "{{ net }}"
     external: true
 {% endfor %}
+{% if grafana_no_default_network %}
+  default:
+    external: true
+    name: none
+{% endif %}
 {% endif %}
 services:
   grafana:
     image: "{{ grafana.image }}:{{ grafana.version }}"
     restart: always
     environment:
-      VIRTUAL_HOST: "{{ grafana.host }}"
-      VIRTUAL_PORT: 3000
-      LETSENCRYPT_HOST: "{{ grafana.host }}"
-      GF_SECURITY_ADMIN_PASSWORD__FILE: "/run/secrets/admin_password"
+      - "GF_SECURITY_ADMIN_PASSWORD__FILE=/run/secrets/admin_password"
+{% for item in grafana.env | default([]) %}
+      - "{{ item }}"
+{% endfor %}
     volumes:
-      - "{{ dir.data }}/grafana:/var/lib/grafana"
+      - "{{ grafana.directories.data }}:/var/lib/grafana"
     secrets:
       - admin_password
-{% if grafana.networks is defined and grafana.networks|length > 0 %}
+{% if grafana_external_networks | length > 0 %}
     networks:
-{% for net in grafana.networks %}
+{% for net in grafana_external_networks %}
       - "{{ net }}"
 {% endfor %}
 {% endif %}
 secrets:
-   admin_password:
-     file: admin_password.txt
+  admin_password:
+    file: admin_password.txt

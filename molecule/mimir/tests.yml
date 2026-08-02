@@ -1,0 +1,283 @@
+---
+# --- defaults have not drifted from what this scenario pins ------------------
+# mimir-defaults deliberately does not set `mimir` at all, so it runs the role
+# defaults as published. The verify play does not include the role, so those
+# defaults are not in scope here - the expectations are spelled out in host_vars,
+# and this re-reads the file to prove they still match it.
+- name: Read the role defaults from the controller
+  ansible.builtin.slurp:
+    src: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}/roles/mimir/defaults/main.yaml"
+  delegate_to: localhost
+  become: false
+  register: role_defaults_raw
+  when: inventory_hostname == 'mimir-defaults'
+
+- name: Check the pinned expectations still equal the role defaults
+  vars:
+    role_defaults: "{{ role_defaults_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - role_defaults.mimir.log_format == expected_log_format
+      - role_defaults.mimir.compactor_blocks_retention_period == expected_retention
+      - role_defaults.mimir.max_ingestion_rate == expected_ingestion_rate
+      - not role_defaults.mimir.disable_default_network
+      - role_defaults.mimir.env == expected_env
+      - role_defaults.mimir.networks == []
+    fail_msg: >-
+      roles/mimir/defaults/main.yaml has changed - the "defaults" host is running
+      something else now
+  when: inventory_hostname == 'mimir-defaults'
+
+# --- every directory in the var, and nothing outside it ----------------------
+- name: Stat the directories the role should have created
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: mimir_dirs
+  loop:
+    - "{{ expected_compose_dir }}"
+    - "{{ expected_data_dir }}"
+    - "{{ expected_config_dir }}"
+
+- name: Check each directory exists
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isdir
+    fail_msg: "{{ item.item }} is not a directory"
+  loop: "{{ mimir_dirs.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Check the data dir is owned by the uid mimir runs as
+  vars:
+    data_dir: "{{ mimir_dirs.results | selectattr('item', 'eq', expected_data_dir) | first }}"
+  ansible.builtin.assert:
+    that:
+      - data_dir.stat.uid == 10001
+    fail_msg: "{{ expected_data_dir }} is owned by uid {{ data_dir.stat.uid }}, expected 10001"
+
+# the whole point of the vars: a path still derived from dir.ansible/dir.data
+# would show up here even though every assertion above passed
+- name: Stat the default paths the role must no longer use
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: mimir_default_paths
+  loop: "{{ unexpected_paths | default([]) }}"
+
+- name: Check the role wrote nothing outside mimir.directories
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists
+    fail_msg: >-
+      {{ item.item }} exists - something in the role still derives its path from
+      dir.ansible/dir.data instead of mimir.directories
+  loop: "{{ mimir_default_paths.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# --- docker-compose.yml ------------------------------------------------------
+- name: Read the rendered docker-compose.yml
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/docker-compose.yml"
+  register: mimir_compose_raw
+
+- name: Check compose mounts the directories from the vars
+  vars:
+    compose: "{{ mimir_compose_raw.content | b64decode | from_yaml }}"
+    volumes: "{{ compose.services.mimir.volumes }}"
+  ansible.builtin.assert:
+    that:
+      - compose.services | list == ['mimir']
+      # deliberately unset: a hardcoded container_name is global to the daemon,
+      # so it collides with anything else already holding the name and ignores
+      # the project namespacing compose gives the container for free
+      - compose.services.mimir.container_name is not defined
+      - "expected_data_dir ~ ':/var/lib/mimir' in volumes"
+      - "expected_config_dir ~ ':/etc/mimir' in volumes"
+      # the mount source is <ansible>/config and the config path is fixed on the
+      # container's side, so a change to either has to move with the other
+      - "'/etc/mimir/config.yaml' in compose.services.mimir.command"
+      - "'-target=all' in compose.services.mimir.command"
+    fail_msg: "compose mounts {{ volumes }} and runs {{ compose.services.mimir.command }}"
+
+- name: Check env reached the compose environment
+  vars:
+    compose: "{{ mimir_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - compose.services.mimir.environment | default([]) == expected_env
+    fail_msg: >-
+      compose environment is
+      {{ compose.services.mimir.environment | default('<unset>') }},
+      expected {{ expected_env }}
+
+# --- disable_default_network -------------------------------------------------
+# mimir-defaults names no networks and leaves the flag off, so the template must
+# emit no top-level networks mapping at all. mimir-custom was re-run by
+# side_effect.yml with the flag on and one external network.
+- name: Check no networks are declared when the flag is off
+  vars:
+    compose: "{{ mimir_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - compose.networks is not defined
+    fail_msg: >-
+      compose declares networks {{ compose.networks | default({}) }} on a host
+      that names none and leaves disable_default_network off
+  when: not expect_network_mode_none
+
+# spelled out rather than derived from mimir.networks: an expectation built from
+# the same var the template reads would agree with a broken template
+- name: Check the flag points the default network at none
+  vars:
+    compose: "{{ mimir_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - "compose.networks['default'] == {'external': true, 'name': 'none'}"
+      - "compose.networks['molecule-mimir'] == {'external': true, 'name': 'molecule-mimir'}"
+      # the external network has to survive alongside default, not replace it -
+      # a service left on the default network could not start at all
+      - "compose.services.mimir.networks == ['molecule-mimir']"
+    fail_msg: "compose networks are {{ compose.networks | default('<unset>') }}"
+  when: expect_network_mode_none
+
+# --- config.yaml -------------------------------------------------------------
+- name: Read the rendered config.yaml
+  ansible.builtin.slurp:
+    src: "{{ expected_config_dir }}/config.yaml"
+  register: mimir_config_raw
+
+- name: Check the vars reached the rendered config
+  vars:
+    config: "{{ mimir_config_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - config.server.log_format == expected_log_format
+      - config.server.http_listen_port == molecule_http_port
+      - config.limits.compactor_blocks_retention_period == expected_retention
+      - config.limits.ingestion_rate == expected_ingestion_rate
+      # derived rather than set: the template doubles the rate for the burst
+      - config.limits.ingestion_burst_size == expected_ingestion_burst
+      # every storage path has to sit under the mount, or the data dir var is
+      # decorative
+      - config.blocks_storage.tsdb.dir is match('^/var/lib/mimir/')
+      - config.blocks_storage.filesystem.dir is match('^/var/lib/mimir/')
+      - config.ruler_storage.filesystem.dir is match('^/var/lib/mimir/')
+      - config.compactor.data_dir is match('^/var/lib/mimir/')
+    fail_msg: "config.yaml rendered as {{ config }}"
+
+# --- the container actually runs the config it was handed --------------------
+# The compose file sets no container_name, so the container is named after the
+# project - which follows the compose dir and is not something the test can
+# spell. Find it by the labels compose stamps on it instead; working_dir is the
+# one that stays exact when the directories move.
+- name: Find the mimir container by its compose labels
+  ansible.builtin.command: >-
+    docker ps --quiet --no-trunc
+    --filter label=com.docker.compose.project.working_dir={{ expected_compose_dir }}
+    --filter label=com.docker.compose.service=mimir
+  register: mimir_container_id
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: mimir_container_id.rc == 0 and mimir_container_id.stdout_lines | length == 1
+
+- name: Wait for the mimir container to report running
+  ansible.builtin.command: "docker inspect {{ mimir_container_id.stdout_lines[0] }}"
+  register: mimir_inspect_raw
+  changed_when: false
+  retries: 30
+  delay: 5
+  # `and` short-circuits, so from_json never sees an empty stdout
+  until: >-
+    mimir_inspect_raw.rc == 0 and
+    (mimir_inspect_raw.stdout | from_json)[0].State.Running
+
+# the rendered file only proves the template; this proves docker acted on it
+- name: Check docker bound the directories from the vars
+  vars:
+    binds: "{{ (mimir_inspect_raw.stdout | from_json)[0].HostConfig.Binds }}"
+    # docker appends the access mode, so a bind reads host:container:rw here
+    bind_paths: "{{ binds | map('regex_replace', '^([^:]+:[^:]+).*$', '\\1') | list }}"
+  ansible.builtin.assert:
+    that:
+      - "expected_data_dir ~ ':/var/lib/mimir' in bind_paths"
+      - "expected_config_dir ~ ':/etc/mimir' in bind_paths"
+    fail_msg: "docker bound {{ binds }}"
+
+- name: Check the container joined the expected networks
+  vars:
+    nets: "{{ (mimir_inspect_raw.stdout | from_json)[0].NetworkSettings.Networks | list }}"
+  ansible.builtin.assert:
+    that:
+      - nets == expected_networks
+    fail_msg: "container is attached to {{ nets }}, expected {{ expected_networks }}"
+
+- name: Check env reached the container environment
+  vars:
+    container_env: "{{ (mimir_inspect_raw.stdout | from_json)[0].Config.Env }}"
+  ansible.builtin.assert:
+    that:
+      - expected_env | difference(container_env) | length == 0
+    fail_msg: "container environment is {{ container_env }}, expected it to carry {{ expected_env }}"
+
+# --- mimir answers, and serves the config it was given ------------------------
+# mimir publishes no ports, so this goes to the container's own address on
+# whichever network it ended up attached to
+- name: Read the container address
+  vars:
+    networks: "{{ (mimir_inspect_raw.stdout | from_json)[0].NetworkSettings.Networks }}"
+  ansible.builtin.set_fact:
+    mimir_ip: "{{ networks[expected_networks[0]].IPAddress }}"
+
+# the single binary starts every component in-process, so this is not immediate
+- name: Wait for mimir to report ready
+  ansible.builtin.uri:
+    url: "http://{{ mimir_ip }}:{{ molecule_http_port }}/ready"
+    return_content: true
+    status_code: 200
+  register: mimir_ready
+  retries: 40
+  delay: 5
+  until: mimir_ready.status is defined and mimir_ready.status == 200
+
+# the file on disk only proves the template ran; this is mimir reporting back
+# the config it actually parsed
+- name: Read the config mimir parsed
+  ansible.builtin.uri:
+    url: "http://{{ mimir_ip }}:{{ molecule_http_port }}/config"
+    return_content: true
+  register: mimir_running_config
+
+- name: Check mimir is running the config the role wrote
+  vars:
+    config: "{{ mimir_running_config.content | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - config.server.log_format == expected_log_format
+      - config.limits.compactor_blocks_retention_period == expected_retention
+      - config.limits.ingestion_rate == expected_ingestion_rate
+      - config.limits.ingestion_burst_size == expected_ingestion_burst
+      - config.blocks_storage.backend == 'filesystem'
+      - config.ruler_storage.backend == 'filesystem'
+      - not config.multitenancy_enabled
+      - not config.usage_stats.enabled
+      # single binary: one replica of everything, so a lost ring member is not
+      # a quorum failure
+      - config.ingester.ring.replication_factor == 1
+    fail_msg: >-
+      mimir parsed log_format {{ config.server.log_format | default('<unset>') }},
+      retention {{ config.limits.compactor_blocks_retention_period | default('<unset>') }}
+      and ingestion_rate {{ config.limits.ingestion_rate | default('<unset>') }}
+
+- name: Check mimir serves its own metrics
+  ansible.builtin.uri:
+    url: "http://{{ mimir_ip }}:{{ molecule_http_port }}/metrics"
+    return_content: true
+  register: mimir_metrics
+
+- name: Check the metrics endpoint answered with mimir's own metrics
+  ansible.builtin.assert:
+    that:
+      - "'mimir_build_info' in mimir_metrics.content"
+    fail_msg: the metrics endpoint answered without mimir's own metrics in it
