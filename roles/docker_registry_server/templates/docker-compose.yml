@@ -1,30 +1,42 @@
+{% set registry = docker.registry.server %}
+{% set registry_external_networks = registry.networks | default([]) %}
+{% set registry_no_default_network = registry.disable_default_network | default(false) %}
+{#- both feed the same top-level mapping, so the key is emitted once for either. -#}
+{#- `environment` is rendered as a list, not a mapping: `env` lines are already -#}
+{#- KEY=value, and compose takes one style or the other, not both in a service. -#}
+{% if registry_external_networks | length > 0 or registry_no_default_network %}
 networks:
-{% if docker.registry.server.network %}
-  proxy:
+{% for net in registry_external_networks %}
+  "{{ net }}":
+    name: "{{ net }}"
     external: true
-    name: "{{ docker.registry.server.network }}"
-{% endif %}
+{% endfor %}
+{% if registry_no_default_network %}
   default:
     external: true
     name: none
+{% endif %}
+{% endif %}
 services:
   registry:
     container_name: docker-registry
+    image: "{{ registry.image }}:{{ registry.version }}"
     restart: always
-    image: "registry:{{ docker.registry.server.version }}"
     environment:
-      REGISTRY_AUTH: htpasswd
-      REGISTRY_AUTH_HTPASSWD_PATH: /htpasswd
-      REGISTRY_AUTH_HTPASSWD_REALM: Registry Realm
-      REGISTRY_HTTP_ADDR: 0.0.0.0:80
-      REGISTRY_STORAGE_DELETE_ENABLED: 'true'
-      VIRTUAL_HOST: "{{ docker.registry.server.host }}"
-      VIRTUAL_PORT: 80
-      LETSENCRYPT_HOST: "{{ docker.registry.server.host }}"
+      - "REGISTRY_AUTH=htpasswd"
+      - "REGISTRY_AUTH_HTPASSWD_PATH=/htpasswd"
+      - "REGISTRY_AUTH_HTPASSWD_REALM=Registry Realm"
+      - "REGISTRY_HTTP_ADDR=0.0.0.0:80"
+      - "REGISTRY_STORAGE_DELETE_ENABLED=true"
+{% for item in registry.env | default([]) %}
+      - "{{ item }}"
+{% endfor %}
     volumes:
-      - "{{ dir.data }}/docker-registry:/var/lib/registry"
-      - "{{ dir.ansible }}/docker-registry/htpasswd:/htpasswd"
+      - "{{ registry.directories.data }}:/var/lib/registry"
+      - "{{ registry.directories.ansible }}/htpasswd:/htpasswd"
+{% if registry_external_networks | length > 0 %}
     networks:
-{% if docker.registry.server.network %}
-      - proxy
+{% for net in registry_external_networks %}
+      - "{{ net }}"
+{% endfor %}
 {% endif %}

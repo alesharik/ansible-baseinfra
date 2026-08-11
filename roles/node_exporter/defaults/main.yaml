@@ -1,4 +1,21 @@
 ---
-node_exporter:
+node_exporter: # noqa: var-naming[no-role-prefix]
   image: prom/node-exporter
   version: v1.8.1
+  networks: []
+  # Points compose's default network at docker's built-in `none`, so no project
+  # bridge network is created - one less network, and one less set of iptables
+  # rules, on machines short of memory. Only safe with a non-empty `networks`:
+  # compose sets network-scoped aliases on every attachment and `none` rejects
+  # them, so a service left on the default network fails to start.
+  #
+  # There is a second reason to leave it alone here. The container publishes no
+  # ports, so vmagent scrapes it at its address on a docker network; with no
+  # network at all it has no address and nothing can reach 9100. Name a network
+  # vmagent can route to in `networks` before turning this on.
+  disable_default_network: false
+  directories:
+    # The only root. Everything else the container reads - /proc, /sys, / and
+    # the dbus socket - is the machine itself and cannot move, and the role
+    # keeps no state, so there is no `data` root to expose.
+    ansible: "{{ dir.ansible }}/node-exporter"

@@ -1,106 +1,166 @@
 ---
-- name: Install passlib and bcrypt
-  ansible.builtin.pip:
+# community.general.htpasswd runs on the target and imports passlib there, and
+# bcrypt is what backs the crypt_scheme below. NOT ansible.builtin.pip: Debian
+# 12 and later mark the system interpreter externally-managed (PEP 668) and pip
+# refuses to install into it, so a pip install here fails on every supported
+# target.
+- name: Install htpasswd module dependencies
+  ansible.builtin.apt:
     name:
-      - passlib
-      - bcrypt
-  tags: docker_registry_server
-- name: Create compose dir
-  ansible.builtin.file:
-    path: "{{ dir.ansible }}/docker-registry"
-    state: directory
-    mode: 0755
-  tags: docker_registry_server
-- name: Move compose files
-  ansible.builtin.template:
-    src: docker-compose.yml
-    dest: "{{ dir.ansible }}/docker-registry/docker-compose.yml"
-    mode: 0755
-  tags: docker_registry_server
-  notify:
-    - restart docker registry server
-- name: Create docker registry server directory
-  ansible.builtin.file:
-    path: "{{ dir.data }}/docker-registry"
-    state: directory
-    mode: 0755
+      - python3-passlib
+      - python3-bcrypt
+    state: present
   tags: docker_registry_server
 
+- name: Create compose dir
+  ansible.builtin.file:
+    path: "{{ docker.registry.server.directories.ansible }}"
+    state: directory
+    mode: "0755"
+  tags: docker_registry_server
+
+- name: Create data dir
+  ansible.builtin.file:
+    path: "{{ docker.registry.server.directories.data }}"
+    state: directory
+    mode: "0755"
+  tags: docker_registry_server
+
+# The compose file bind-mounts this at /htpasswd, and docker materialises a
+# *directory* for a missing bind source - which the registry cannot parse, and
+# which would then refuse every login. htpasswd only creates the file when there
+# is a user to add, so with `users: {}` nothing else here would.
+#
+# times are preserved so this does not report changed on every run
 - name: Touch htpasswd file
   ansible.builtin.file:
-    path: "{{ dir.ansible }}/docker-registry/htpasswd"
+    path: "{{ docker.registry.server.directories.ansible }}/htpasswd"
     state: touch
-    mode: 0755
+    mode: "0600"
+    access_time: preserve
+    modification_time: preserve
   tags: docker_registry_server
+
+# 0600 root, not the 0755 this used to be: the file is a list of accounts and
+# their bcrypt hashes. The registry image runs as root, so it can still read it
+# through the bind mount.
 - name: Add users
   community.general.htpasswd:
-    path: "{{ dir.ansible }}/docker-registry/htpasswd"
+    path: "{{ docker.registry.server.directories.ansible }}/htpasswd"
     name: "{{ item.key }}"
     password: "{{ item.value.password }}"
     state: present
-    mode: 0755
+    mode: "0600"
     crypt_scheme: bcrypt
-  tags: docker_registry_server
   loop: "{{ docker.registry.server.users | dict2items }}"
   loop_control:
     label: "{{ item.key }}"
-- name: Determine existing users
-  ansible.builtin.shell: >
-    set -o pipefail;
-    cat "{{ dir.ansible }}/docker-registry/htpasswd" | cut -d: -f1 | tr "," "\n"
-  args:
-    executable: /bin/bash
-  changed_when: false
-  register: existing_users
+  no_log: true
   tags: docker_registry_server
+
+# Read back rather than `cat | cut | tr` in a shell: the file is the role's own
+# output, and this needs no pipefail dance or changed_when to stay quiet.
+- name: Read the htpasswd file
+  ansible.builtin.slurp:
+    src: "{{ docker.registry.server.directories.ansible }}/htpasswd"
+  register: docker_registry_server_htpasswd_raw
+  no_log: true
+  tags: docker_registry_server
+
+# Accounts this role created on an earlier run and the config no longer names.
+# Everything before the first colon on a line is the username; the rest is the
+# hash, which can itself contain colons.
 - name: Determine removed users
   ansible.builtin.set_fact:
-    removed_users: "{{ existing_users.stdout_lines | difference(docker.registry.server.users.keys()) }}"
+    docker_registry_server_removed_users: >-
+      {{ (docker_registry_server_htpasswd_raw.content | b64decode).splitlines()
+         | select('search', ':')
+         | map('regex_replace', '^([^:]+):.*$', '\1')
+         | difference(docker.registry.server.users.keys() | list) }}
   tags: docker_registry_server
+
 - name: Delete removed user accounts
   community.general.htpasswd:
-    path: "{{ dir.ansible }}/docker-registry/htpasswd"
+    path: "{{ docker.registry.server.directories.ansible }}/htpasswd"
     name: "{{ item }}"
     state: absent
-    mode: 0755
+    mode: "0600"
     crypt_scheme: bcrypt
-  with_items: "{{ removed_users }}"
+  loop: "{{ docker_registry_server_removed_users }}"
   loop_control:
     label: "{{ item }}"
   tags: docker_registry_server
 
-#- name: Configure vhost
-#  tags: docker_registry_server
-#  when: "'alesharik.baseinfra.nginx_proxy_base' in ansible_role_names"
-#  ansible.builtin.copy:
-#    dest: "{{ dir.ansible }}/nginx-proxy/vhost.d/{{ docker.registry.server.host }}"
-#    content: "client_max_body_size 1000M;"
-#    mode: 0755
-#  tags: docker_registry_server
-#  ignore_errors: true
-#  notify:
-#    - restart nginx-proxy
+- name: Move compose files
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ docker.registry.server.directories.ansible }}/docker-compose.yml"
+    mode: "0755"
+  tags: docker_registry_server
+  notify:
+    - restart docker registry server
+
+- name: Start docker registry server
+  community.docker.docker_compose_v2:
+    project_src: "{{ docker.registry.server.directories.ansible }}"
+    state: present
+  tags: docker_registry_server
 
 - name: Make sure handlers are flushed immediately
   ansible.builtin.meta: flush_handlers
   tags: docker_registry_server
 
-- name: Wait for registry
-  ansible.builtin.uri:
-    url: https://{{ docker.registry.server.host }}/v2/
-    return_content: true
-  register: registry_status
-  retries: 10
-  delay: 5
-  until: registry_status.status|int == 401
-  when: "'alesharik.baseinfra.nginx_proxy_base' in ansible_role_names"
-
-- name: Auto login to docker registry
-  community.docker.docker_login:
-    registry_url: "{{ docker.registry.server.host }}"
-    username: "{{ item.key }}"
-    password: "{{ item.value.password }}"
-  loop: "{{ docker.registry.server.users | dict2items | selectattr('value.autologin', 'defined') }}"
-  loop_control:
-    label: "{{ item.key }}"
+# Unset means no login is attempted - the role has no address to guess. The
+# registry publishes no ports, so this is whatever fronts it, not the container.
+#
+# `default('', true)` rather than `default(none)`: the default value is `~`, so
+# the key is *defined* and holding None - a plain default() never fires, and
+# ansible-core rejects a conditional that resolves to None rather than a bool.
+# The boolean form folds undefined, None and '' into the same empty string.
+- name: Log in to the registry
+  when: docker.registry.server.autologin_registry | default('', true) | length > 0
   tags: docker_registry_server
+  block:
+    - name: Check for an existing docker CLI config
+      ansible.builtin.stat:
+        path: /root/.docker/config.json
+      register: docker_registry_server_cli_config
+
+    - name: Read the existing docker CLI config
+      ansible.builtin.slurp:
+        src: /root/.docker/config.json
+      register: docker_registry_server_cli_config_raw
+      when: docker_registry_server_cli_config.stat.exists
+      no_log: true
+
+    - name: Collect the credentials already stored for this registry
+      ansible.builtin.set_fact:
+        docker_registry_server_stored_auth: >-
+          {{ (docker_registry_server_cli_config_raw.content | b64decode | from_json).auths | default({}) }}
+      when: docker_registry_server_cli_config.stat.exists
+      no_log: true
+
+    # NOT community.docker.docker_login: that module needs the docker SDK for
+    # python, and roles/docker installs only the cli and the compose plugin.
+    #
+    # docker stores base64(username:password) per registry, so the `when` below
+    # is exactly what a successful login leaves behind - re-running this role
+    # with unchanged credentials reports nothing changed.
+    - name: Log in the accounts marked for autologin
+      ansible.builtin.command:
+        cmd: >-
+          docker login {{ docker.registry.server.autologin_registry | quote }}
+          --username {{ item.key | quote }} --password-stdin
+        stdin: "{{ item.value.password }}"
+      loop: >-
+        {{ docker.registry.server.users | dict2items
+           | selectattr('value.autologin', 'defined')
+           | selectattr('value.autologin') }}
+      loop_control:
+        label: "{{ item.key }}"
+      when: >-
+        (docker_registry_server_stored_auth | default({}))
+          .get(docker.registry.server.autologin_registry, {})
+          .get('auth', '') != (item.key ~ ':' ~ item.value.password) | b64encode
+      changed_when: true
+      no_log: true

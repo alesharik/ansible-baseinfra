@@ -1,0 +1,110 @@
+---
+# Covers the two branches converge cannot reach from cold:
+#
+#  - disable_default_network. Compose puts a network-scoped alias on every
+#    attachment and docker's built-in `none` network rejects aliases, so a
+#    service left on the default network fails to start once that default is
+#    `none` - the role is only usable with the flag on when `networks` names a
+#    network that already exists. Docker itself only exists after converge has
+#    run the role's docker dependency.
+#  - autologin_registry. The registry publishes no ports, so the only address it
+#    answers on is the container's own, which does not exist until it is running.
+#
+# They run as two separate role invocations on purpose: the address to log in to
+# is the one the container has *after* it has moved onto the external network.
+- name: Side effect
+  hosts: docker-registry-custom
+  environment:
+    ANSIBLE_UNSAFE_WRITES: "1"
+  tasks:
+    # not community.docker.docker_network: that module needs the docker SDK for
+    # python, and roles/docker installs only the cli and the compose plugin.
+    # The subnet is pinned so prepare_tasks.yml could mark it insecure before
+    # docker was installed - without that, docker login refuses to talk HTTP.
+    - name: Create the external network the role will attach to
+      ansible.builtin.command: >-
+        docker network create
+        --subnet {{ molecule_external_subnet }}
+        {{ molecule_external_network }}
+      register: registry_network_create
+      changed_when: registry_network_create.rc == 0
+      failed_when: >-
+        registry_network_create.rc != 0 and
+        'already exists' not in registry_network_create.stderr
+
+    # combine rather than a second literal dict: the whole point of the re-run
+    # is that only these two keys differ from what converge used, and a
+    # hand-copied dict could drift and hide that
+    - name: Build the registry vars with the default network disabled
+      ansible.builtin.set_fact:
+        registry_nonet: >-
+          {{ docker | combine({'registry': {'server': {
+               'networks': [molecule_external_network],
+               'disable_default_network': true
+             }}}, recursive=True) }}
+
+    - name: Re-run the role with the default network disabled
+      ansible.builtin.include_role:
+        name: alesharik.baseinfra.docker_registry_server
+      vars:
+        docker: "{{ registry_nonet }}"
+
+    - name: Wait for the registry container on the external network
+      ansible.builtin.command: docker inspect docker-registry
+      register: registry_inspect
+      changed_when: false
+      retries: 30
+      delay: 5
+      # `and` short-circuits, so from_json never sees an empty stdout
+      until: >-
+        registry_inspect.rc == 0 and
+        (registry_inspect.stdout | from_json)[0].State.Running
+
+    # Only knowable now: this is the address the container ended up with on the
+    # network created above, and the one thing `docker login` can reach.
+    - name: Build the registry vars with autologin pointed at the container
+      vars:
+        registry_ip: >-
+          {{ (registry_inspect.stdout | from_json)[0]
+             .NetworkSettings.Networks[molecule_external_network].IPAddress }}
+      ansible.builtin.set_fact:
+        registry_autologin: >-
+          {{ registry_nonet | combine({'registry': {'server': {
+               'autologin_registry': registry_ip ~ ':' ~ molecule_registry_port
+             }}}, recursive=True) }}
+
+    - name: Re-run the role with autologin on
+      ansible.builtin.include_role:
+        name: alesharik.baseinfra.docker_registry_server
+      vars:
+        docker: "{{ registry_autologin }}"
+
+    # --- the login is a no-op the second time ---------------------------------
+    # `docker login` rewrites /root/.docker/config.json every time it succeeds,
+    # so its mtime moving is exactly what a login that ran again looks like.
+    # Comparing content would not catch it: re-logging in with the same
+    # credentials produces a byte-identical file.
+    - name: Stat the docker CLI config after the first login
+      ansible.builtin.stat:
+        path: /root/.docker/config.json
+      register: registry_config_first
+
+    - name: Re-run the role with autologin unchanged
+      ansible.builtin.include_role:
+        name: alesharik.baseinfra.docker_registry_server
+      vars:
+        docker: "{{ registry_autologin }}"
+
+    - name: Stat the docker CLI config after the second run
+      ansible.builtin.stat:
+        path: /root/.docker/config.json
+      register: registry_config_second
+
+    - name: Check the second run did not log in again
+      ansible.builtin.assert:
+        that:
+          - registry_config_first.stat.mtime == registry_config_second.stat.mtime
+        fail_msg: >-
+          /root/.docker/config.json was rewritten by the second run - the guard
+          comparing the stored credentials against the configured ones did not
+          hold, and this role reports changed on every deploy

@@ -1,3 +1,8 @@
+{#- No `networks` mapping and no disable_default_network here, unlike the other -#}
+{#- roles: the service is host-networked, so it never attaches to a project -#}
+{#- network and compose creates none to begin with. -#}
+{#- For the same reason vmagent cannot find this container by its address on a -#}
+{#- docker network, so `prometheus.io.address` names the host port instead. -#}
 services:
   exporter:
     image: "{{ wg_exporter.image }}:{{ wg_exporter.version }}"
@@ -8,8 +13,9 @@ services:
       - NET_ADMIN
     command:
       - '--prepend_sudo=true'
-      - '-l=127.0.0.1'
+      - '-l={{ wg_exporter.listen_address }}'
+      - '-p={{ wg_exporter.port }}'
     labels:
       prometheus.io.path: /metrics
       prometheus.io.instance: "{{ inventory_hostname }}"
-      prometheus.io.address: 127.0.0.1:9586
+      prometheus.io.address: "{{ wg_exporter.listen_address }}:{{ wg_exporter.port }}"

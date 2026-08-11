@@ -1,4 +1,18 @@
 ---
-wg_exporter:
+wg_exporter: # noqa: var-naming[no-role-prefix]
   image: mindflavor/prometheus-wireguard-exporter
   version: 3.6.6
+  # The container is host-networked so it can see the wireguard interfaces, so
+  # these are taken on the host itself rather than inside a project network -
+  # two exporters on one machine would collide here, not merely inside compose.
+  # 127.0.0.1 keeps the metrics off every other interface; vmagent is
+  # host-networked too and reaches it there. They are one var each rather than a
+  # single `address` string because the `prometheus.io.address` label wants them
+  # joined and the exporter wants them as two separate flags.
+  listen_address: 127.0.0.1
+  port: 9586
+  directories:
+    # The only root. The exporter reads the wireguard interfaces through the
+    # host network namespace and keeps no state of its own, so the compose file
+    # is the whole of what this role puts on disk - there is no `data` root.
+    ansible: "{{ dir.ansible }}/wg-exporter"

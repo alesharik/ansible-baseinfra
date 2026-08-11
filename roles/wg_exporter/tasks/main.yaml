@@ -1,22 +1,23 @@
 ---
 - name: Create compose dir
   ansible.builtin.file:
-    path: "{{ dir.ansible }}/wg-exporter"
+    path: "{{ wg_exporter.directories.ansible }}"
     state: directory
-    mode: 0755
+    mode: "0755"
   tags: wg_exporter
+
 - name: Move compose files
   ansible.builtin.template:
     src: docker-compose.yml
-    dest: "{{ dir.ansible }}/wg-exporter/docker-compose.yml"
-    mode: 0755
+    dest: "{{ wg_exporter.directories.ansible }}/docker-compose.yml"
+    mode: "0755"
   tags: wg_exporter
   notify:
     - restart wg exporter
 
 - name: Start wg exporter
   community.docker.docker_compose_v2:
-    project_src: "{{ dir.ansible }}/wg-exporter"
+    project_src: "{{ wg_exporter.directories.ansible }}"
     state: present
   tags: wg_exporter
 

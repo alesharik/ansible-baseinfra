@@ -1,6 +1,48 @@
 ---
-docker:
+# This role's config is a sub-key of `docker`, which the `docker` role also
+# owns. Ansible merges role defaults with replace semantics, not a deep merge,
+# so whichever of the two files loads last replaces the other outright - which
+# is why `registries` is repeated here. Without it, deploying this role would
+# leave `docker.registries` undefined and the `docker` role's own login task
+# would fail on a host that never configured a registry.
+#
+# The same applies to an override: `docker` is one dict shared by two roles, so
+# setting it in group_vars has to list every key *both* roles read.
+docker: # noqa: var-naming[no-role-prefix]
+  # owned by the `docker` role - repeated so this file does not drop it
+  registries: {}
   registry:
     server:
-      version: 2
+      image: registry
+      version: "2"
+      # username -> {password, autologin}. Users removed from this dict are
+      # removed from htpasswd on the next run.
       users: {}
+      # Address `docker login` is pointed at once the users are in place, e.g.
+      # `registry.example.com`. Unset means no login is attempted at all. Only
+      # accounts with `autologin: true` are used. The registry publishes no
+      # ports, so this has to be an address that actually resolves to whatever
+      # fronts it - not the container.
+      autologin_registry: ~
+      networks: []
+      # Points compose's default network at docker's built-in `none`, so no
+      # project bridge network is created - one less network, and one less set
+      # of iptables rules, on machines short of memory. Only safe with a
+      # non-empty `networks`: compose sets network-scoped aliases on every
+      # attachment and `none` rejects them, so a service left on the default
+      # network fails to start.
+      disable_default_network: false
+      # Everything the container is configured with beyond the auth settings the
+      # role owns. Whatever fronts the registry is told about it here -
+      # `VIRTUAL_HOST=`/`VIRTUAL_PORT=`/`LETSENCRYPT_HOST=` for nginx-proxy,
+      # traefik labels or a `REGISTRY_HTTP_HOST=` behind traefik - and so is any
+      # other REGISTRY_* setting.
+      env: []
+      directories:
+        # `htpasswd` sits next to the compose file and is bind-mounted at
+        # /htpasswd, so it moves with this root. It is not a var of its own: the
+        # container is told REGISTRY_AUTH_HTPASSWD_PATH=/htpasswd, a path fixed
+        # on its side of the mount.
+        ansible: "{{ dir.ansible }}/docker-registry"
+        # mounted at /var/lib/registry - the images themselves
+        data: "{{ dir.data }}/docker-registry"

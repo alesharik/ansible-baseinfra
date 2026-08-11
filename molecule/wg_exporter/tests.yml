@@ -1,0 +1,251 @@
+---
+# --- defaults have not drifted from what this scenario pins ------------------
+# wg-exporter-defaults deliberately does not set `wg_exporter` at all, so it runs
+# the role defaults as published. The verify play does not include the role, so
+# those defaults are not in scope here - the expectations are spelled out in
+# host_vars, and this re-reads the file to prove they still match it.
+- name: Read the role defaults from the controller
+  ansible.builtin.slurp:
+    src: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}/roles/wg_exporter/defaults/main.yaml"
+  delegate_to: localhost
+  become: false
+  register: role_defaults_raw
+  when: inventory_hostname == 'wg-exporter-defaults'
+
+- name: Check the pinned expectations still equal the role defaults
+  vars:
+    role_defaults: "{{ role_defaults_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - role_defaults.wg_exporter.image == expected_image
+      - role_defaults.wg_exporter.version | string == expected_version | string
+      - role_defaults.wg_exporter.listen_address == expected_listen_address
+      - role_defaults.wg_exporter.port == expected_port
+      # the only root the role exposes - a `data` key appearing here would mean
+      # the role grew state this scenario never checks
+      - role_defaults.wg_exporter.directories | list == ['ansible']
+      # host-networked, so these must never appear: the service attaches to no
+      # project network and compose creates none
+      - role_defaults.wg_exporter.networks is not defined
+      - role_defaults.wg_exporter.disable_default_network is not defined
+    fail_msg: >-
+      roles/wg_exporter/defaults/main.yaml has changed - the "defaults" host is
+      running something else now
+  when: inventory_hostname == 'wg-exporter-defaults'
+
+# --- the compose project landed where directories.ansible points -------------
+- name: Stat the compose dir
+  ansible.builtin.stat:
+    path: "{{ expected_compose_dir }}"
+  register: wg_exporter_compose_dir
+
+- name: Check the compose dir exists
+  ansible.builtin.assert:
+    that:
+      - wg_exporter_compose_dir.stat.exists
+      - wg_exporter_compose_dir.stat.isdir
+    fail_msg: "{{ expected_compose_dir }} is not a directory"
+
+# the whole point of the var: a path still derived from dir.ansible would show
+# up here even though every assertion above passed
+- name: Stat the default path the role must no longer use
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: wg_exporter_default_paths
+  loop: "{{ unexpected_paths | default([]) }}"
+
+- name: Check the role wrote nothing outside wg_exporter.directories
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists
+    fail_msg: >-
+      {{ item.item }} exists - something in the role still derives its path from
+      dir.ansible instead of wg_exporter.directories
+  loop: "{{ wg_exporter_default_paths.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# --- docker-compose.yml ------------------------------------------------------
+- name: Read the rendered docker-compose.yml
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/docker-compose.yml"
+  register: wg_exporter_compose_raw
+
+- name: Check the image and tag from the vars reached the compose file
+  vars:
+    compose: "{{ wg_exporter_compose_raw.content | b64decode | from_yaml }}"
+    service: "{{ compose.services.exporter }}"
+  ansible.builtin.assert:
+    that:
+      - compose.services | list == ['exporter']
+      # fixed on purpose: vmagent's docker_sd relabels on the container name, and
+      # the role documents `wg-exporter` as the name it deploys
+      - service.container_name == 'wg-exporter'
+      - service.image == expected_image ~ ':' ~ expected_version
+      - service.restart == 'always'
+    fail_msg: "compose runs image {{ service.image }} as {{ service.container_name | default('<unset>') }}"
+
+- name: Check the service is host-networked and holds NET_ADMIN
+  vars:
+    compose: "{{ wg_exporter_compose_raw.content | b64decode | from_yaml }}"
+    service: "{{ compose.services.exporter }}"
+  ansible.builtin.assert:
+    that:
+      # both are what let the exporter see the wireguard interfaces at all
+      - service.network_mode == 'host'
+      - service.cap_add == ['NET_ADMIN']
+      # host-networked, so it never attaches to a project network and compose
+      # must declare none - there is no networks mapping in this template
+      - compose.networks is not defined
+      - service.networks is not defined
+    fail_msg: >-
+      compose declares network_mode {{ service.network_mode | default('<unset>') }},
+      cap_add {{ service.cap_add | default('<unset>') }} and
+      networks {{ compose.networks | default('<unset>') }}
+
+# the bind pair has to reach the flags and the label from the same vars, or the
+# scrape target and the listener drift apart
+- name: Check the bind address and port reached the exporter flags
+  vars:
+    compose: "{{ wg_exporter_compose_raw.content | b64decode | from_yaml }}"
+    service: "{{ compose.services.exporter }}"
+  ansible.builtin.assert:
+    that:
+      - "'-l=' ~ expected_listen_address in service.command"
+      - "'-p=' ~ expected_port in service.command"
+      # the exporter shells out to `wg show`, which needs root inside the
+      # container even with NET_ADMIN on it
+      - "'--prepend_sudo=true' in service.command"
+    fail_msg: "compose runs {{ service.command }}"
+
+- name: Check the prometheus autodiscovery labels are present
+  vars:
+    compose: "{{ wg_exporter_compose_raw.content | b64decode | from_yaml }}"
+    labels: "{{ compose.services.exporter.labels }}"
+  ansible.builtin.assert:
+    that:
+      # vmagent keeps only containers carrying prometheus.io.path
+      - labels['prometheus.io.path'] == '/metrics'
+      - labels['prometheus.io.instance'] == inventory_hostname
+      # prometheus.io.address rather than prometheus.io.port: the container has
+      # no address on a docker network, so vmagent has to be given the host one
+      - labels['prometheus.io.address'] == expected_listen_address ~ ':' ~ expected_port
+      - labels['prometheus.io.port'] is not defined
+    fail_msg: "compose labels are {{ labels }}"
+
+# --- the container actually runs the config it was handed --------------------
+- name: Wait for the wg-exporter container to report running
+  ansible.builtin.command: docker inspect wg-exporter
+  register: wg_exporter_inspect_raw
+  changed_when: false
+  retries: 30
+  delay: 5
+  # `and` short-circuits, so from_json never sees an empty stdout
+  until: >-
+    wg_exporter_inspect_raw.rc == 0 and
+    (wg_exporter_inspect_raw.stdout | from_json)[0].State.Running
+
+# the rendered file only proves the template; this proves docker acted on it
+- name: Check docker put the container on the host network with NET_ADMIN
+  vars:
+    inspected: "{{ (wg_exporter_inspect_raw.stdout | from_json)[0] }}"
+    # docker >= 25 reports capabilities in their kernel spelling, CAP_NET_ADMIN,
+    # while compose declares them without the prefix - strip it so this does not
+    # depend on which form the daemon on the instance uses
+    caps: "{{ inspected.HostConfig.CapAdd | default([]) | map('regex_replace', '^CAP_', '') | list }}"
+  ansible.builtin.assert:
+    that:
+      - inspected.HostConfig.NetworkMode == 'host'
+      - "'NET_ADMIN' in caps"
+      # on the host network the container has no address of its own, so this is
+      # the one network docker reports
+      - inspected.NetworkSettings.Networks | list == ['host']
+    fail_msg: >-
+      container network mode is {{ inspected.HostConfig.NetworkMode }},
+      capabilities {{ inspected.HostConfig.CapAdd | default('<unset>') }},
+      networks {{ inspected.NetworkSettings.Networks | list }}
+
+# compose creates the project default network only when some service attaches to
+# it. Nothing here does, so a network named after the project appearing at all
+# would mean the template grew an attachment it should not have.
+- name: List the docker networks on the instance
+  ansible.builtin.command: docker network ls --format '{{ "{{" }} .Name {{ "}}" }}'
+  register: wg_exporter_networks
+  changed_when: false
+
+- name: Check compose created no project network
+  ansible.builtin.assert:
+    that:
+      - unexpected_network not in wg_exporter_networks.stdout_lines
+    fail_msg: >-
+      {{ unexpected_network }} exists - the host-networked service is attaching
+      to a project network. Networks present: {{ wg_exporter_networks.stdout_lines }}
+
+- name: Check the autodiscovery labels reached the running container
+  vars:
+    labels: "{{ (wg_exporter_inspect_raw.stdout | from_json)[0].Config.Labels }}"
+  ansible.builtin.assert:
+    that:
+      - labels['prometheus.io.path'] == '/metrics'
+      - labels['prometheus.io.instance'] == inventory_hostname
+      - labels['prometheus.io.address'] == expected_listen_address ~ ':' ~ expected_port
+    fail_msg: "container labels are {{ labels }}"
+
+# --- the exporter answers on the host address it was told to bind ------------
+# the compose file only proves the template; this is the binary reporting the
+# socket it actually opened
+- name: Read the exporter logs
+  ansible.builtin.command: docker logs wg-exporter
+  register: wg_exporter_logs
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: "'starting exporter' in wg_exporter_logs.stderr ~ wg_exporter_logs.stdout"
+
+- name: Check the exporter bound the address and port from the vars
+  vars:
+    output: "{{ wg_exporter_logs.stderr ~ wg_exporter_logs.stdout }}"
+  ansible.builtin.assert:
+    that:
+      - "'http://' ~ expected_listen_address ~ ':' ~ expected_port ~ '/metrics' in output"
+    fail_msg: "the exporter logged {{ output }}"
+
+# host-networked, so this is the host's own address - the same one the
+# prometheus.io.address label hands vmagent
+- name: Read the metrics endpoint
+  ansible.builtin.uri:
+    url: "http://{{ expected_listen_address }}:{{ expected_port }}/metrics"
+    return_content: true
+    status_code: 200
+  register: wg_exporter_metrics
+  retries: 30
+  delay: 5
+  until: wg_exporter_metrics.status is defined and wg_exporter_metrics.status == 200
+
+# no wireguard interface exists on the instance, so there are no per-peer
+# samples - the exporter still emits the HELP/TYPE header for every metric it
+# knows, which is what proves it ran `wg show` and rendered a response rather
+# than erroring out
+- name: Check the endpoint served the wireguard metric families
+  ansible.builtin.assert:
+    that:
+      - "'wireguard_sent_bytes_total' in wg_exporter_metrics.content"
+      - "'wireguard_received_bytes_total' in wg_exporter_metrics.content"
+      - "'wireguard_latest_handshake_seconds' in wg_exporter_metrics.content"
+    fail_msg: "the metrics endpoint answered with {{ wg_exporter_metrics.content }}"
+
+# listen_address is the whole reason the exporter is not world-readable: it
+# holds NET_ADMIN and reports VPN peer activity. A template that ignored the var
+# and bound 0.0.0.0 would still pass every assertion above, because it would
+# answer on loopback too.
+#
+# `state: stopped` waits for the port to be *closed* on the instance's routable
+# address, so it fails only when something really is listening there. NOT
+# `state: started` with `failed_when: false` and an `is failed` check - that
+# forces failed to False, and the assertion can never fire.
+- name: Check the exporter is not reachable on the instance's routable address
+  ansible.builtin.wait_for:
+    host: "{{ ansible_default_ipv4.address }}"
+    port: "{{ expected_port }}"
+    state: stopped
+    timeout: 5

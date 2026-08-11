@@ -1,0 +1,74 @@
+---
+# Two fixtures, both of which have to exist before converge:
+#
+#  - a stale htpasswd account no host's `users` names, so the reconciliation
+#    branch has something to remove. Without it "the stale user is gone" would
+#    pass on a role that only ever adds users.
+#  - an insecure-registries entry, so `docker login` in side_effect.yml can talk
+#    HTTP to a registry that has no TLS in front of it. Docker only reads this at
+#    daemon start, and the docker role installs and starts docker during
+#    converge, so it has to be on disk first.
+
+# Written before docker exists. dpkg ships no daemon.json of its own, so the
+# package install leaves this alone and the daemon picks it up on first start.
+- name: Create the docker config directory
+  ansible.builtin.file:
+    path: /etc/docker
+    state: directory
+    mode: "0755"
+
+# The subnet is pinned in molecule.yml so this can name it up front. Hosts with
+# no external network still get the file; it is inert for them.
+- name: Mark the scenario network insecure so docker login can use HTTP
+  ansible.builtin.copy:
+    dest: /etc/docker/daemon.json
+    content: |
+      {"insecure-registries": ["{{ molecule_external_subnet | default('172.31.200.0/24') }}"]}
+    mode: "0644"
+
+# community.general.htpasswd imports these on the target. The role installs them
+# itself during converge; the fixture below needs them one step earlier.
+- name: Install the htpasswd module dependencies
+  ansible.builtin.apt:
+    name:
+      - python3-passlib
+      - python3-bcrypt
+    state: present
+    update_cache: true
+
+- name: Create the compose dir ahead of the role
+  ansible.builtin.file:
+    path: "{{ expected_compose_dir }}"
+    state: directory
+    mode: "0755"
+
+# Same module and crypt scheme the role uses, so the fixture cannot be one the
+# role's own parser would fail to read for unrelated reasons.
+- name: Write a stale account into htpasswd
+  community.general.htpasswd:
+    path: "{{ expected_compose_dir }}/htpasswd"
+    name: "{{ molecule_stale_user }}"
+    password: "{{ molecule_stale_password }}"
+    state: present
+    mode: "0600"
+    crypt_scheme: bcrypt
+
+- name: Read back the htpasswd fixture
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/htpasswd"
+  register: registry_prepared_htpasswd
+
+# If this fixture were missing, "the stale user was removed" in tests.yml would
+# pass for the wrong reason - there would be nothing to remove
+- name: Check the stale account really is there before converge
+  vars:
+    users: >-
+      {{ (registry_prepared_htpasswd.content | b64decode).splitlines()
+         | map('regex_replace', '^([^:]+):.*$', '\1') | list }}
+  ansible.builtin.assert:
+    that:
+      - molecule_stale_user in users
+    fail_msg: >-
+      {{ expected_compose_dir }}/htpasswd does not contain
+      {{ molecule_stale_user }}, so the reconciliation assertion in tests.yml
+      would pass against an empty file

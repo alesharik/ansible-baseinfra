@@ -1,3 +1,19 @@
+{% set node_exporter_external_networks = node_exporter.networks | default([]) %}
+{% set node_exporter_no_default_network = node_exporter.disable_default_network | default(false) %}
+{#- both feed the same top-level mapping, so the key is emitted once for either -#}
+{% if node_exporter_external_networks | length > 0 or node_exporter_no_default_network %}
+networks:
+{% for net in node_exporter_external_networks %}
+  "{{ net }}":
+    name: "{{ net }}"
+    external: true
+{% endfor %}
+{% if node_exporter_no_default_network %}
+  default:
+    external: true
+    name: none
+{% endif %}
+{% endif %}
 services:
   prom:
     container_name: node-exporter
@@ -21,3 +37,9 @@ services:
       prometheus.io.path: /metrics
       prometheus.io.port: 9100
       prometheus.io.instance: "{{ inventory_hostname }}"
+{% if node_exporter_external_networks | length > 0 %}
+    networks:
+{% for net in node_exporter_external_networks %}
+      - "{{ net }}"
+{% endfor %}
+{% endif %}

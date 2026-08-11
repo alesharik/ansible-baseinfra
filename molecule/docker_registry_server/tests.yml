@@ -1,0 +1,325 @@
+---
+# --- defaults have not drifted from what this scenario pins ------------------
+# docker-registry-defaults deliberately does not set `docker` at all, so it runs
+# the role defaults as published. The verify play does not include the role, so
+# those defaults are not in scope here - the expectations are spelled out in
+# host_vars, and this re-reads the file to prove they still match it.
+- name: Read the role defaults from the controller
+  ansible.builtin.slurp:
+    src: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}/roles/docker_registry_server/defaults/main.yaml"
+  delegate_to: localhost
+  become: false
+  register: role_defaults_raw
+  when: inventory_hostname == 'docker-registry-defaults'
+
+- name: Check the pinned expectations still equal the role defaults
+  vars:
+    role_defaults: "{{ role_defaults_raw.content | b64decode | from_yaml }}"
+    server: "{{ role_defaults.docker.registry.server }}"
+  ansible.builtin.assert:
+    that:
+      - server.image == expected_image
+      - server.version | string == expected_version
+      - server.users == {}
+      - not server.autologin_registry
+      - server.networks == []
+      - not server.disable_default_network
+      - server.env == expected_env
+      - server.directories | list == ['ansible', 'data']
+      # load-bearing: `docker` is one dict shared with the `docker` role, and
+      # ansible replaces role defaults rather than merging them. Drop this key
+      # and the `docker` role's own login task fails on an undefined var - which
+      # is why converge on this host would already have died.
+      - role_defaults.docker.registries == {}
+    fail_msg: >-
+      roles/docker_registry_server/defaults/main.yaml has changed - the
+      "defaults" host is running something else now
+  when: inventory_hostname == 'docker-registry-defaults'
+
+# --- every directory in the var, and nothing outside it ----------------------
+- name: Stat the directories the role should have created
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: registry_dirs
+  loop:
+    - "{{ expected_compose_dir }}"
+    - "{{ expected_data_dir }}"
+
+- name: Check each directory exists
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isdir
+    fail_msg: "{{ item.item }} is not a directory"
+  loop: "{{ registry_dirs.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# the whole point of the vars: a path still derived from dir.ansible/dir.data
+# would show up here even though every assertion above passed
+- name: Stat the default paths the role must no longer use
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: registry_default_paths
+  loop: "{{ unexpected_paths | default([]) }}"
+
+- name: Check the role wrote nothing outside the directories var
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists
+    fail_msg: >-
+      {{ item.item }} exists - something in the role still derives its path from
+      dir.ansible/dir.data instead of docker.registry.server.directories
+  loop: "{{ registry_default_paths.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# --- htpasswd ----------------------------------------------------------------
+- name: Stat the htpasswd file
+  ansible.builtin.stat:
+    path: "{{ expected_compose_dir }}/htpasswd"
+  register: registry_htpasswd_stat
+
+- name: Check htpasswd is a file the registry can read and nobody else can
+  ansible.builtin.assert:
+    that:
+      - registry_htpasswd_stat.stat.exists
+      # docker materialises a *directory* for a missing bind source, and the
+      # registry cannot parse one - it would then reject every login
+      - not registry_htpasswd_stat.stat.isdir
+      # 0600 root: the file is a list of accounts and their bcrypt hashes. The
+      # registry image runs as root, so it still reads it through the mount.
+      - registry_htpasswd_stat.stat.mode == '0600'
+      - registry_htpasswd_stat.stat.pw_name == 'root'
+    fail_msg: >-
+      {{ expected_compose_dir }}/htpasswd is mode
+      {{ registry_htpasswd_stat.stat.mode | default('<absent>') }}
+      owned by {{ registry_htpasswd_stat.stat.pw_name | default('<absent>') }}
+
+- name: Read the htpasswd file
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/htpasswd"
+  register: registry_htpasswd_raw
+  no_log: true
+
+# the stale account was written by prepare_tasks.yml and is named by no host's
+# `users`, so this is the reconciliation branch: a role that only adds users
+# would leave it behind
+- name: Check htpasswd holds exactly the configured accounts
+  vars:
+    users: >-
+      {{ (registry_htpasswd_raw.content | b64decode).splitlines()
+         | select('search', ':')
+         | map('regex_replace', '^([^:]+):.*$', '\1') | list }}
+  ansible.builtin.assert:
+    that:
+      - users | sort == expected_users | sort
+      - molecule_stale_user not in users
+    fail_msg: >-
+      htpasswd holds {{ users }}, expected {{ expected_users }} - the account
+      {{ molecule_stale_user }} written before converge was not reconciled away
+
+# --- docker-compose.yml ------------------------------------------------------
+- name: Read the rendered docker-compose.yml
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/docker-compose.yml"
+  register: registry_compose_raw
+
+- name: Check the image and tag from the vars reached the compose file
+  vars:
+    compose: "{{ registry_compose_raw.content | b64decode | from_yaml }}"
+    service: "{{ compose.services.registry }}"
+  ansible.builtin.assert:
+    that:
+      - compose.services | list == ['registry']
+      - service.container_name == 'docker-registry'
+      - service.image == expected_image ~ ':' ~ expected_version
+      - service.restart == 'always'
+    fail_msg: "compose runs image {{ service.image }} as {{ service.container_name | default('<unset>') }}"
+
+- name: Check compose mounts the directories from the vars
+  vars:
+    compose: "{{ registry_compose_raw.content | b64decode | from_yaml }}"
+    volumes: "{{ compose.services.registry.volumes }}"
+  ansible.builtin.assert:
+    that:
+      - "expected_data_dir ~ ':/var/lib/registry' in volumes"
+      # htpasswd is not a var of its own - it hangs off directories.ansible, and
+      # the container side is fixed by REGISTRY_AUTH_HTPASSWD_PATH
+      - "expected_compose_dir ~ '/htpasswd:/htpasswd' in volumes"
+    fail_msg: "compose mounts {{ volumes }}"
+
+- name: Check the role's own settings and env both reached the environment
+  vars:
+    compose: "{{ registry_compose_raw.content | b64decode | from_yaml }}"
+    environment_lines: "{{ compose.services.registry.environment }}"
+  ansible.builtin.assert:
+    that:
+      # rendered as a list, not a mapping: `env` lines are already KEY=value and
+      # compose takes one style or the other, not both in a service
+      - expected_role_env | difference(environment_lines) | length == 0
+      - expected_env | difference(environment_lines) | length == 0
+      # the role's auth settings must not be droppable through `env`
+      - "'REGISTRY_AUTH=htpasswd' in environment_lines"
+    fail_msg: "compose environment is {{ environment_lines }}"
+
+# --- disable_default_network -------------------------------------------------
+# docker-registry-defaults names no networks and leaves the flag off, so the
+# template must emit no top-level networks mapping at all. The old template
+# pinned the default to `none` unconditionally, which compose refuses to start.
+- name: Check no networks are declared when the flag is off
+  vars:
+    compose: "{{ registry_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - compose.networks is not defined
+      - compose.services.registry.networks is not defined
+    fail_msg: >-
+      compose declares networks {{ compose.networks | default({}) }} on a host
+      that names none and leaves disable_default_network off
+  when: not expect_network_mode_none
+
+# spelled out rather than derived from the role's networks var: an expectation
+# built from the same var the template reads would agree with a broken template
+- name: Check the flag points the default network at none
+  vars:
+    compose: "{{ registry_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - "compose.networks['default'] == {'external': true, 'name': 'none'}"
+      - >-
+        compose.networks['molecule-docker-registry'] ==
+        {'external': true, 'name': 'molecule-docker-registry'}
+      # the external network has to survive alongside default, not replace it -
+      # a service left on the default network could not start at all
+      - "compose.services.registry.networks == ['molecule-docker-registry']"
+    fail_msg: "compose networks are {{ compose.networks | default('<unset>') }}"
+  when: expect_network_mode_none
+
+# --- the container actually runs the config it was handed --------------------
+- name: Wait for the registry container to report running
+  ansible.builtin.command: docker inspect docker-registry
+  register: registry_inspect_raw
+  changed_when: false
+  retries: 30
+  delay: 5
+  # `and` short-circuits, so from_json never sees an empty stdout
+  until: >-
+    registry_inspect_raw.rc == 0 and
+    (registry_inspect_raw.stdout | from_json)[0].State.Running
+
+# the rendered file only proves the template; this proves docker acted on it
+- name: Check docker bound the directories from the vars
+  vars:
+    binds: "{{ (registry_inspect_raw.stdout | from_json)[0].HostConfig.Binds }}"
+    # docker appends the access mode, so a bind reads host:container:rw here
+    bind_paths: "{{ binds | map('regex_replace', '^([^:]+:[^:]+).*$', '\\1') | list }}"
+  ansible.builtin.assert:
+    that:
+      - "expected_data_dir ~ ':/var/lib/registry' in bind_paths"
+      - "expected_compose_dir ~ '/htpasswd:/htpasswd' in bind_paths"
+    fail_msg: "docker bound {{ binds }}"
+
+- name: Check the container joined the expected networks
+  vars:
+    nets: "{{ (registry_inspect_raw.stdout | from_json)[0].NetworkSettings.Networks | list }}"
+  ansible.builtin.assert:
+    that:
+      - nets == expected_networks
+    fail_msg: "container is attached to {{ nets }}, expected {{ expected_networks }}"
+
+- name: Check env reached the container environment
+  vars:
+    container_env: "{{ (registry_inspect_raw.stdout | from_json)[0].Config.Env }}"
+  ansible.builtin.assert:
+    that:
+      - expected_role_env | difference(container_env) | length == 0
+      - expected_env | difference(container_env) | length == 0
+    fail_msg: "container environment is {{ container_env }}"
+
+# --- the registry enforces the htpasswd the role wrote -----------------------
+# the registry publishes no ports, so this goes to the container's own address
+# on whichever network it ended up attached to
+- name: Read the container address
+  vars:
+    networks: "{{ (registry_inspect_raw.stdout | from_json)[0].NetworkSettings.Networks }}"
+  ansible.builtin.set_fact:
+    registry_ip: "{{ networks[expected_networks[0]].IPAddress }}"
+
+- name: Check the registry rejects an unauthenticated request
+  ansible.builtin.uri:
+    url: "http://{{ registry_ip }}:{{ molecule_registry_port }}/v2/"
+    status_code: 401
+  register: registry_unauthed
+  retries: 30
+  delay: 5
+  until: registry_unauthed.status is defined and registry_unauthed.status == 401
+
+# spelled out in host_vars rather than read off docker.registry.server.users: an
+# expectation built from the same var the role hashes would agree with a role
+# that hashed the wrong thing
+- name: Check every configured account can authenticate
+  ansible.builtin.uri:
+    url: "http://{{ registry_ip }}:{{ molecule_registry_port }}/v2/"
+    url_username: "{{ item.username }}"
+    url_password: "{{ item.password }}"
+    force_basic_auth: true
+    status_code: 200
+  loop: "{{ expected_credentials | default([]) }}"
+  loop_control:
+    label: "{{ item.username }}"
+  no_log: true
+
+# the account removed from htpasswd must actually stop working, not merely
+# disappear from the file the registry loaded at startup
+- name: Check the reconciled-away account is rejected
+  ansible.builtin.uri:
+    url: "http://{{ registry_ip }}:{{ molecule_registry_port }}/v2/"
+    url_username: "{{ molecule_stale_user }}"
+    url_password: "{{ molecule_stale_password }}"
+    force_basic_auth: true
+    status_code: 401
+  register: registry_stale_auth
+  failed_when: registry_stale_auth.status != 401
+
+# --- autologin ---------------------------------------------------------------
+- name: Stat the docker CLI config
+  ansible.builtin.stat:
+    path: /root/.docker/config.json
+  register: registry_cli_config
+
+# autologin_registry is unset on this host, so the role must not have logged in
+# to anything - and nothing else here writes this file
+- name: Check no login happened when autologin_registry is unset
+  ansible.builtin.assert:
+    that:
+      - not registry_cli_config.stat.exists
+    fail_msg: >-
+      /root/.docker/config.json exists on a host that never set
+      autologin_registry - the role logged in to something it was not told about
+  when: not expect_autologin
+
+- name: Read the docker CLI config
+  ansible.builtin.slurp:
+    src: /root/.docker/config.json
+  register: registry_cli_config_raw
+  when: expect_autologin
+  no_log: true
+
+# docker stores base64(username:password) per registry, so this is both "the
+# login happened" and "it happened with the right credentials"
+- name: Check only the account marked for autologin was logged in
+  vars:
+    auths: "{{ (registry_cli_config_raw.content | b64decode | from_json).auths | default({}) }}"
+    address: "{{ registry_ip }}:{{ molecule_registry_port }}"
+    expected_auth: "{{ (molecule_autologin_user ~ ':' ~ molecule_autologin_password) | b64encode }}"
+  ansible.builtin.assert:
+    that:
+      - auths | list == [address]
+      - auths[address].auth == expected_auth
+    fail_msg: >-
+      docker stored credentials for {{ auths | list }}, expected exactly
+      [{{ address }}] holding {{ molecule_autologin_user }} - an account with
+      autologin false or unset was logged in
+  when: expect_autologin
+  no_log: true
