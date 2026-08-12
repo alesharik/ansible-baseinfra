@@ -39,6 +39,14 @@
   notify:
     - restart grafana
 
+# Pull separately: on an up that also pulls, compose 5.4.0 labels the container
+# with the local image ID, then recreates it once on the next up.
+- name: Pull grafana images
+  tags: grafana
+  community.docker.docker_compose_v2_pull:
+    project_src: "{{ grafana.directories.ansible }}"
+    policy: missing
+
 - name: Start grafana
   tags: grafana
   community.docker.docker_compose_v2:

@@ -65,6 +65,13 @@
     dest: "{{ dir.ansible }}/postgres-{{ postgres.name }}/docker-compose.yml"
     mode: 0755
   tags: postgres
+# Pull separately: on an up that also pulls, compose 5.4.0 labels the container
+# with the local image ID, then recreates it once on the next up.
+- name: "{{ postgres.name }}/pull postgres images"
+  community.docker.docker_compose_v2_pull:
+    project_src: "{{ dir.ansible }}/postgres-{{ postgres.name }}"
+    policy: missing
+  tags: postgres
 - name: "{{ postgres.name }}/deploy postgres container"
   community.docker.docker_compose_v2:
     project_src: "{{ dir.ansible }}/postgres-{{ postgres.name }}"

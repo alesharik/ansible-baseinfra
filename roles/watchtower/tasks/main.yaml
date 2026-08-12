@@ -80,6 +80,14 @@
     mode: "0755"
   tags: watchtower
 
+# Pull separately: on an up that also pulls, compose 5.4.0 labels the container
+# with the local image ID, then recreates it once on the next up.
+- name: Pull watchtower images
+  community.docker.docker_compose_v2_pull:
+    project_src: "{{ watchtower.directories.ansible }}"
+    policy: missing
+  tags: watchtower
+
 - name: Start watchtower
   community.docker.docker_compose_v2:
     project_src: "{{ watchtower.directories.ansible }}"

@@ -15,6 +15,14 @@
   notify:
     - restart node exporter
 
+# Pull separately: on an up that also pulls, compose 5.4.0 labels the container
+# with the local image ID, then recreates it once on the next up.
+- name: Pull node exporter images
+  community.docker.docker_compose_v2_pull:
+    project_src: "{{ node_exporter.directories.ansible }}"
+    policy: missing
+  tags: node_exporter
+
 - name: Start node exporter
   community.docker.docker_compose_v2:
     project_src: "{{ node_exporter.directories.ansible }}"

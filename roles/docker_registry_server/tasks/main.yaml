@@ -100,6 +100,14 @@
   notify:
     - restart docker registry server
 
+# Pull separately: on an up that also pulls, compose 5.4.0 labels the container
+# with the local image ID, then recreates it once on the next up.
+- name: Pull docker registry server images
+  community.docker.docker_compose_v2_pull:
+    project_src: "{{ docker.registry.server.directories.ansible }}"
+    policy: missing
+  tags: docker_registry_server
+
 - name: Start docker registry server
   community.docker.docker_compose_v2:
     project_src: "{{ docker.registry.server.directories.ansible }}"

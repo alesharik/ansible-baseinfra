@@ -157,6 +157,14 @@
   notify:
     - restart harbor
 
+# Pull separately: on an up that also pulls, compose 5.4.0 labels the container
+# with the local image ID, then recreates it once on the next up.
+- name: Pull harbor images
+  community.docker.docker_compose_v2_pull:
+    project_src: "{{ dir.ansible }}/harbor"
+    policy: missing
+  tags: harbor
+
 - name: Start harbor
   community.docker.docker_compose_v2:
     project_src: "{{ dir.ansible }}/harbor"

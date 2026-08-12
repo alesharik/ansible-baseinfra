@@ -35,6 +35,14 @@
   notify:
     - restart mimir
 
+# Pull separately: on an up that also pulls, compose 5.4.0 labels the container
+# with the local image ID, then recreates it once on the next up.
+- name: Pull mimir images
+  community.docker.docker_compose_v2_pull:
+    project_src: "{{ mimir.directories.ansible }}"
+    policy: missing
+  tags: mimir
+
 - name: Start mimir
   community.docker.docker_compose_v2:
     project_src: "{{ mimir.directories.ansible }}"

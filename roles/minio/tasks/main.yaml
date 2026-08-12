@@ -36,6 +36,14 @@
   loop_control:
     loop_var: domain
 
+# Pull separately: on an up that also pulls, compose 5.4.0 labels the container
+# with the local image ID, then recreates it once on the next up.
+- name: Pull minio images
+  community.docker.docker_compose_v2_pull:
+    project_src: "{{ dir.ansible }}/minio"
+    policy: missing
+  tags: minio
+
 - name: Start minio
   community.docker.docker_compose_v2:
     project_src: "{{ dir.ansible }}/minio"
