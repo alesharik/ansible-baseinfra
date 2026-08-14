@@ -1,0 +1,597 @@
+---
+# ==========================================================================
+# vinyl-defaults - state AFTER side_effect.yml turned the connector off.
+# The connector-on assertions for this host live at the top of side_effect.yml,
+# because verify only ever sees the post-side_effect state.
+# ==========================================================================
+- name: Read the VCL rendered with the connector off
+  ansible.builtin.slurp:
+    src: /data/ansible/vinyl/vinyl.vcl
+  register: vinyl_off_vcl
+  when: inventory_hostname == 'vinyl-defaults'
+
+- name: Check the connector backend is gone from the VCL
+  vars:
+    vcl: "{{ vinyl_off_vcl.content | b64decode }}"
+  ansible.builtin.assert:
+    that:
+      # the role still owns the version line
+      - vcl is search('^vcl 4\.1;')
+      - vcl is not search('vinyl_connector')
+      - vcl is not search('/run/vinyl/connector\.sock')
+      # the operator's own backend survived
+      - vcl is search('backend fallback')
+    fail_msg: "connector off still rendered {{ vcl }}"
+  when: inventory_hostname == 'vinyl-defaults'
+
+- name: Read the compose file rendered with the connector off
+  ansible.builtin.slurp:
+    src: /data/ansible/vinyl/docker-compose.yml
+  register: vinyl_off_compose
+  when: inventory_hostname == 'vinyl-defaults'
+
+- name: Check the connector service, volume and dependency are all gone
+  vars:
+    compose: "{{ vinyl_off_compose.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - compose.services | list == ['vinyl']
+      - "'connector_socket' not in compose.volumes"
+      - compose.services.vinyl.depends_on is not defined
+      - "'connector_socket:/run/vinyl' not in compose.services.vinyl.volumes"
+    fail_msg: "connector off still rendered {{ compose }}"
+  when: inventory_hostname == 'vinyl-defaults'
+
+# remove_orphans is what makes this true - without it compose would leave the
+# container of a service it no longer knows about running
+- name: Check the connector container was actually removed
+  ansible.builtin.command: docker ps -a --format '{% raw %}{{.Names}}{% endraw %}'
+  register: vinyl_off_ps
+  changed_when: false
+  when: inventory_hostname == 'vinyl-defaults'
+
+- name: Check varnish still runs and the connector container does not
+  ansible.builtin.assert:
+    that:
+      - expected_connector_container not in vinyl_off_ps.stdout_lines
+      - expected_vinyl_container in vinyl_off_ps.stdout_lines
+    fail_msg: "containers present: {{ vinyl_off_ps.stdout_lines }}"
+  when: inventory_hostname == 'vinyl-defaults'
+
+# varnish would refuse a VCL it could not compile, so a running container is the
+# assertion that the connector-less VCL is valid
+- name: Check varnish is up with a VCL that has no connector in it
+  ansible.builtin.command: "docker inspect {{ expected_vinyl_container }}"
+  register: vinyl_off_inspect
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: >-
+    vinyl_off_inspect.rc == 0 and
+    (vinyl_off_inspect.stdout | from_json)[0].State.Running
+  when: inventory_hostname == 'vinyl-defaults'
+
+# ==========================================================================
+# vinyl-connector - rendered artefacts
+# ==========================================================================
+- name: Read the rendered VCL
+  ansible.builtin.slurp:
+    src: "{{ expected_vcl_path }}"
+  register: vinyl_vcl_raw
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Check the role owns the VCL header and injects a unix socket backend
+  vars:
+    vcl: "{{ vinyl_vcl_raw.content | b64decode }}"
+  ansible.builtin.assert:
+    that:
+      - vcl is search('^vcl 4\.1;')
+      - vcl is search('backend vinyl_connector')
+      - vcl is search('\.path = "' ~ expected_socket ~ '"')
+      # a UDS backend takes .path or .host/.port, never both. The trailing quote
+      # matters: `\.host =` alone would also match the fixture's
+      # `req.http.host == "..."` and fail for the wrong reason.
+      - vcl is not search('\.host = "')
+      - vcl is not search('\.port = "')
+      # the fixture config was appended below the injected header, and its
+      # import still parses there
+      - vcl is search('import std;')
+      - vcl.index('vcl 4.1;') < vcl.index('backend vinyl_connector')
+      - vcl.index('backend vinyl_connector') < vcl.index('import std;')
+    fail_msg: "rendered VCL is {{ vcl }}"
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Read the rendered haproxy.cfg
+  ansible.builtin.slurp:
+    src: "{{ expected_haproxy_path }}"
+  register: vinyl_haproxy_raw
+  when: inventory_hostname == 'vinyl-connector'
+
+# spelled out rather than derived from vinyl.connector: an expectation built
+# from the same var the template reads would agree with a broken template
+- name: Check the connector config binds the socket and originates TLS
+  vars:
+    cfg: "{{ vinyl_haproxy_raw.content | b64decode }}"
+  ansible.builtin.assert:
+    that:
+      - cfg is search('bind /run/vinyl/connector\.sock mode 666')
+      # nameservers come from the container's /etc/resolv.conf, not from a var
+      - cfg is search('parse-resolv-conf')
+      - cfg is not search('nameserver ')
+      - cfg is search('set-dst-port int\(443\)')
+      - cfg is search('server clear 0\.0\.0\.0:0 ssl verify none sni var\(txn\.sni\)')
+      # drops privileges after the bind
+      - cfg is search('user haproxy')
+      - cfg is search('group haproxy')
+      - cfg is search('timeout connect 5s')
+      # control headers must not survive to the origin
+      - cfg is search('del-header X-Vinyl-Target')
+      - cfg is search('del-header X-Vinyl-Port')
+      - cfg is search('del-header X-Vinyl-Sni')
+    fail_msg: "rendered haproxy.cfg is {{ cfg }}"
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Read the rendered compose file
+  ansible.builtin.slurp:
+    src: /data/ansible/vinyl-moved/docker-compose.yml
+  register: vinyl_compose_raw
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Check listen_ips and the shared socket volume reach compose unchanged
+  vars:
+    compose: "{{ vinyl_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - compose.services | list | sort == expected_compose_services
+      - compose.services.vinyl.ports == expected_ports
+      - compose.services.vinyl.depends_on.connector.condition == 'service_healthy'
+      # the socket volume has to be on BOTH containers or the backend is unusable
+      - "'connector_socket:/run/vinyl' in compose.services.vinyl.volumes"
+      - "'connector_socket:/run/vinyl' in compose.services.connector.volumes"
+      - compose.volumes.connector_socket.driver_opts.type == 'tmpfs'
+      # root only long enough to bind the socket
+      - compose.services.connector.user == 'root'
+      # storage is malloc here, so no data dir should be mounted
+      - compose.services.vinyl.volumes | select('search', ':/data$') | list | length == 0
+    fail_msg: "rendered compose is {{ compose }}"
+  when: inventory_hostname == 'vinyl-connector'
+
+# The exporter is off in the role defaults, so this platform is the only place
+# its compose branch is rendered at all. All four of these were wrong in the
+# role as first written: an arm64-only image tag, a `command:` naming a binary
+# that does not exist, a prometheus path pointing at an HTML page, and none of
+# it ever executed.
+- name: Check the exporter service is configured to actually serve metrics
+  vars:
+    compose: "{{ vinyl_compose_raw.content | b64decode | from_yaml }}"
+    exporter: "{{ compose.services.exporter }}"
+  ansible.builtin.assert:
+    that:
+      # the entrypoint defaults to the right binary; overriding it broke startup
+      - exporter.command is not defined
+      - "'varnish_tmpfs:/var/lib/varnish/:ro' in exporter.volumes"
+      - exporter.environment.VSM_NOPID == 1
+      - exporter.labels['prometheus.io.path'] == expected_exporter_labels['prometheus.io.path']
+      - exporter.labels['prometheus.io.port'] | string == expected_exporter_labels['prometheus.io.port']
+      - "'vinyl' in exporter.depends_on"
+    fail_msg: "exporter service is {{ exporter }}"
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Check the moved directories are the ones compose mounts
+  vars:
+    compose: "{{ vinyl_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - "'/data/ansible/vinyl-moved/vinyl.vcl:/etc/varnish/default.vcl:ro' in compose.services.vinyl.volumes"
+      - >-
+        '/data/ansible/vinyl-moved/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro'
+        in compose.services.connector.volumes
+    fail_msg: "compose mounts {{ compose.services }}"
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Check both services joined the external network
+  vars:
+    compose: "{{ vinyl_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - "compose.networks[molecule_external_network] == {'external': true, 'name': molecule_external_network}"
+      - compose.services.vinyl.networks == [molecule_external_network]
+      - compose.services.connector.networks == [molecule_external_network]
+      # every service, not just those two: naming networks on some of them takes
+      # those off the compose default network, so a service without this block
+      # is stranded where nothing else in the project can reach it
+      - compose.services.exporter.networks == [molecule_external_network]
+    fail_msg: "compose networks are {{ compose.networks | default('<unset>') }}"
+  when: inventory_hostname == 'vinyl-connector'
+
+# ==========================================================================
+# vinyl-connector - what docker actually did
+# ==========================================================================
+- name: Wait for the connector container to report healthy
+  ansible.builtin.command: "docker inspect {{ expected_connector_container }}"
+  register: vinyl_connector_inspect
+  changed_when: false
+  retries: 24
+  delay: 5
+  # `and` short-circuits, so from_json never sees an empty stdout
+  until: >-
+    vinyl_connector_inspect.rc == 0 and
+    (vinyl_connector_inspect.stdout | from_json)[0].State.Health.Status == 'healthy'
+  when: inventory_hostname == 'vinyl-connector'
+
+# the rendered file only proves the template; this proves haproxy acted on it
+- name: Check the socket really is a socket, world read-write
+  ansible.builtin.command: >-
+    docker exec {{ expected_connector_container }} stat -c '%F %a' {{ expected_socket }}
+  register: vinyl_socket_stat
+  changed_when: false
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Check the socket permissions let the varnish uid connect
+  ansible.builtin.assert:
+    that:
+      - "'socket' in vinyl_socket_stat.stdout"
+      - "'666' in vinyl_socket_stat.stdout"
+    fail_msg: "socket is {{ vinyl_socket_stat.stdout }}"
+  when: inventory_hostname == 'vinyl-connector'
+
+# busybox ps, so no -C/-o user= - the image is alpine based
+- name: Read the users haproxy's processes run as
+  ansible.builtin.command: >-
+    docker exec {{ expected_connector_container }} ps -o user,comm
+  register: vinyl_haproxy_user
+  changed_when: false
+  when: inventory_hostname == 'vinyl-connector'
+
+# haproxy runs master-worker: the master keeps root so it can respawn workers,
+# and only the worker that actually handles traffic drops to `user haproxy`.
+# Asserting "nothing runs as root" would therefore be wrong - what matters is
+# that the traffic-handling process is not privileged.
+- name: Check the traffic-handling worker dropped to an unprivileged user
+  ansible.builtin.assert:
+    that:
+      - vinyl_haproxy_user.stdout is search('(?m)^haproxy\s+haproxy\s*$')
+    fail_msg: "haproxy processes run as {{ vinyl_haproxy_user.stdout_lines }}"
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Inspect the varnish container
+  ansible.builtin.command: "docker inspect {{ expected_vinyl_container }}"
+  register: vinyl_inspect
+  changed_when: false
+  retries: 24
+  delay: 5
+  until: >-
+    vinyl_inspect.rc == 0 and
+    (vinyl_inspect.stdout | from_json)[0].State.Running
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Check docker bound exactly the addresses in listen_ips
+  vars:
+    ports: "{{ (vinyl_inspect.stdout | from_json)[0].NetworkSettings.Ports }}"
+    published: "{{ ports | dict2items | rejectattr('value', 'none') | items2dict }}"
+  ansible.builtin.assert:
+    that:
+      - published | length == expected_bindings | length
+      # selected rather than indexed: binding 0.0.0.0 makes docker add a second
+      # entry for :: when the daemon has ipv6 on
+      - >-
+        published[item.key]
+        | selectattr('HostIp', 'eq', item.value.split(':')[0])
+        | selectattr('HostPort', 'eq', item.value.split(':')[1])
+        | list | length == 1
+    fail_msg: "docker bound {{ published }}, expected {{ expected_bindings }}"
+  loop: "{{ expected_bindings | dict2items }}"
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Check varnish joined the external network
+  vars:
+    nets: "{{ (vinyl_inspect.stdout | from_json)[0].NetworkSettings.Networks | list }}"
+  ansible.builtin.assert:
+    that:
+      - molecule_external_network in nets
+    fail_msg: "varnish is attached to {{ nets }}"
+  when: inventory_hostname == 'vinyl-connector'
+
+# healthy over a UDS is the whole point - this fails if the socket is missing,
+# unreadable, or bound by a haproxy that never started
+- name: Ask varnish whether the connector backend is healthy
+  ansible.builtin.command: "docker exec {{ expected_vinyl_container }} varnishadm backend.list"
+  register: vinyl_backend_list
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: "'vinyl_connector' in vinyl_backend_list.stdout and 'healthy' in vinyl_backend_list.stdout"
+  when: inventory_hostname == 'vinyl-connector'
+
+# ==========================================================================
+# vinyl-connector - caching an HTTPS origin end to end
+# ==========================================================================
+- name: Fetch a cacheable path for the first time
+  ansible.builtin.uri:
+    url: "{{ molecule_url }}/cached"
+    headers:
+      Host: "{{ molecule_origin_host }}"
+    return_content: true
+  register: vinyl_first
+  when: inventory_hostname == 'vinyl-connector'
+
+# the origin echoes what it actually received, so this is evidence about the
+# connection haproxy made, not about what varnish believes it asked for
+- name: Check the connector originated TLS with the Host header as SNI
+  ansible.builtin.assert:
+    that:
+      - vinyl_first.x_vinyl_cache == 'MISS'
+      - vinyl_first.x_origin_scheme == 'https'
+      - vinyl_first.x_origin_sni == molecule_origin_host
+      - vinyl_first.x_origin_port == '443'
+      # the connector must not leak its own control headers to the origin
+      - vinyl_first.x_origin_saw_target == '[]'
+      - vinyl_first.x_origin_saw_port == '[]'
+      - vinyl_first.x_origin_saw_sni == '[]'
+    fail_msg: >-
+      first fetch: cache={{ vinyl_first.x_vinyl_cache | default('?') }}
+      scheme={{ vinyl_first.x_origin_scheme | default('?') }}
+      sni={{ vinyl_first.x_origin_sni | default('?') }}
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Let the object age before asking for it again
+  ansible.builtin.wait_for:
+    timeout: 2
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Fetch the same path again
+  ansible.builtin.uri:
+    url: "{{ molecule_url }}/cached"
+    headers:
+      Host: "{{ molecule_origin_host }}"
+    return_content: true
+  register: vinyl_second
+  when: inventory_hostname == 'vinyl-connector'
+
+# the origin stamps a unique request id into every response, so an identical
+# body is proof the second response never reached it
+- name: Check the second response came out of the cache
+  ansible.builtin.assert:
+    that:
+      - vinyl_second.x_vinyl_cache == 'HIT'
+      - vinyl_second.age | int > 0
+      - vinyl_second.content == vinyl_first.content
+    fail_msg: >-
+      second fetch was {{ vinyl_second.x_vinyl_cache | default('?') }}
+      age={{ vinyl_second.age | default('?') }};
+      body {{ vinyl_second.content | default('') }}
+      vs {{ vinyl_first.content | default('') }}
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Fetch through a Host that is never resolved, with an explicit target
+  ansible.builtin.uri:
+    url: "{{ molecule_url }}/root-alias"
+    headers:
+      Host: "{{ molecule_alias_host }}"
+  register: vinyl_alias
+  when: inventory_hostname == 'vinyl-connector'
+
+# alias.molecule.test has no DNS record anywhere - a 200 here can only mean
+# X-Vinyl-Target decided the connection while Host decided the SNI
+- name: Check X-Vinyl-Target and the Host header are independent
+  ansible.builtin.assert:
+    that:
+      - vinyl_alias.status == 200
+      - vinyl_alias.x_origin_host == molecule_alias_host
+      - vinyl_alias.x_origin_sni == molecule_alias_host
+    fail_msg: >-
+      alias fetch: host={{ vinyl_alias.x_origin_host | default('?') }}
+      sni={{ vinyl_alias.x_origin_sni | default('?') }}
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Fetch with an overridden origin port
+  ansible.builtin.uri:
+    url: "{{ molecule_url }}/port8443"
+    headers:
+      Host: "{{ molecule_origin_host }}"
+  register: vinyl_port
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Check X-Vinyl-Port reached the origin's second listener
+  ansible.builtin.assert:
+    that:
+      - vinyl_port.status == 200
+      - vinyl_port.x_origin_port == '8443'
+      - vinyl_port.x_origin_scheme == 'https'
+    fail_msg: "port override landed on {{ vinyl_port.x_origin_port | default('?') }}"
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Find the origin's address
+  ansible.builtin.command: docker exec molecule-origin hostname -i
+  register: vinyl_origin_ip
+  changed_when: false
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Fetch with a literal IP target
+  ansible.builtin.uri:
+    url: "{{ molecule_url }}/byip"
+    headers:
+      Host: "{{ molecule_origin_host }}"
+      X-Molecule-Ip: "{{ vinyl_origin_ip.stdout.split() | first }}"
+  register: vinyl_byip
+  when: inventory_hostname == 'vinyl-connector'
+
+# do-resolve returns nothing for a literal address, so this only passes if the
+# set-dst shortcut for IP targets is in the config
+- name: Check an IP target bypasses DNS and still gets the right SNI
+  ansible.builtin.assert:
+    that:
+      - vinyl_byip.status == 200
+      - vinyl_byip.x_origin_sni == molecule_origin_host
+      - vinyl_byip.x_origin_scheme == 'https'
+    fail_msg: "ip target: {{ vinyl_byip.x_origin_sni | default('?') }}"
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Fetch through a target that does not resolve
+  ansible.builtin.uri:
+    url: "{{ molecule_url }}/nope"
+    headers:
+      Host: broken.molecule.test
+    status_code: [503]
+  register: vinyl_broken
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Check an unresolvable target fails fast instead of hanging
+  ansible.builtin.assert:
+    that:
+      - vinyl_broken.status == 503
+    fail_msg: "unresolvable target returned {{ vinyl_broken.status | default('?') }}"
+  when: inventory_hostname == 'vinyl-connector'
+
+# --- request normalisation --------------------------------------------------
+- name: Fetch a tracking-parameter URL that should normalise onto the cached one
+  ansible.builtin.uri:
+    url: "{{ molecule_url }}/cached?utm_source=molecule&fbclid=xyz"
+    headers:
+      Host: "{{ molecule_origin_host }}"
+    return_content: true
+  register: vinyl_utm
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Check tracking parameters were stripped onto the same cache object
+  ansible.builtin.assert:
+    that:
+      - vinyl_utm.x_vinyl_cache == 'HIT'
+      - vinyl_utm.content == vinyl_first.content
+    fail_msg: >-
+      utm fetch was {{ vinyl_utm.x_vinyl_cache | default('?') }};
+      body {{ vinyl_utm.content | default('') }}
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Fetch a static asset the origin sets a cookie on
+  ansible.builtin.uri:
+    url: "{{ molecule_url }}/asset.css"
+    headers:
+      Host: "{{ molecule_origin_host }}"
+    return_content: true
+  register: vinyl_asset_first
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Fetch the same asset again
+  ansible.builtin.uri:
+    url: "{{ molecule_url }}/asset.css"
+    headers:
+      Host: "{{ molecule_origin_host }}"
+    return_content: true
+  register: vinyl_asset_second
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Check Set-Cookie was stripped and the asset cached anyway
+  ansible.builtin.assert:
+    that:
+      - vinyl_asset_first.set_cookie is not defined
+      - vinyl_asset_second.set_cookie is not defined
+      - vinyl_asset_second.x_vinyl_cache == 'HIT'
+      - vinyl_asset_second.content == vinyl_asset_first.content
+    fail_msg: >-
+      asset second fetch was {{ vinyl_asset_second.x_vinyl_cache | default('?') }},
+      cookie {{ vinyl_asset_second.set_cookie | default('<none>') }}
+  when: inventory_hostname == 'vinyl-connector'
+
+# --- PURGE ------------------------------------------------------------------
+# through the published port the request arrives from the docker gateway, which
+# the fixture ACL does not list
+- name: Send PURGE from outside the ACL
+  ansible.builtin.uri:
+    url: "{{ molecule_url }}/cached"
+    method: PURGE
+    headers:
+      Host: "{{ molecule_origin_host }}"
+    status_code: [405]
+  register: vinyl_purge_denied
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Check PURGE is refused from an address outside the ACL
+  ansible.builtin.assert:
+    that:
+      - vinyl_purge_denied.status == 405
+    fail_msg: "purge from the gateway returned {{ vinyl_purge_denied.status | default('?') }}"
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Check the object survived the refused purge
+  ansible.builtin.uri:
+    url: "{{ molecule_url }}/cached"
+    headers:
+      Host: "{{ molecule_origin_host }}"
+    return_content: true
+  register: vinyl_after_denied
+  failed_when: vinyl_after_denied.x_vinyl_cache != 'HIT'
+  when: inventory_hostname == 'vinyl-connector'
+
+# sent from inside varnish's own netns, so client.ip is 127.0.0.1 and the ACL
+# admits it - the allowed and refused branches differ only by source address
+- name: Send PURGE from inside the ACL
+  ansible.builtin.command: >-
+    docker exec {{ expected_vinyl_container }}
+    curl -sS -o /dev/null -w '%{http_code}'
+    -X PURGE -H 'Host: {{ molecule_origin_host }}'
+    http://127.0.0.1:80/cached
+  register: vinyl_purge_allowed
+  changed_when: false
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Check PURGE is accepted from an address inside the ACL
+  ansible.builtin.assert:
+    that:
+      - vinyl_purge_allowed.stdout == '200'
+    fail_msg: "purge from 127.0.0.1 returned {{ vinyl_purge_allowed.stdout }}"
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Fetch the purged path again
+  ansible.builtin.uri:
+    url: "{{ molecule_url }}/cached"
+    headers:
+      Host: "{{ molecule_origin_host }}"
+    return_content: true
+  register: vinyl_after_purge
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Check the purge really evicted the object
+  ansible.builtin.assert:
+    that:
+      - vinyl_after_purge.x_vinyl_cache == 'MISS'
+      # a fresh fetch means a new request id from the origin
+      - vinyl_after_purge.content != vinyl_first.content
+    fail_msg: >-
+      after purge: {{ vinyl_after_purge.x_vinyl_cache | default('?') }},
+      body {{ vinyl_after_purge.content | default('') }}
+  when: inventory_hostname == 'vinyl-connector'
+
+# ==========================================================================
+# vinyl-connector - the exporter, scraped last so the counters are non-zero
+# ==========================================================================
+# The exporter publishes no host port, so this goes through the project network.
+# varnish carries curl in its image and sits on the same networks, which saves
+# pulling a client just to reach a sibling container.
+- name: Scrape the exporter from inside the project network
+  ansible.builtin.command: >-
+    docker exec {{ expected_vinyl_container }}
+    curl -sS --max-time 10
+    http://exporter:9131{{ expected_exporter_labels['prometheus.io.path'] }}
+  register: vinyl_metrics
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: vinyl_metrics.rc == 0 and 'varnish_up 1' in vinyl_metrics.stdout
+  when: inventory_hostname == 'vinyl-connector'
+
+# cache_hit is cumulative and the caching tests above generated hits, so a zero
+# here means the exporter is serving something other than this varnish - which
+# is exactly what the old `prometheus.io.path: /` label produced
+- name: Check the exporter reports live varnish state, not just that it is up
+  vars:
+    hit_line: >-
+      {{ vinyl_metrics.stdout_lines
+         | select('match', '^varnish_main_cache_hit ')
+         | first | default('varnish_main_cache_hit 0') }}
+  ansible.builtin.assert:
+    that:
+      - "'varnish_up 1' in vinyl_metrics.stdout"
+      - hit_line.split(' ')[1] | float > 0
+    fail_msg: "exporter reported {{ hit_line }}"
+  when: inventory_hostname == 'vinyl-connector'

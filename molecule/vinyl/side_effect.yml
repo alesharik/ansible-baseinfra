@@ -1,0 +1,195 @@
+---
+# Docker only exists after converge has run the role's docker dependency, so
+# this is the first hook where a network can be created, an origin container
+# started, or the role re-run against either.
+- name: Bring up an HTTPS origin and attach the role to a shared network
+  hosts: vinyl-connector
+  environment:
+    ANSIBLE_UNSAFE_WRITES: "1"
+  tasks:
+    - name: Install openssl for the fixture certificate
+      ansible.builtin.apt:
+        name: openssl
+        state: present
+        update_cache: true
+
+    - name: Create the origin fixture directories
+      ansible.builtin.file:
+        path: "{{ molecule_origin_dir }}/{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - certs
+        - conf
+
+    # The SAN covers the alias name too, so a mismatch cannot be what makes the
+    # X-Vinyl-Target test pass or fail - only the target/SNI split can.
+    - name: Generate a self-signed certificate for the origin
+      ansible.builtin.command:
+        cmd: >-
+          openssl req -x509 -newkey rsa:2048 -nodes -days 2
+          -keyout {{ molecule_origin_dir }}/certs/origin.key
+          -out {{ molecule_origin_dir }}/certs/origin.crt
+          -subj /CN={{ molecule_origin_host }}
+          -addext subjectAltName=DNS:{{ molecule_origin_host }},DNS:{{ molecule_alias_host }}
+        creates: "{{ molecule_origin_dir }}/certs/origin.crt"
+
+    - name: Make the key readable inside the nginx container
+      ansible.builtin.file:
+        path: "{{ molecule_origin_dir }}/certs/origin.key"
+        mode: "0644"
+
+    - name: Copy the origin nginx config
+      ansible.builtin.copy:
+        src: "{{ lookup('env', 'MOLECULE_SCENARIO_DIRECTORY') }}/fixtures/origin-nginx.conf"
+        dest: "{{ molecule_origin_dir }}/conf/nginx.conf"
+        mode: "0444"
+
+    # not community.docker.*: those modules need the docker SDK for python, and
+    # roles/docker installs only the cli and the compose plugin
+    - name: Create the external network the role will attach to
+      ansible.builtin.command: "docker network create {{ molecule_external_network }}"
+      register: vinyl_network_create
+      changed_when: vinyl_network_create.rc == 0
+      failed_when: >-
+        vinyl_network_create.rc != 0 and
+        'already exists' not in vinyl_network_create.stderr
+
+    - name: Start the HTTPS origin on that network
+      ansible.builtin.command: >-
+        docker run -d --name molecule-origin
+        --network {{ molecule_external_network }}
+        --network-alias {{ molecule_origin_host }}
+        -v {{ molecule_origin_dir }}/conf/nginx.conf:/etc/nginx/nginx.conf:ro
+        -v {{ molecule_origin_dir }}/certs:/certs:ro
+        nginx:alpine
+      register: vinyl_origin_run
+      changed_when: vinyl_origin_run.rc == 0
+      failed_when: >-
+        vinyl_origin_run.rc != 0 and
+        'already in use' not in vinyl_origin_run.stderr
+
+    # combine rather than a second literal dict: the whole point of the re-run
+    # is that only this one key differs from what converge used, and a
+    # hand-copied dict could drift and hide that
+    - name: Build the vinyl vars attached to the shared network
+      ansible.builtin.set_fact:
+        vinyl_on_net: "{{ vinyl | combine({'networks': [molecule_external_network]}) }}"
+
+    - name: Re-run the role attached to the shared network
+      ansible.builtin.include_role:
+        name: alesharik.baseinfra.vinyl
+      vars:
+        vinyl: "{{ vinyl_on_net }}"
+
+# This host is used to observe both states of connector.enabled. verify only
+# runs after side_effect, so the assertions for the state converge produced -
+# the role defaults, with a connector - have to happen here, before the flip.
+# Everything after the flip is asserted in tests.yml.
+- name: Check the defaults render a connector, then turn it off
+  hosts: vinyl-defaults
+  environment:
+    ANSIBLE_UNSAFE_WRITES: "1"
+  tasks:
+    - name: Read the VCL the role defaults rendered
+      ansible.builtin.slurp:
+        src: /data/ansible/vinyl/vinyl.vcl
+      register: vinyl_default_vcl
+
+    - name: Check the defaults inject a connector backend over a unix socket
+      vars:
+        vcl: "{{ vinyl_default_vcl.content | b64decode }}"
+      ansible.builtin.assert:
+        that:
+          - vcl is search('^vcl 4\.1;')
+          - vcl is search('backend vinyl_connector')
+          - vcl is search('\.path = "' ~ expected_socket ~ '"')
+          # a UDS backend takes .path or .host/.port, never both
+          - vcl is not search('\.host = "')
+          - vcl is not search('\.port = "')
+        fail_msg: "the role defaults rendered {{ vcl }}"
+
+    - name: Read the connector config the role defaults rendered
+      ansible.builtin.slurp:
+        src: /data/ansible/vinyl/haproxy.cfg
+      register: vinyl_default_haproxy
+
+    # Spelled out rather than derived from vinyl.connector: an expectation built
+    # from the same var the template reads would agree with a broken template.
+    # This is the only host that renders the *default* verify mode at all -
+    # vinyl-connector overrides it to `none`, which its self-signed fixture
+    # origin requires.
+    - name: Check the defaults verify the origin certificate
+      vars:
+        cfg: "{{ vinyl_default_haproxy.content | b64decode }}"
+      ansible.builtin.assert:
+        that:
+          - cfg is search('ssl verify required ca-file /etc/ssl/certs/ca-certificates\.crt sni var\(txn\.sni\)')
+          - cfg is not search('verify none')
+          - cfg is search('timeout client 300s')
+          - cfg is search('timeout server 300s')
+        fail_msg: "the role defaults rendered {{ cfg }}"
+
+    - name: Read the compose file the role defaults rendered
+      ansible.builtin.slurp:
+        src: /data/ansible/vinyl/docker-compose.yml
+      register: vinyl_default_compose
+
+    - name: Check the defaults declare the connector service and its socket volume
+      vars:
+        compose: "{{ vinyl_default_compose.content | b64decode | from_yaml }}"
+      ansible.builtin.assert:
+        that:
+          - compose.services | list | sort == expected_compose_services
+          - "'connector_socket' in compose.volumes"
+          - compose.services.vinyl.depends_on.connector.condition == 'service_healthy'
+          # nothing is published unless listen_ips says so
+          - compose.services.vinyl.ports is not defined
+          - compose.networks is not defined
+        fail_msg: "the role defaults rendered {{ compose }}"
+
+    - name: Check the connector container is running before the flip
+      ansible.builtin.command: docker ps --format '{% raw %}{{.Names}}{% endraw %}'
+      register: vinyl_connector_before
+      changed_when: false
+      failed_when: expected_connector_container not in vinyl_connector_before.stdout_lines
+
+    # Turning the connector off removes the only backend the role writes, and
+    # VCL with no backend at all does not compile - so the flip has to supply
+    # one. That is a real constraint of the option, documented in the README,
+    # not a fixture convenience.
+    - name: Read the role defaults from the controller
+      ansible.builtin.slurp:
+        src: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}/roles/vinyl/defaults/main.yaml"
+      delegate_to: localhost
+      become: false
+      register: vinyl_defaults_raw
+
+    # Built from the role's own defaults rather than a copy of them, so this
+    # cannot drift away from what converge actually ran.
+    #
+    # `directories` has to be spelled out. Every other default is a literal, but
+    # those two are "{{ dir.ansible }}/vinyl" - and this dict came out of
+    # slurp + from_yaml, which is opaque data the templar never renders, so the
+    # braces would reach docker verbatim ('service "vinyl" refers to undefined
+    # volume {{ dir.ansible }}/vinyl/vinyl.vcl'). An inventory var would have
+    # been resolved recursively on lookup; file content read at runtime is not.
+    - name: Build the vars with the connector turned off
+      vars:
+        role_defaults: "{{ vinyl_defaults_raw.content | b64decode | from_yaml }}"
+      ansible.builtin.set_fact:
+        vinyl_noconnector: >-
+          {{ role_defaults.vinyl | combine({
+               'connector': role_defaults.vinyl.connector | combine({'enabled': false}),
+               'config': molecule_noconnector_config,
+               'directories': {
+                 'ansible': dir.ansible ~ '/vinyl',
+                 'data': dir.data ~ '/vinyl'
+               }
+             }) }}
+
+    - name: Re-run the role with the connector turned off
+      ansible.builtin.include_role:
+        name: alesharik.baseinfra.vinyl
+      vars:
+        vinyl: "{{ vinyl_noconnector }}"

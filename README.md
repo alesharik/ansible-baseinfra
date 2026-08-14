@@ -12,6 +12,7 @@
 - [`mimir`](./roles/mimir/README.md) - deploy mimir metrics store
 - [`node_exporter`](./roles/node_exporter/README.md) - deploy node exporter
 - [`traefik`](./roles/traefik/README.md) - deploy traefik reverse proxy
+- [`vinyl`](./roles/vinyl/README.md) - deploy varnish cache with an haproxy outbound TLS connector
 - [`vmagent`](./roles/vmagent/README.md) - deploy vmagent metrics scraper
 - [`watchtower`](./roles/watchtower/README.md) - deploy watchtower container updater
 - [`wg_exporter`](./roles/wg_exporter/README.md) - deploy wireguard exporter
@@ -58,3 +59,4 @@ prometheus.io.address: 127.0.0.1:9586 # full address to server
 | `wg_exporter`            | `3.6.6`                          | 2026-08-02   |              |
 | `headscale`              | `v0.25.1`                        | 2025-07-12   | 2025-07-12   |
 | `traefik`                | `v3.6.15`                        | 2026-07-30   | 2026-07-30   |
+| `vinyl`                  | varnish - `9`, haproxy - `3.2-alpine`, exporter - `1.8.3-varnish-9.0.0` | 2026-08-12   | 2026-08-12   |

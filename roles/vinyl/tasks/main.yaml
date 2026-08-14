@@ -1,0 +1,108 @@
+---
+# The role owns the top of vinyl.vcl - the version line and the connector
+# backend - because VCL wants `vcl 4.x;` first and every backend declared before
+# use. A version line left in vinyl.config lands second and varnishd refuses the
+# file, which surfaces as a container that will not start rather than as
+# anything pointing at the config. Fail here instead, where the cause is named.
+- name: Check vinyl.config carries no VCL version line
+  tags: vinyl
+  ansible.builtin.assert:
+    that:
+      - vinyl.config is not search('(?m)^[ \t]*vcl[ \t]+[0-9]')
+    fail_msg: >-
+      vinyl.config declares its own `vcl ...;` version line. The role writes
+      that line itself, so remove it from vinyl.config - the config should now
+      start at its first import or backend. Set vinyl.vcl_version to change the
+      version.
+
+# .path backends exist only in VCL 4.1, and the connector is reached over one.
+- name: Check the connector is not paired with a VCL version that cannot reach it
+  tags: vinyl
+  when: vinyl.connector.enabled
+  ansible.builtin.assert:
+    that:
+      - vinyl.vcl_version == '4.1'
+    fail_msg: >-
+      vinyl.connector.enabled needs vinyl.vcl_version 4.1 - the connector is a
+      unix socket backend and `.path` does not exist in VCL
+      {{ vinyl.vcl_version }}. Set vcl_version to "4.1", or disable the
+      connector.
+
+- name: Create compose dir
+  tags: vinyl
+  ansible.builtin.file:
+    path: "{{ vinyl.directories.ansible }}"
+    state: directory
+    mode: "0755"
+
+- name: Create data dir
+  tags: vinyl
+  when: "vinyl.storage.startswith('file') or vinyl.storage.startswith('persistent')"
+  ansible.builtin.file:
+    path: "{{ vinyl.directories.data }}"
+    state: directory
+    mode: "0700"
+
+# 0444, not 0400: these files are written as root but read from inside the
+# containers, and both images run unprivileged - varnish as uid 1000, haproxy as
+# uid 99. A root-owned 0400 file is unreadable there and varnishd exits with
+# "Cannot read -f file ... (Permission denied)", which surfaces as a container
+# stuck in a restart loop. Same reason the entrypoint below is 0555.
+- name: Move vinyl.vcl
+  tags: vinyl
+  ansible.builtin.template:
+    src: vinyl.vcl
+    dest: "{{ vinyl.directories.ansible }}/vinyl.vcl"
+    mode: "0444"
+  notify:
+    - reload vinyl
+
+- name: Move haproxy.cfg
+  tags: vinyl
+  when: vinyl.connector.enabled
+  ansible.builtin.template:
+    src: haproxy.cfg
+    dest: "{{ vinyl.directories.ansible }}/haproxy.cfg"
+    mode: "0444"
+  notify:
+    - restart vinyl
+
+- name: Move docker-varnish-entrypoint
+  tags: vinyl
+  ansible.builtin.template:
+    src: docker-varnish-entrypoint
+    dest: "{{ vinyl.directories.ansible }}/docker-varnish-entrypoint"
+    mode: "0555"
+  notify:
+    - restart vinyl
+
+- name: Move compose files
+  tags: vinyl
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ vinyl.directories.ansible }}/docker-compose.yml"
+    mode: "0700"
+  notify:
+    - restart vinyl
+
+# Pull separately: on an up that also pulls, compose 5.4.0 labels the container
+# with the local image ID, then recreates it once on the next up.
+- name: Pull vinyl images
+  tags: vinyl
+  community.docker.docker_compose_v2_pull:
+    project_src: "{{ vinyl.directories.ansible }}"
+    policy: missing
+
+# remove_orphans so that turning the connector off actually takes its container
+# down - without it compose leaves a service it no longer knows about running,
+# and the socket volume with it.
+- name: Start vinyl
+  tags: vinyl
+  community.docker.docker_compose_v2:
+    project_src: "{{ vinyl.directories.ansible }}"
+    state: present
+    remove_orphans: true
+
+- name: Make sure handlers are flushed immediately
+  ansible.builtin.meta: flush_handlers
+  tags: vinyl

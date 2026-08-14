@@ -1,0 +1,25 @@
+---
+- name: restart vinyl
+  tags: vinyl
+  community.docker.docker_compose_v2:
+    project_src: "{{ vinyl.directories.ansible }}"
+    state: restarted
+
+# VCL alone can be swapped without dropping connections or the cache, so a
+# config-only change reloads rather than restarts.
+#
+# Retried because both handlers fire on a first run - everything is "changed"
+# then - and `restart vinyl` is defined first, so this can land while the
+# container is still on its way back up. docker refuses an exec against a
+# container in the restarting state, which failed the whole run. A genuinely
+# broken varnish still fails here, just a minute later.
+- name: reload vinyl
+  tags: vinyl
+  community.docker.docker_compose_v2_exec:
+    project_src: "{{ vinyl.directories.ansible }}"
+    service: vinyl
+    command: varnishreload
+  register: vinyl_reload
+  until: vinyl_reload is not failed
+  retries: 12
+  delay: 5

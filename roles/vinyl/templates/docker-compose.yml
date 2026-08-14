@@ -1,0 +1,114 @@
+#jinja2: trim_blocks: True, lstrip_blocks: True
+{% if vinyl.networks is defined and vinyl.networks|length > 0 %}
+networks:
+{% for net in vinyl.networks %}
+  "{{ net }}":
+    name: "{{ net }}"
+    external: true
+{% endfor %}
+{% endif %}
+volumes:
+  varnish_tmpfs:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+{% if vinyl.connector.enabled %}
+  # Carries the connector socket between the two containers. tmpfs because a
+  # socket has no business surviving a restart.
+  connector_socket:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+{% endif %}
+services:
+{% if vinyl.exporter.enabled %}
+  exporter:
+    image: "{{ vinyl.exporter.image }}:{{ vinyl.exporter.version }}"
+    restart: unless-stopped
+    # No `command:`. The binary is prometheus-varnish-exporter with hyphens, and
+    # the image's entrypoint already defaults to it - naming it with underscores
+    # just gives "exec: not found" and a container that never starts.
+    volumes:
+      # the exporter reads varnish's shared memory straight off this volume, so
+      # it needs no network path to varnish at all
+      - varnish_tmpfs:/var/lib/varnish/:ro
+    environment:
+      VSM_NOPID: 1
+    labels:
+      # /metrics, not / - the exporter serves an HTML landing page at the root
+      prometheus.io.path: /metrics
+      prometheus.io.port: 9131
+    depends_on:
+      - vinyl
+{% if vinyl.networks is defined and vinyl.networks|length > 0 %}
+    # Same networks as the rest of the project. Naming networks on the other two
+    # services takes them off the compose default network, so an exporter left
+    # without this block ends up somewhere nothing else can reach - its metrics
+    # are read off the shared volume, but nothing could scrape them.
+    networks:
+{% for net in vinyl.networks %}
+      - "{{ net }}"
+{% endfor %}
+{% endif %}
+{% endif %}
+{% if vinyl.connector.enabled %}
+  connector:
+    image: "{{ vinyl.connector.image }}:{{ vinyl.connector.version }}"
+    restart: unless-stopped
+    # The image runs as uid 99, which cannot create a socket in the root-owned
+    # volume. haproxy.cfg carries `user haproxy` / `group haproxy`, so the
+    # worker handling traffic drops back to unprivileged once the socket is
+    # bound; the master stays root to respawn workers.
+    user: root
+    volumes:
+      - "{{ vinyl.directories.ansible }}/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro"
+      - connector_socket:/run/vinyl
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8405/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+{% if vinyl.networks is defined and vinyl.networks|length > 0 %}
+    networks:
+{% for net in vinyl.networks %}
+      - "{{ net }}"
+{% endfor %}
+{% endif %}
+{% endif %}
+  vinyl:
+    image: "{{ vinyl.image }}:{{ vinyl.version }}"
+    restart: unless-stopped
+    ulimits:
+      memlock: "-1"
+    environment:
+      VARNISH_STORAGE: "{{ vinyl.storage }}"
+{% if vinyl.listen_ips is defined and vinyl.listen_ips|length > 0 %}
+    ports:
+{% for listen in vinyl.listen_ips %}
+      - "{{ listen }}"
+{% endfor %}
+{% endif %}
+{% if vinyl.connector.enabled %}
+    # A missing socket is only a warning at VCL load, but a fetch against one
+    # fails outright, so varnish must not take traffic before haproxy has bound.
+    depends_on:
+      connector:
+        condition: service_healthy
+{% endif %}
+    volumes:
+      - varnish_tmpfs:/var/lib/varnish
+      - "{{ vinyl.directories.ansible }}/vinyl.vcl:/etc/varnish/default.vcl:ro"
+{% if vinyl.connector.enabled %}
+      - connector_socket:/run/vinyl
+{% endif %}
+{% if vinyl.storage.startswith('file') or vinyl.storage.startswith('persistent') %}
+      - "{{ vinyl.directories.data }}:/data"
+{% endif %}
+      - "{{ vinyl.directories.ansible }}/docker-varnish-entrypoint:/usr/local/bin/docker-varnish-entrypoint"
+{% if vinyl.networks is defined and vinyl.networks|length > 0 %}
+    networks:
+{% for net in vinyl.networks %}
+      - "{{ net }}"
+{% endfor %}
+{% endif %}

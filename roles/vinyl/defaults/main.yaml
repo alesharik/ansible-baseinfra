@@ -1,0 +1,47 @@
+---
+vinyl: # noqa: var-naming[no-role-prefix]
+  image: varnish
+  version: "9"
+  # Operator VCL, rendered into vinyl.vcl below the header the role owns. It
+  # must NOT carry a `vcl 4.x;` line of its own: VCL wants that line first and
+  # every backend declared before use, so the role writes it, then the connector
+  # backend, then this. tasks/main.yaml fails the run with a readable message
+  # rather than letting varnishd fail to parse inside a container.
+  config: ""
+  # `.path` backends - what the connector is reached over - exist only in VCL
+  # 4.1, so the connector and 4.0 are mutually exclusive and the role asserts it.
+  vcl_version: "4.1"
+  # compose port mappings, one line each, passed to docker untouched. Empty by
+  # default: the usual deployment puts a reverse proxy in front on a shared
+  # docker network, where publishing a host port would only widen the surface.
+  listen_ips: []
+  networks: []
+  storage: malloc
+  # Varnish cannot originate TLS, so an origin that only speaks HTTPS is
+  # unreachable from a plain VCL backend. This sidecar is a single dynamic
+  # forwarder: varnish hands it a plain-HTTP request over a unix socket, it
+  # resolves the target per request and re-originates over TLS. One listener
+  # serves every origin - there is no per-origin configuration.
+  connector:
+    enabled: true
+    image: haproxy
+    version: "3.2-alpine"
+    # Origin TLS port when a request carries no X-Vinyl-Port.
+    origin_port: 443
+    # `required` validates the origin's chain against ca_file and drops the
+    # connection when it does not check out. Sibling containers carrying
+    # self-signed certificates cannot pass that - set `none` for those, which
+    # trusts whatever certificate the origin presents.
+    verify: required
+    ca_file: /etc/ssl/certs/ca-certificates.crt
+    timeout:
+      connect: 5s
+      client: 300s
+      server: 300s
+  exporter:
+    enabled: false
+    image: ghcr.io/otto-de/prometheus-varnish-exporter
+    version: 1.8.3-varnish-9.0.0
+  directories:
+    ansible: "{{ dir.ansible }}/vinyl"
+    data: "{{ dir.data }}/vinyl"

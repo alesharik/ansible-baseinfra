@@ -1,0 +1,160 @@
+---
+# Two platforms on purpose. `vinyl-defaults` runs the role defaults untouched -
+# it sets no `vinyl` dict at all, so it cannot drift from them - and is where
+# the "connector off" state is covered, via side_effect.yml. `vinyl-connector`
+# relocates the directories, publishes a port and caches a real HTTPS origin
+# through the connector. The shared converge.yml includes the role by scenario
+# name, so a second scenario is not an option - a scenario is a role name here.
+# A third platform would push this docker-in-docker run past ~15 minutes.
+platforms:
+  - name: vinyl-defaults
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+    # This scenario runs docker inside the instance, and overlayfs refuses to
+    # stack on overlayfs: without a real filesystem under the image store, the
+    # inner daemon fails every pull with "invalid argument" on the overlay
+    # mount. Anonymous volumes are host-backed, which is enough. Docker >= 25
+    # keeps snapshots in containerd, older ones in /var/lib/docker - mount both
+    # so this does not depend on which one the instance installs.
+    volumes:
+      - /var/lib/docker
+      - /var/lib/containerd
+    # anonymous volumes are kept by default; nothing here should outlive destroy
+    keep_volumes: false
+  - name: vinyl-connector
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+    volumes:
+      - /var/lib/docker
+      - /var/lib/containerd
+    keep_volumes: false
+
+provisioner:
+  inventory:
+    group_vars:
+      all:
+        # vinyl's meta pulls in bootstrap, so this scenario has to satisfy it.
+        # `bootstrap` is a plain dict override - it replaces the role defaults
+        # wholesale, so every key the role reads has to be listed here.
+        bootstrap:
+          # would reach the host kernel through the privileged container
+          disable_algif_aead: false
+          disable_transparent_huge_pages: false
+          # nothing under test here needs users or sudoers
+          setup_users: false
+          setup_sudo: false
+          set_hostname: true
+          limits:
+            enabled: true
+            nofile:
+              soft: 8192
+              hard: 1048576
+          swap:
+            enabled: false
+            # NOT /swapfile: /proc/swaps is not namespaced, so teardown-swap.yaml
+            # would match the docker *host's* active swap and swapoff a file this
+            # container never activated. See molecule/bootstrap/molecule.yml.
+            file: /molecule_swapfile
+            size_mb: 4096
+        dir:
+          data: /data
+          ansible: /data/ansible
+
+    # expected_* is what tests.yml asserts against, spelled out per host rather
+    # than derived from `vinyl`. Deriving the expectation from the same var the
+    # templates read would let a broken template agree with a broken test.
+    host_vars:
+      vinyl-defaults:
+        # Deliberately no `vinyl` key: nothing here needs relocating, so this
+        # host runs the role defaults themselves rather than a copy of them that
+        # could drift. tests.yml reads roles/vinyl/defaults/main.yaml from the
+        # controller for the values it asserts against.
+        expected_socket: /run/vinyl/connector.sock
+        expected_compose_services: [connector, vinyl]
+        # compose names the project after project_src, which is dir.ansible/vinyl
+        # on this host
+        expected_vinyl_container: vinyl-vinyl-1
+        expected_connector_container: vinyl-connector-1
+        # side_effect.yml re-runs the role with the connector off. With no
+        # connector backend and an empty vinyl.config the VCL would have no
+        # backend at all and varnishd refuses to load it, so the flip supplies a
+        # minimal one - that is a real constraint of turning the connector off,
+        # not a fixture convenience.
+        molecule_noconnector_config: |
+          backend fallback {
+              .host = "127.0.0.1";
+              .port = "9";
+          }
+
+      vinyl-connector:
+        vinyl:
+          image: varnish
+          version: "9"
+          config: "{{ lookup('file', lookup('env', 'MOLECULE_SCENARIO_DIRECTORY') + '/fixtures/molecule.vcl') }}"
+          vcl_version: "4.1"
+          # host port != container port, so a mapping that dropped either half
+          # of the pair would show up
+          listen_ips:
+            - "127.0.0.1:8080:80"
+          # created by side_effect.yml, which then re-runs the role attached to
+          # it - docker only exists after converge has run the role's docker
+          # dependency, so this is the first hook where that is possible
+          networks: []
+          storage: malloc
+          connector:
+            enabled: true
+            image: haproxy
+            version: "3.2-alpine"
+            origin_port: 443
+            # deliberately off the default (`required`): the fixture origin
+            # side_effect.yml starts carries a self-signed certificate, which
+            # verification refuses by design. vinyl-defaults covers the
+            # verifying render.
+            verify: none
+            ca_file: /etc/ssl/certs/ca-certificates.crt
+            timeout:
+              connect: 5s
+              client: 30s
+              server: 30s
+          # on here rather than on vinyl-defaults: the exporter is off by
+          # default, so this is the only place its compose branch is rendered
+          # or run at all
+          exporter:
+            enabled: true
+            image: ghcr.io/otto-de/prometheus-varnish-exporter
+            version: 1.8.3-varnish-9.0.0
+          directories:
+            ansible: "{{ dir.ansible }}/vinyl-moved"
+            data: "{{ dir.data }}/vinyl-moved"
+
+        expected_socket: /run/vinyl/connector.sock
+        expected_compose_services: [connector, exporter, vinyl]
+        expected_exporter_container: vinyl-moved-exporter-1
+        expected_exporter_labels:
+          prometheus.io.path: /metrics
+          prometheus.io.port: "9131"
+        expected_ports:
+          - "127.0.0.1:8080:80"
+        # container port -> the host address docker is expected to bind
+        expected_bindings:
+          80/tcp: 127.0.0.1:8080
+        expected_vcl_path: /data/ansible/vinyl-moved/vinyl.vcl
+        expected_haproxy_path: /data/ansible/vinyl-moved/haproxy.cfg
+        # directories.ansible is relocated here, and compose names the project
+        # after it - so these names also prove the move actually took effect
+        expected_vinyl_container: vinyl-moved-vinyl-1
+        expected_connector_container: vinyl-moved-connector-1
+
+        molecule_external_network: molecule-vinyl
+        molecule_origin_host: origin.molecule.test
+        # only ever a Host header - it is never resolved, which is the point of
+        # the X-Vinyl-Target test
+        molecule_alias_host: alias.molecule.test
+        molecule_origin_dir: /opt/molecule-origin
+        molecule_url: http://127.0.0.1:8080
