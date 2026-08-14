@@ -139,6 +139,12 @@ provisioner:
         expected_exporter_labels:
           prometheus.io.path: /metrics
           prometheus.io.port: "9131"
+        # haproxy's built-in exporter, on the same listener as the healthcheck -
+        # there is no sidecar and no flag, so these labels are expected on every
+        # connector the role renders
+        expected_connector_labels:
+          prometheus.io.path: /metrics
+          prometheus.io.port: "8405"
         expected_ports:
           - "127.0.0.1:8080:80"
         # container port -> the host address docker is expected to bind

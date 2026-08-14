@@ -194,8 +194,10 @@ then declare at least one of its own. VCL with no backend does not compile
 ### Networking
 - publishes nothing by default; `listen_ips` maps host ports onto the container
 - varnish listens on `:80` HTTP and `:8443` PROXY inside the container
-- the connector is reachable only over `/run/vinyl/connector.sock`, on a tmpfs
-  volume shared between the two containers — it has no published port
+- the connector takes traffic only over `/run/vinyl/connector.sock`, on a tmpfs
+  volume shared between the two containers. Its `8405` listener carries the
+  healthcheck and `/metrics` and is reachable over the docker network, but
+  nothing of the connector is published to the host
 
 ### Handlers
 - `restart vinyl` - restarts the compose project
@@ -208,6 +210,8 @@ then declare at least one of its own. VCL with no backend does not compile
 - `docker`
 
 ### Metrics
+
+#### Varnish
 With `exporter.enabled`, a `prometheus-varnish-exporter` sidecar reads varnish's
 shared memory straight off the `varnish_tmpfs` volume — it needs no network path
 to varnish — and answers on port `9131` at `/metrics`, labelled for the
@@ -218,3 +222,24 @@ The image's root path serves an HTML landing page rather than metrics, so the
 `prometheus.io.path` label is `/metrics`. Note the exporter tag pins a varnish
 version too, and `1.8.1-varnish-9.0.1` is published **arm64 only** — pick a tag
 that carries the architecture you deploy on.
+
+#### Connector
+The connector exports its own metrics whenever it runs. There is no sidecar and
+no flag: haproxy's prometheus endpoint is compiled into the binary, so the
+numbers come from the process actually serving the requests. It answers at
+`/metrics` on port `8405` — the same unpublished listener as the healthcheck —
+and the container carries the same autodiscovery labels as everything else.
+
+Connector traffic appears under two proxies, `outbound` (the frontend varnish
+talks to) and `origin` (the backend that re-originates over TLS):
+
+| series | what it tells you |
+|---|---|
+| `haproxy_frontend_http_requests_total{proxy="outbound"}` | fetches varnish sent through the connector |
+| `haproxy_backend_http_responses_total{proxy="origin",code="5xx"}` | origins that answered with an error |
+| `haproxy_backend_connection_errors_total{proxy="origin"}` | origins that could not be connected to at all |
+| `haproxy_backend_response_time_average_seconds{proxy="origin"}` | how slow the origins are |
+
+`connection_errors_total` is the one to alert on: a certificate rejected by
+`verify: required` lands there, and the request itself only ever shows up to
+varnish as a `503`.

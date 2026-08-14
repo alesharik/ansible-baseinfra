@@ -119,6 +119,9 @@
       - cfg is search('parse-resolv-conf')
       - cfg is not search('nameserver ')
       - cfg is search('set-dst-port int\(443\)')
+      # metrics ride the healthcheck listener, so /healthz must still be there
+      - cfg is search('use-service prometheus-exporter if \{ path /metrics \}')
+      - cfg is search('monitor-uri /healthz')
       - cfg is search('server clear 0\.0\.0\.0:0 ssl verify none sni var\(txn\.sni\)')
       # drops privileges after the bind
       - cfg is search('user haproxy')
@@ -151,6 +154,13 @@
       - compose.volumes.connector_socket.driver_opts.type == 'tmpfs'
       # root only long enough to bind the socket
       - compose.services.connector.user == 'root'
+      # the connector is scraped like any other service in the collection
+      - >-
+        compose.services.connector.labels['prometheus.io.path']
+        == expected_connector_labels['prometheus.io.path']
+      - >-
+        compose.services.connector.labels['prometheus.io.port'] | string
+        == expected_connector_labels['prometheus.io.port']
       # storage is malloc here, so no data dir should be mounted
       - compose.services.vinyl.volumes | select('search', ':/data$') | list | length == 0
     fail_msg: "rendered compose is {{ compose }}"
@@ -594,4 +604,45 @@
       - "'varnish_up 1' in vinyl_metrics.stdout"
       - hit_line.split(' ')[1] | float > 0
     fail_msg: "exporter reported {{ hit_line }}"
+  when: inventory_hostname == 'vinyl-connector'
+
+# The connector's metrics are haproxy's own, served on the healthcheck listener
+# rather than by a sidecar - so reaching them at the port the label advertises
+# is the only thing that proves the label points somewhere real.
+- name: Scrape the connector from inside the project network
+  vars:
+    metrics_url: "http://connector:{{ expected_connector_labels['prometheus.io.port'] }}{{ expected_connector_labels['prometheus.io.path'] }}"
+  ansible.builtin.command: >-
+    docker exec {{ expected_vinyl_container }}
+    curl -sS --max-time 10 {{ metrics_url }}
+  register: vinyl_connector_metrics
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: >-
+    vinyl_connector_metrics.rc == 0 and
+    'haproxy_process_nbthread' in vinyl_connector_metrics.stdout
+  when: inventory_hostname == 'vinyl-connector'
+
+# Every fetch above crossed the `outbound` frontend and the `origin` backend, so
+# both counters are cumulative and non-zero by now. Zero would mean the endpoint
+# answers but is not the process carrying the traffic - the same failure the
+# varnish exporter's old `prometheus.io.path: /` label produced.
+- name: Check the connector reports the traffic it actually carried
+  vars:
+    frontend_line: >-
+      {{ vinyl_connector_metrics.stdout_lines
+         | select('match', '^haproxy_frontend_http_requests_total')
+         | select('search', 'outbound')
+         | first | default('missing 0') }}
+    backend_line: >-
+      {{ vinyl_connector_metrics.stdout_lines
+         | select('match', '^haproxy_backend_http_requests_total')
+         | select('search', 'origin')
+         | first | default('missing 0') }}
+  ansible.builtin.assert:
+    that:
+      - frontend_line.split(' ')[1] | float > 0
+      - backend_line.split(' ')[1] | float > 0
+    fail_msg: "connector reported {{ frontend_line }} / {{ backend_line }}"
   when: inventory_hostname == 'vinyl-connector'

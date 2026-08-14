@@ -69,6 +69,13 @@ services:
       timeout: 3s
       retries: 12
       start_period: 5s
+    labels:
+      # haproxy's own exporter, on the same unpublished listener as the
+      # healthcheck. Unlike the varnish exporter above there is no sidecar and
+      # no `enabled` flag - it is compiled into the binary and costs nothing
+      # until something scrapes it.
+      prometheus.io.path: /metrics
+      prometheus.io.port: 8405
 {% if vinyl.networks is defined and vinyl.networks|length > 0 %}
     networks:
 {% for net in vinyl.networks %}
