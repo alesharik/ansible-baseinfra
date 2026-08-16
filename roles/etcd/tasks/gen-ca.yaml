@@ -1,0 +1,63 @@
+- name: Create local certs dir
+  ansible.builtin.file:
+    path: "{{ etcd.directories.ca }}"
+    state: directory
+    mode: "644"
+  delegate_to: 127.0.0.1
+  become: false
+  run_once: true
+  tags: etcd
+
+- name: Create CA private key
+  community.crypto.openssl_privatekey:
+    path: "{{ etcd.directories.ca }}/ca.key"
+  delegate_to: 127.0.0.1
+  become: false
+  tags: etcd
+  run_once: true
+  vars:
+    ansible_remote_tmp: "{{ playbook_dir }}/tmp"
+
+- name: Create certificate signing request (CSR) for CA certificate
+  community.crypto.openssl_csr_pipe:
+    privatekey_path: "{{ etcd.directories.ca }}/ca.key"
+    organization_name: "{{ etcd.pki.organization }}"
+    organizational_unit_name: "{{ etcd.pki.organizational_unit }}"
+    common_name: Etcd CA
+    use_common_name_for_san: false  # since we do not specify SANs, don't use CN as a SAN
+    basic_constraints:
+      - 'CA:TRUE'
+    basic_constraints_critical: true
+    key_usage:
+      - keyCertSign
+    key_usage_critical: true
+  delegate_to: 127.0.0.1
+  tags: etcd
+  run_once: true
+  become: false
+  register: ca_csr
+  vars:
+    ansible_remote_tmp: "{{ playbook_dir }}/tmp"
+
+- name: Create self-signed CA certificate from CSR
+  community.crypto.x509_certificate:
+    path: "{{ etcd.directories.ca }}/ca.pem"
+    csr_content: "{{ ca_csr.csr }}"
+    privatekey_path: "{{ etcd.directories.ca }}/ca.key"
+    provider: selfsigned
+  delegate_to: 127.0.0.1
+  tags: etcd
+  become: false
+  run_once: true
+  vars:
+    ansible_remote_tmp: "{{ playbook_dir }}/tmp"
+
+- name: Write CA
+  copy:
+    src: "{{ etcd.directories.ca }}/ca.pem"
+    dest: "{{ etcd.directories.ansible }}/config/ca.pem"
+    owner: '10010'
+    mode: "500"
+  tags: etcd
+  notify:
+    - restart etcd

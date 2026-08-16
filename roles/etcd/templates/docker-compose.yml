@@ -1,0 +1,58 @@
+{% if traefik.networks is defined and traefik.networks|length > 0 %}
+networks:
+{% for net in traefik.networks %}
+  "{{ net }}":
+    name: "{{ net }}"
+    external: true
+{% endfor %}
+{% endif %}
+version: '3.9'
+services:
+  etcd:
+    image: "{{ etcd.image }}:{{ etcd.version }}"
+    restart: always
+    environment:
+      ETCD_NAME: "{{ ansible_hostname }}"
+      ETCD_DATA_DIR: /etcd-data
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: "https://{{ etcd.peer_ip }}:2380"
+      ETCD_LISTEN_PEER_URLS: "https://0.0.0.0:2380"
+      ETCD_ADVERTISE_CLIENT_URLS: "{{ ['https://'] | product(etcd.listen_ips) | map('join') | list | product([':2379']) | map('join') | list | join(',') }}"
+      ETCD_LISTEN_CLIENT_URLS: https://0.0.0.0:2379
+      ETCD_INITIAL_CLUSTER: "{{ etcd.quorum
+      | zip(etcd.quorum | map('extract', hostvars, ['etcd', 'peer_ip']) 
+            | map('regex_replace', '^(.*)$', 'https://\\1:2380'))
+      | map('join', '=')
+      | join(',') }}"
+      ETCD_PEER_CLIENT_CERT_AUTH: "true"
+      ETCD_PEER_TRUSTED_CA_FILE: /etcd-config/ca.pem
+      ETCD_PEER_CERT_FILE: /etcd-config/peer.cer
+      ETCD_PEER_KEY_FILE: /etcd-config/peer.key
+      ETCD_CLIENT_CERT_AUTH: "true"
+      ETCD_TRUSTED_CA_FILE: /etcd-config/ca.pem
+      ETCD_CERT_FILE: /etcd-config/server.cer
+      ETCD_KEY_FILE: /etcd-config/server.key
+      ETCD_AUTO_COMPACTION_RETENTION: 1
+{% for item in etcd.env %}
+      - {{ item }}
+{% endfor %}
+    volumes:
+      - "{{ etcd.directories.data }}:/etcd-data"
+      - "{{ etcd.directories.ansible }}/config:/etcd-config:ro"
+    ports:
+      - "{{ etcd.peer_ip }}:2380:2380"
+{% for item in etcd.listen_ips %}
+      - "{{ item }}:2379:2379"
+{% endfor %}
+    user: '10010'
+    labels:
+      prometheus.io.port: 2379
+      prometheus.io.instance: "{{ ansible_hostname }}-{{ etcd.directories.ansible | basename }}"
+{% if etcd.networks is defined and etcd.networks|length > 0 %}
+      prometheus.io.network: "{{ etcd.networks[0] }}"
+{% endif %}
+{% if etcd.networks is defined and etcd.networks|length > 0 %}
+    networks:
+{% for net in etcd.networks %}
+      - "{{ net }}"
+{% endfor %}
+{% endif %}

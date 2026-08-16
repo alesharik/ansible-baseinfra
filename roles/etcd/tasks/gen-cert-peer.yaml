@@ -1,0 +1,38 @@
+- name: Create peer private key
+  tags: etcd
+  community.crypto.openssl_privatekey:
+    path: "{{ etcd.directories.ansible }}/config/peer.key"
+    owner: '10010'
+    mode: "500"
+
+- name: Create peer certificate signing request (CSR) for new certificate
+  tags: etcd
+  community.crypto.openssl_csr_pipe:
+    privatekey_path: "{{ etcd.directories.ansible }}/config/peer.key"
+    subject_alt_name: "IP:{{ etcd.peer_ip }}"
+  register: csr
+
+- name: Sign peer certificate with our CA
+  tags: etcd
+  become: false
+  delegate_to: 127.0.0.1
+  vars:
+    ansible_remote_tmp: "{{ playbook_dir }}/tmp"
+  community.crypto.x509_certificate_pipe:
+    csr_content: "{{ csr.csr }}"
+    provider: ownca
+    ownca_path: "{{ etcd.directories.ca }}/ca.pem"
+    ownca_privatekey_path: "{{ etcd.directories.ca }}/ca.key"
+    ownca_not_after: +365d  # valid for one year
+    ownca_not_before: "-1d"  # valid since yesterday
+  register: certificate
+
+- name: Write peer certificate
+  copy:
+    dest: "{{ etcd.directories.ansible }}/config/peer.cer"
+    content: "{{ certificate.certificate }}"
+    owner: '10010'
+    mode: "500"
+  tags: etcd
+  notify:
+    - restart etcd

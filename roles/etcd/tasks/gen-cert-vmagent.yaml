@@ -1,0 +1,49 @@
+- name: Create vmagent private key
+  tags: etcd
+  community.crypto.openssl_privatekey:
+    path: "{{ etcd.directories.vmagent_conf }}/etcd-{{ etcd.directories.ansible | basename }}.key"
+    owner: '10010'
+    mode: "500"
+
+- name: Create certificate signing request (CSR) for new certificate
+  tags: etcd
+  community.crypto.openssl_csr_pipe:
+    privatekey_path: "{{ etcd.directories.vmagent_conf }}/etcd-{{ etcd.directories.ansible | basename }}.key"
+    subject_alt_name:
+      - "IP:127.0.0.1"
+  register: csr
+
+- name: Sign certificate with our CA
+  tags: etcd
+  become: false
+  delegate_to: 127.0.0.1
+  vars:
+    ansible_remote_tmp: "{{ playbook_dir }}/tmp"
+  community.crypto.x509_certificate_pipe:
+    csr_content: "{{ csr.csr }}"
+    provider: ownca
+    ownca_path: "{{ etcd.directories.ca }}/ca.pem"
+    ownca_privatekey_path: "{{ etcd.directories.ca }}/ca.key"
+    ownca_not_after: +365d  # valid for one year
+    ownca_not_before: "-1d"  # valid since yesterday
+  register: certificate
+
+- name: Write certificate
+  copy:
+    dest: "{{ etcd.directories.vmagent_conf }}/etcd-{{ etcd.directories.ansible | basename }}.cer"
+    content: "{{ certificate.certificate }}"
+    owner: '10010'
+    mode: "500"
+  tags: etcd
+  notify:
+    - restart etcd
+
+- name: Write CA
+  copy:
+    src: "{{ etcd.directories.ca }}/ca.pem"
+    dest: "{{ etcd.directories.vmagent_conf }}/etcd-{{ etcd.directories.ansible | basename }}-ca.cer"
+    owner: '10010'
+    mode: "500"
+  tags: etcd
+  notify:
+    - restart etcd

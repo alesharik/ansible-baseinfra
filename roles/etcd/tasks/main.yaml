@@ -1,0 +1,61 @@
+---
+- name: Create compose dir
+  ansible.builtin.file:
+    path: "{{ etcd.directories.ansible }}"
+    state: directory
+    mode: "755"
+  tags: etcd
+- name: Create config dir
+  ansible.builtin.file:
+    path: "{{ etcd.directories.ansible }}/config"
+    state: directory
+    mode: "755"
+  tags: etcd
+- name: Create data dir
+  ansible.builtin.file:
+    path: "{{ etcd.directories.data }}"
+    state: directory
+    mode: "700"
+    owner: '10010'
+  tags: etcd
+
+- name: Generate CA
+  tags: etcd
+  include_tasks: "gen-ca.yaml"
+- name: Generate server keys
+  tags: etcd
+  include_tasks: "gen-cert-server.yaml"
+- name: Generate server keys
+  tags: etcd
+  include_tasks: "gen-cert-peer.yaml"
+
+- name: Move compose files
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ etcd.directories.ansible }}/docker-compose.yml"
+    mode: "755"
+  tags: etcd
+  notify:
+    - restart etcd
+
+- name: Start etcd
+  community.docker.docker_compose_v2:
+    project_src: "{{ etcd.directories.ansible }}"
+    state: present
+  tags: etcd
+
+- name: Generate vmagent keys
+  tags: etcd
+  when: "etcd.vmagent"
+  include_tasks: "gen-cert-vmagent.yaml"
+- name: Move vmagent config
+  when: "etcd.vmagent"
+  ansible.builtin.template:
+    src: vmagent.yaml
+    dest: "{{ dir.ansible }}/vmagent/config/conf.d/etcd-{{ etcd.directories.ansible | basename }}.yml"
+    mode: "755"
+  tags: etcd
+
+- name: Make sure handlers are flushed immediately
+  ansible.builtin.meta: flush_handlers
+  tags: etcd

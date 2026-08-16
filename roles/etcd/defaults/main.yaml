@@ -1,0 +1,17 @@
+---
+etcd:
+  version: v3.6.12
+  image: "quay.io/coreos/etcd"
+  listen_ips: []
+  networks: []
+  env: []
+  quorum: []
+  vmagent: true
+  directories:
+    ansible: "{{ dir.ansible }}/etcd"
+    data: "{{ dir.data }}/etcd"
+    ca: "{{ playbook_dir }}/certs/etcd"
+    vmagent_conf: "{{ dir.ansible }}/vmagent/config/conf.d"
+  pki:
+    organization: "ETCD"
+    organizational_unit: "Etcd"
