@@ -1,0 +1,323 @@
+---
+# ==========================================================================
+# Both hosts - what the role wrote to disk
+# ==========================================================================
+- name: Stat the compose dir
+  ansible.builtin.stat:
+    path: "{{ expected_compose_dir }}"
+  register: redis_compose_dir
+
+- name: Stat the data dir
+  ansible.builtin.stat:
+    path: "{{ expected_data_dir }}"
+  register: redis_data_dir
+
+- name: Stat the config
+  ansible.builtin.stat:
+    path: "{{ expected_conf }}"
+  register: redis_conf_stat
+
+# 999:1000 is the redis user inside the official image, and the config is 0400
+# rather than 0444 because it can carry a password. Both halves matter: a config
+# the container cannot read does not fail here, it fails as a container stuck
+# restarting with "can't open config file ... Permission denied".
+- name: Check the paths and their ownership
+  ansible.builtin.assert:
+    that:
+      - redis_compose_dir.stat.isdir
+      - redis_compose_dir.stat.mode == '0755'
+      - redis_data_dir.stat.isdir
+      - redis_data_dir.stat.mode == '0700'
+      - redis_data_dir.stat.uid == 999
+      - redis_data_dir.stat.gid == 1000
+      - redis_conf_stat.stat.isreg
+      - redis_conf_stat.stat.mode == '0400'
+      - redis_conf_stat.stat.uid == 999
+      - redis_conf_stat.stat.gid == 1000
+    fail_msg: >-
+      compose dir {{ redis_compose_dir.stat }}, data dir {{ redis_data_dir.stat }},
+      config {{ redis_conf_stat.stat }}
+
+- name: Read the rendered config
+  ansible.builtin.slurp:
+    src: "{{ expected_conf }}"
+  register: redis_conf_raw
+
+- name: Check the config points redis at the mounted data dir
+  vars:
+    conf: "{{ redis_conf_raw.content | b64decode }}"
+  ansible.builtin.assert:
+    that:
+      # /data is the image's WORKDIR and the container side of the data mount -
+      # it is fixed, and must not follow directories.data
+      - conf is search('(?m)^dir /data$')
+    fail_msg: "rendered config is {{ conf }}"
+
+- name: Read the rendered compose file
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/docker-compose.yml"
+  register: redis_compose_raw
+
+# Spelled out rather than derived from `redis`: an expectation built from the
+# same var the template reads would agree with a broken template.
+- name: Check the compose file starts the server against that config
+  vars:
+    compose: "{{ redis_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - compose.networks.redis.name == expected_network
+      - compose.services.redis.command == ['redis-server', '/etc/redis/redis.conf']
+      - (expected_data_dir ~ ':/data') in compose.services.redis.volumes
+      - (expected_conf ~ ':/etc/redis/redis.conf:ro') in compose.services.redis.volumes
+      - compose.services.redis.networks == ['redis']
+      # NOAUTH proves the server is up just as well as PONG, so the healthcheck
+      # never needs a copy of the password
+      - compose.services.redis.healthcheck.test[0] == 'CMD-SHELL'
+      - compose.services.redis.healthcheck.test[1] is search('PONG\|NOAUTH')
+      # nothing is published to the host - the server is reachable only on its
+      # own docker network
+      - compose.services.redis.ports is not defined
+    fail_msg: "rendered compose is {{ compose }}"
+
+# ==========================================================================
+# Both hosts - what is actually running
+# ==========================================================================
+- name: List the running containers
+  ansible.builtin.command: docker ps --format '{% raw %}{{.Names}}{% endraw %}'
+  register: redis_ps
+  changed_when: false
+
+- name: Check the server container is running
+  ansible.builtin.assert:
+    that:
+      - expected_container in redis_ps.stdout_lines
+    fail_msg: "containers present: {{ redis_ps.stdout_lines }}"
+
+- name: List the docker networks
+  ansible.builtin.command: docker network ls --format '{% raw %}{{.Name}}{% endraw %}'
+  register: redis_networks
+  changed_when: false
+
+- name: Check the role created the network under the name consumers use
+  ansible.builtin.assert:
+    that:
+      - expected_network in redis_networks.stdout_lines
+    fail_msg: "networks present: {{ redis_networks.stdout_lines }}"
+
+- name: Inspect the server container
+  ansible.builtin.command: "docker inspect {{ expected_container }}"
+  register: redis_inspect
+  changed_when: false
+
+# HostConfig.Binds carries a :rw or :ro suffix that a host:container pair does
+# not, so strip it before comparing.
+- name: Check the data dir and the config are the mounts redis actually got
+  vars:
+    binds: >-
+      {{ (redis_inspect.stdout | from_json)[0].HostConfig.Binds
+         | map('regex_replace', ':(rw|ro)$', '') | list }}
+  ansible.builtin.assert:
+    that:
+      - binds | sort == expected_mounts | sort
+    fail_msg: "container is bound to {{ binds }}"
+
+# The server answers on the network the role created, from a container that is
+# not part of the compose project - which is how every consumer reaches it.
+- name: Ping the server from inside its network
+  ansible.builtin.command: >-
+    docker run --rm --network {{ expected_network }} {{ expected_image }}
+    redis-cli -h redis ping
+  register: redis_ping
+  changed_when: false
+  failed_when: false
+
+- name: Check the reply matches what this host's password setting should produce
+  ansible.builtin.assert:
+    that:
+      - expected_ping in (redis_ping.stdout ~ redis_ping.stderr)
+    fail_msg: "ping replied {{ redis_ping.stdout }}{{ redis_ping.stderr }}"
+
+# ==========================================================================
+# redis-defaults - state AFTER side_effect.yml turned the exporter off.
+# The exporter-on assertions for this host live at the top of side_effect.yml,
+# because verify only ever sees the post-side_effect state.
+# ==========================================================================
+- name: Check the defaults left the server without a password
+  vars:
+    conf: "{{ redis_conf_raw.content | b64decode }}"
+  ansible.builtin.assert:
+    that:
+      - conf is not search('requirepass')
+      # nothing was appended below the header the role owns
+      - conf is not search('maxmemory')
+    fail_msg: "rendered config is {{ conf }}"
+  when: inventory_hostname == 'redis-defaults'
+
+- name: Check the exporter service is gone from the compose file
+  vars:
+    compose: "{{ redis_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - compose.services | list | sort == expected_compose_services_flipped
+    fail_msg: "exporter off still rendered {{ compose }}"
+  when: inventory_hostname == 'redis-defaults'
+
+# remove_orphans is what makes this true - without it compose would leave the
+# container of a service it no longer knows about running
+- name: Check the exporter container was actually removed
+  ansible.builtin.command: docker ps -a --format '{% raw %}{{.Names}}{% endraw %}'
+  register: redis_ps_all
+  changed_when: false
+  when: inventory_hostname == 'redis-defaults'
+
+- name: Check the server survived the flip and the exporter did not
+  ansible.builtin.assert:
+    that:
+      - expected_exporter_container not in redis_ps_all.stdout_lines
+      - expected_container in redis_ps_all.stdout_lines
+    fail_msg: "containers present: {{ redis_ps_all.stdout_lines }}"
+  when: inventory_hostname == 'redis-defaults'
+
+# This host pins a copy of the published defaults, so the copy has to be checked
+# against the defaults themselves or it could drift and quietly stop testing
+# them. `directories` is compared by shape rather than by value: this dict came
+# out of slurp + from_yaml, which the templar never renders, so its two paths are
+# still the literal "{{ dir.ansible }}/redis" that the file contains.
+- name: Read the role defaults from the controller
+  ansible.builtin.slurp:
+    src: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}/roles/redis/defaults/main.yaml"
+  delegate_to: localhost
+  become: false
+  register: redis_defaults_raw
+  when: inventory_hostname == 'redis-defaults'
+
+- name: Check this host still pins what the role actually ships
+  vars:
+    role_defaults: "{{ (redis_defaults_raw.content | b64decode | from_yaml).redis }}"
+  ansible.builtin.assert:
+    that:
+      - role_defaults.image == 'redis'
+      - role_defaults.image == redis.image
+      - role_defaults.version == redis.version
+      - role_defaults.password == redis.password
+      - role_defaults.network == redis.network
+      - role_defaults.config == redis.config
+      - role_defaults.exporter == redis.exporter
+      # the one key this host deliberately differs on - asserted the other way
+      # round, so that the default going false would fail here rather than
+      # silently make this host stop covering anything
+      - role_defaults.overcommit_memory
+      - not redis.overcommit_memory
+      - "'dir.ansible' in role_defaults.directories.ansible"
+      - role_defaults.directories.ansible.endswith('/redis')
+      - "'dir.data' in role_defaults.directories.data"
+      - role_defaults.directories.data.endswith('/redis')
+    fail_msg: "role ships {{ role_defaults }}, this host pins {{ redis }}"
+  when: inventory_hostname == 'redis-defaults'
+
+# ==========================================================================
+# redis-custom - password, relocated directories, operator config
+# ==========================================================================
+- name: Check the password and the operator config reached the file
+  vars:
+    conf: "{{ redis_conf_raw.content | b64decode }}"
+  ansible.builtin.assert:
+    that:
+      - conf is search('(?m)^requirepass ' ~ expected_password ~ '$')
+      - conf is search('(?m)^maxmemory 32mb$')
+      - conf is search('(?m)^maxmemory-policy allkeys-lru$')
+      # the role's own directives still come first
+      - conf.index('dir /data') < conf.index('requirepass')
+      - conf.index('requirepass') < conf.index('maxmemory 32mb')
+    fail_msg: "rendered config is {{ conf }}"
+  when: inventory_hostname == 'redis-custom'
+
+- name: Check the exporter was handed the password
+  vars:
+    compose: "{{ redis_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - compose.services | list | sort == expected_compose_services
+      - compose.services.exporter.environment.REDIS_ADDR == 'redis://redis:6379'
+      - compose.services.exporter.environment.REDIS_PASSWORD == expected_password
+      # key by key, and the port through `string`: compose YAML parses it as an
+      # integer, while the label docker ends up carrying is text
+      - >-
+        compose.services.exporter.labels['prometheus.io.path']
+        == expected_exporter_labels['prometheus.io.path']
+      - >-
+        compose.services.exporter.labels['prometheus.io.port'] | string
+        == expected_exporter_labels['prometheus.io.port']
+      - >-
+        compose.services.exporter.labels['prometheus.io.instance']
+        == expected_exporter_labels['prometheus.io.instance']
+    fail_msg: "rendered compose is {{ compose }}"
+  when: inventory_hostname == 'redis-custom'
+
+- name: Ping the server with the password
+  ansible.builtin.command: >-
+    docker run --rm --network {{ expected_network }}
+    -e REDISCLI_AUTH={{ expected_password }} {{ expected_image }}
+    redis-cli -h redis ping
+  register: redis_auth_ping
+  changed_when: false
+  when: inventory_hostname == 'redis-custom'
+
+- name: Check an authenticated client gets through
+  ansible.builtin.assert:
+    that:
+      - "'PONG' in redis_auth_ping.stdout"
+    fail_msg: "authenticated ping replied {{ redis_auth_ping.stdout }}{{ redis_auth_ping.stderr }}"
+  when: inventory_hostname == 'redis-custom'
+
+# The file having the directive is not the same as redis running with it - this
+# asks the server itself, which is the only thing that proves `config` is loaded
+# rather than merely written.
+- name: Ask the running server what maxmemory it loaded
+  ansible.builtin.command: >-
+    docker run --rm --network {{ expected_network }}
+    -e REDISCLI_AUTH={{ expected_password }} {{ expected_image }}
+    redis-cli -h redis config get maxmemory
+  register: redis_maxmemory
+  changed_when: false
+  when: inventory_hostname == 'redis-custom'
+
+- name: Check the operator config is live in the server
+  ansible.builtin.assert:
+    that:
+      - expected_maxmemory in redis_maxmemory.stdout_lines
+    fail_msg: "server reports {{ redis_maxmemory.stdout_lines }}"
+  when: inventory_hostname == 'redis-custom'
+
+- name: Scrape the exporter through the password
+  ansible.builtin.command: >-
+    docker run --rm --network {{ expected_network }} {{ expected_image }}
+    wget -qO- http://exporter:9121/metrics
+  register: redis_custom_metrics
+  changed_when: false
+  retries: 12
+  delay: 5
+  until:
+    - redis_custom_metrics.rc == 0
+    # 0 here would be an exporter that reached redis but could not authenticate
+    - "'redis_up 1' in redis_custom_metrics.stdout"
+  when: inventory_hostname == 'redis-custom'
+
+- name: Stat the paths this host relocated away from
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: redis_unexpected
+  # default([]) because a loop is expanded before `when` is consulted, and this
+  # var only exists on the host that relocated anything
+  loop: "{{ unexpected_paths | default([]) }}"
+  when: inventory_hostname == 'redis-custom'
+
+- name: Check the default paths were left alone
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists
+    fail_msg: "{{ item.item }} exists, so directories did not move"
+  loop: "{{ redis_unexpected.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: inventory_hostname == 'redis-custom'

@@ -1,31 +1,31 @@
 ---
-# redis.conf is line-oriented and has no quoting, so a newline in the password
+# valkey.conf is line-oriented and has no quoting, so a newline in the password
 # would not be part of the password - it would start a new directive. Fail here,
 # where the cause has a name, rather than on whatever that line happens to mean.
 - name: Check the password is a single line
-  tags: redis
+  tags: valkey
   ansible.builtin.assert:
     that:
-      - redis.password is not search('[\r\n]')
+      - valkey.password is not search('[\r\n]')
     fail_msg: >-
-      redis.password contains a newline. redis.conf takes one directive per
+      valkey.password contains a newline. valkey.conf takes one directive per
       line, so the rest of the password would be read as configuration rather
       than as part of the password.
 
 - name: Create compose dir
-  tags: redis
+  tags: valkey
   ansible.builtin.file:
-    path: "{{ redis.directories.ansible }}"
+    path: "{{ valkey.directories.ansible }}"
     state: directory
     mode: "0755"
 
-# 999:1000 is the `redis` user inside the official image. The entrypoint chowns
+# 999:1000 is the `valkey` user inside the official image. The entrypoint chowns
 # the data dir itself when it has to, but only after walking it - handing it a
 # directory that is already right keeps startup off that path entirely.
 - name: Create data dir
-  tags: redis
+  tags: valkey
   ansible.builtin.file:
-    path: "{{ redis.directories.data }}"
+    path: "{{ valkey.directories.data }}"
     state: directory
     mode: "0700"
     owner: "999"
@@ -34,32 +34,31 @@
 # 0400 owned by the container's own uid, not 0444: this file carries the
 # password, so it should not be readable by every user on the host - and it does
 # not need to be, because the uid that reads it is known. Getting this wrong is
-# quiet: the image's entrypoint would try to chown a read-only bind mount, warn
-# twice, and then redis would exit with "can't open config file ... Permission
-# denied", which surfaces only as a container that keeps restarting.
-- name: Move redis config
-  tags: redis
+# quiet: valkey would exit with "can't open config file ... Permission denied",
+# which surfaces only as a container that keeps restarting.
+- name: Move valkey config
+  tags: valkey
   ansible.builtin.template:
-    src: redis.conf
-    dest: "{{ redis.directories.ansible }}/redis.conf"
+    src: valkey.conf
+    dest: "{{ valkey.directories.ansible }}/valkey.conf"
     mode: "0400"
     owner: "999"
     group: "1000"
   notify:
-    - restart redis
+    - restart valkey
 
 - name: Move compose files
-  tags: redis
+  tags: valkey
   ansible.builtin.template:
     src: docker-compose.yml
-    dest: "{{ redis.directories.ansible }}/docker-compose.yml"
+    dest: "{{ valkey.directories.ansible }}/docker-compose.yml"
     mode: "0700"
   notify:
-    - restart redis
+    - restart valkey
 
 - name: Allow memory overcommit
-  tags: redis
-  when: redis.overcommit_memory
+  tags: valkey
+  when: valkey.overcommit_memory
   ansible.posix.sysctl:
     name: vm.overcommit_memory
     value: "1"
@@ -68,21 +67,21 @@
 
 # Pull separately: on an up that also pulls, compose 5.4.0 labels the container
 # with the local image ID, then recreates it once on the next up.
-- name: Pull redis images
-  tags: redis
+- name: Pull valkey images
+  tags: valkey
   community.docker.docker_compose_v2_pull:
-    project_src: "{{ redis.directories.ansible }}"
+    project_src: "{{ valkey.directories.ansible }}"
     policy: missing
 
 # remove_orphans so that turning the exporter off actually takes its container
 # down - without it compose leaves a service it no longer knows about running.
-- name: Start redis
-  tags: redis
+- name: Start valkey
+  tags: valkey
   community.docker.docker_compose_v2:
-    project_src: "{{ redis.directories.ansible }}"
+    project_src: "{{ valkey.directories.ansible }}"
     state: present
     remove_orphans: true
 
 - name: Make sure handlers are flushed immediately
-  tags: redis
+  tags: valkey
   ansible.builtin.meta: flush_handlers

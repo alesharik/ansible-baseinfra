@@ -1,0 +1,325 @@
+---
+# ==========================================================================
+# Both hosts - what the role wrote to disk
+# ==========================================================================
+- name: Stat the compose dir
+  ansible.builtin.stat:
+    path: "{{ expected_compose_dir }}"
+  register: valkey_compose_dir
+
+- name: Stat the data dir
+  ansible.builtin.stat:
+    path: "{{ expected_data_dir }}"
+  register: valkey_data_dir
+
+- name: Stat the config
+  ansible.builtin.stat:
+    path: "{{ expected_conf }}"
+  register: valkey_conf_stat
+
+# 999:1000 is the valkey user inside the official image, and the config is 0400
+# rather than 0444 because it can carry a password. Both halves matter: a config
+# the container cannot read does not fail here, it fails as a container stuck
+# restarting with "can't open config file ... Permission denied".
+- name: Check the paths and their ownership
+  ansible.builtin.assert:
+    that:
+      - valkey_compose_dir.stat.isdir
+      - valkey_compose_dir.stat.mode == '0755'
+      - valkey_data_dir.stat.isdir
+      - valkey_data_dir.stat.mode == '0700'
+      - valkey_data_dir.stat.uid == 999
+      - valkey_data_dir.stat.gid == 1000
+      - valkey_conf_stat.stat.isreg
+      - valkey_conf_stat.stat.mode == '0400'
+      - valkey_conf_stat.stat.uid == 999
+      - valkey_conf_stat.stat.gid == 1000
+    fail_msg: >-
+      compose dir {{ valkey_compose_dir.stat }}, data dir {{ valkey_data_dir.stat }},
+      config {{ valkey_conf_stat.stat }}
+
+- name: Read the rendered config
+  ansible.builtin.slurp:
+    src: "{{ expected_conf }}"
+  register: valkey_conf_raw
+
+- name: Check the config points valkey at the mounted data dir
+  vars:
+    conf: "{{ valkey_conf_raw.content | b64decode }}"
+  ansible.builtin.assert:
+    that:
+      # /data is the image's WORKDIR and the container side of the data mount -
+      # it is fixed, and must not follow directories.data
+      - conf is search('(?m)^dir /data$')
+    fail_msg: "rendered config is {{ conf }}"
+
+- name: Read the rendered compose file
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/docker-compose.yml"
+  register: valkey_compose_raw
+
+# Spelled out rather than derived from `valkey`: an expectation built from the
+# same var the template reads would agree with a broken template.
+- name: Check the compose file starts the server against that config
+  vars:
+    compose: "{{ valkey_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - compose.services | list | sort == expected_compose_services
+      - compose.networks.valkey.name == expected_network
+      # the valkey binary, not redis-server - the image ships compat symlinks,
+      # so a role that used the wrong name would start anyway and hide it
+      - compose.services.valkey.command == ['valkey-server', '/etc/valkey/valkey.conf']
+      - (expected_data_dir ~ ':/data') in compose.services.valkey.volumes
+      - (expected_conf ~ ':/etc/valkey/valkey.conf:ro') in compose.services.valkey.volumes
+      - compose.services.valkey.networks == ['valkey']
+      # NOAUTH proves the server is up just as well as PONG, so the healthcheck
+      # never needs a copy of the password
+      - compose.services.valkey.healthcheck.test[0] == 'CMD-SHELL'
+      - compose.services.valkey.healthcheck.test[1] is search('valkey-cli')
+      - compose.services.valkey.healthcheck.test[1] is search('PONG\|NOAUTH')
+      # nothing is published to the host - the server is reachable only on its
+      # own docker network
+      - compose.services.valkey.ports is not defined
+    fail_msg: "rendered compose is {{ compose }}"
+
+# ==========================================================================
+# Both hosts - what is actually running
+# ==========================================================================
+- name: List the running containers
+  ansible.builtin.command: docker ps --format '{% raw %}{{.Names}}{% endraw %}'
+  register: valkey_ps
+  changed_when: false
+
+- name: Check the server container is running
+  ansible.builtin.assert:
+    that:
+      - expected_container in valkey_ps.stdout_lines
+    fail_msg: "containers present: {{ valkey_ps.stdout_lines }}"
+
+- name: List the docker networks
+  ansible.builtin.command: docker network ls --format '{% raw %}{{.Name}}{% endraw %}'
+  register: valkey_networks
+  changed_when: false
+
+- name: Check the role created the network under the name consumers use
+  ansible.builtin.assert:
+    that:
+      - expected_network in valkey_networks.stdout_lines
+    fail_msg: "networks present: {{ valkey_networks.stdout_lines }}"
+
+- name: Inspect the server container
+  ansible.builtin.command: "docker inspect {{ expected_container }}"
+  register: valkey_inspect
+  changed_when: false
+
+# HostConfig.Binds carries a :rw or :ro suffix that a host:container pair does
+# not, so strip it before comparing.
+- name: Check the data dir and the config are the mounts valkey actually got
+  vars:
+    binds: >-
+      {{ (valkey_inspect.stdout | from_json)[0].HostConfig.Binds
+         | map('regex_replace', ':(rw|ro)$', '') | list }}
+  ansible.builtin.assert:
+    that:
+      - binds | sort == expected_mounts | sort
+    fail_msg: "container is bound to {{ binds }}"
+
+# The server answers on the network the role created, from a container that is
+# not part of the compose project - which is how every consumer reaches it.
+- name: Ping the server from inside its network
+  ansible.builtin.command: >-
+    docker run --rm --network {{ expected_network }} {{ expected_image }}
+    valkey-cli -h valkey ping
+  register: valkey_ping
+  changed_when: false
+  failed_when: false
+
+- name: Check the reply matches what this host's password setting should produce
+  ansible.builtin.assert:
+    that:
+      - expected_ping in (valkey_ping.stdout ~ valkey_ping.stderr)
+    fail_msg: "ping replied {{ valkey_ping.stdout }}{{ valkey_ping.stderr }}"
+
+# ==========================================================================
+# valkey-defaults - the published defaults, exporter on, no password
+# ==========================================================================
+- name: Check the defaults left the server without a password
+  vars:
+    conf: "{{ valkey_conf_raw.content | b64decode }}"
+  ansible.builtin.assert:
+    that:
+      - conf is not search('requirepass')
+      # nothing was appended below the header the role owns
+      - conf is not search('maxmemory')
+    fail_msg: "rendered config is {{ conf }}"
+  when: inventory_hostname == 'valkey-defaults'
+
+- name: Check the exporter is labelled for autodiscovery and given no password
+  vars:
+    compose: "{{ valkey_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      # key by key, and the port through `string`: compose YAML parses it as an
+      # integer, while the label docker ends up carrying is text
+      - >-
+        compose.services.exporter.labels['prometheus.io.path']
+        == expected_exporter_labels['prometheus.io.path']
+      - >-
+        compose.services.exporter.labels['prometheus.io.port'] | string
+        == expected_exporter_labels['prometheus.io.port']
+      - >-
+        compose.services.exporter.labels['prometheus.io.instance']
+        == expected_exporter_labels['prometheus.io.instance']
+      # redis:// is the scheme, not the server - the exporter has no valkey://
+      - compose.services.exporter.environment.REDIS_ADDR == 'redis://valkey:6379'
+      - "'REDIS_PASSWORD' not in compose.services.exporter.environment"
+    fail_msg: "rendered compose is {{ compose }}"
+  when: inventory_hostname == 'valkey-defaults'
+
+# The exporter reaches valkey over the project network by service name, so a
+# scrape that reports redis_up 1 is also the assertion that the two containers
+# can see each other - and that redis_exporter understands valkey at all.
+- name: Scrape the exporter from inside the valkey network
+  ansible.builtin.command: >-
+    docker run --rm --network {{ expected_network }} {{ expected_image }}
+    wget -qO- http://exporter:9121/metrics
+  register: valkey_metrics
+  changed_when: false
+  retries: 12
+  delay: 5
+  until:
+    - valkey_metrics.rc == 0
+    - "'redis_up 1' in valkey_metrics.stdout"
+  when: inventory_hostname == 'valkey-defaults'
+
+# This host pins a copy of the published defaults, so the copy has to be checked
+# against the defaults themselves or it could drift and quietly stop testing
+# them. `directories` is compared by shape rather than by value: this dict came
+# out of slurp + from_yaml, which the templar never renders, so its two paths are
+# still the literal "{{ dir.ansible }}/valkey" that the file contains.
+- name: Read the role defaults from the controller
+  ansible.builtin.slurp:
+    src: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}/roles/valkey/defaults/main.yaml"
+  delegate_to: localhost
+  become: false
+  register: valkey_defaults_raw
+  when: inventory_hostname == 'valkey-defaults'
+
+- name: Check this host still pins what the role actually ships
+  vars:
+    role_defaults: "{{ (valkey_defaults_raw.content | b64decode | from_yaml).valkey }}"
+  ansible.builtin.assert:
+    that:
+      - role_defaults.image == 'valkey/valkey'
+      - role_defaults.image == valkey.image
+      - role_defaults.version == valkey.version
+      - role_defaults.password == valkey.password
+      - role_defaults.network == valkey.network
+      - role_defaults.config == valkey.config
+      - role_defaults.exporter == valkey.exporter
+      # the one key this host deliberately differs on - asserted the other way
+      # round, so that the default going false would fail here rather than
+      # silently make this host stop covering anything
+      - role_defaults.overcommit_memory
+      - not valkey.overcommit_memory
+      - "'dir.ansible' in role_defaults.directories.ansible"
+      - role_defaults.directories.ansible.endswith('/valkey')
+      - "'dir.data' in role_defaults.directories.data"
+      - role_defaults.directories.data.endswith('/valkey')
+    fail_msg: "role ships {{ role_defaults }}, this host pins {{ valkey }}"
+  when: inventory_hostname == 'valkey-defaults'
+
+# ==========================================================================
+# valkey-custom - password, relocated directories, operator config, no exporter
+# ==========================================================================
+- name: Check the password and the operator config reached the file
+  vars:
+    conf: "{{ valkey_conf_raw.content | b64decode }}"
+  ansible.builtin.assert:
+    that:
+      - conf is search('(?m)^requirepass ' ~ expected_password ~ '$')
+      - conf is search('(?m)^maxmemory 32mb$')
+      - conf is search('(?m)^maxmemory-policy allkeys-lru$')
+      # the role's own directives still come first
+      - conf.index('dir /data') < conf.index('requirepass')
+      - conf.index('requirepass') < conf.index('maxmemory 32mb')
+    fail_msg: "rendered config is {{ conf }}"
+  when: inventory_hostname == 'valkey-custom'
+
+- name: Check the exporter service is absent from the compose file
+  vars:
+    compose: "{{ valkey_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - "'exporter' not in compose.services"
+    fail_msg: "exporter off still rendered {{ compose }}"
+  when: inventory_hostname == 'valkey-custom'
+
+- name: Check no exporter container was ever created here
+  ansible.builtin.command: docker ps -a --format '{% raw %}{{.Names}}{% endraw %}'
+  register: valkey_ps_all
+  changed_when: false
+  when: inventory_hostname == 'valkey-custom'
+
+- name: Check only the server runs on this host
+  ansible.builtin.assert:
+    that:
+      - expected_exporter_container not in valkey_ps_all.stdout_lines
+      - expected_container in valkey_ps_all.stdout_lines
+    fail_msg: "containers present: {{ valkey_ps_all.stdout_lines }}"
+  when: inventory_hostname == 'valkey-custom'
+
+- name: Ping the server with the password
+  ansible.builtin.command: >-
+    docker run --rm --network {{ expected_network }}
+    -e REDISCLI_AUTH={{ expected_password }} {{ expected_image }}
+    valkey-cli -h valkey ping
+  register: valkey_auth_ping
+  changed_when: false
+  when: inventory_hostname == 'valkey-custom'
+
+- name: Check an authenticated client gets through
+  ansible.builtin.assert:
+    that:
+      - "'PONG' in valkey_auth_ping.stdout"
+    fail_msg: "authenticated ping replied {{ valkey_auth_ping.stdout }}{{ valkey_auth_ping.stderr }}"
+  when: inventory_hostname == 'valkey-custom'
+
+# The file having the directive is not the same as valkey running with it - this
+# asks the server itself, which is the only thing that proves `config` is loaded
+# rather than merely written.
+- name: Ask the running server what maxmemory it loaded
+  ansible.builtin.command: >-
+    docker run --rm --network {{ expected_network }}
+    -e REDISCLI_AUTH={{ expected_password }} {{ expected_image }}
+    valkey-cli -h valkey config get maxmemory
+  register: valkey_maxmemory
+  changed_when: false
+  when: inventory_hostname == 'valkey-custom'
+
+- name: Check the operator config is live in the server
+  ansible.builtin.assert:
+    that:
+      - expected_maxmemory in valkey_maxmemory.stdout_lines
+    fail_msg: "server reports {{ valkey_maxmemory.stdout_lines }}"
+  when: inventory_hostname == 'valkey-custom'
+
+- name: Stat the paths this host relocated away from
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: valkey_unexpected
+  # default([]) because a loop is expanded before `when` is consulted, and this
+  # var only exists on the host that relocated anything
+  loop: "{{ unexpected_paths | default([]) }}"
+  when: inventory_hostname == 'valkey-custom'
+
+- name: Check the default paths were left alone
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists
+    fail_msg: "{{ item.item }} exists, so directories did not move"
+  loop: "{{ valkey_unexpected.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: inventory_hostname == 'valkey-custom'

@@ -11,6 +11,8 @@ license:
 tags: []
 dependencies:
   community.docker: "*"
+  # redis and valkey set vm.overcommit_memory through ansible.posix.sysctl
+  ansible.posix: "*"
 repository: https://github.com/alesharik/ansible-baseinfra
 issues: https://github.com/alesharik/ansible-baseinfra/issues
 build_ignore:

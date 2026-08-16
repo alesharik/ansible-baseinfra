@@ -1,0 +1,70 @@
+---
+# This host is used to observe both states of exporter.enabled. verify only runs
+# after side_effect, so the assertions for the state converge produced - the
+# role defaults, with an exporter - have to happen here, before the flip.
+# Everything after the flip is asserted in tests.yml.
+- name: Check the defaults run an exporter, then turn it off
+  hosts: redis-defaults
+  environment:
+    ANSIBLE_UNSAFE_WRITES: "1"
+  tasks:
+    - name: Read the compose file the role defaults rendered
+      ansible.builtin.slurp:
+        src: "{{ expected_compose_dir }}/docker-compose.yml"
+      register: redis_default_compose
+
+    - name: Check the defaults declare the exporter and label it for autodiscovery
+      vars:
+        compose: "{{ redis_default_compose.content | b64decode | from_yaml }}"
+      ansible.builtin.assert:
+        that:
+          - compose.services | list | sort == expected_compose_services
+          # key by key, and the port through `string`: compose YAML parses it as
+          # an integer, while the label docker ends up carrying is text
+          - >-
+            compose.services.exporter.labels['prometheus.io.path']
+            == expected_exporter_labels['prometheus.io.path']
+          - >-
+            compose.services.exporter.labels['prometheus.io.port'] | string
+            == expected_exporter_labels['prometheus.io.port']
+          - >-
+            compose.services.exporter.labels['prometheus.io.instance']
+            == expected_exporter_labels['prometheus.io.instance']
+          - compose.services.exporter.environment.REDIS_ADDR == 'redis://redis:6379'
+          # no password on this host, so the exporter must not be handed one
+          - "'REDIS_PASSWORD' not in compose.services.exporter.environment"
+        fail_msg: "the role defaults rendered {{ compose }}"
+
+    - name: Check the exporter container is running before the flip
+      ansible.builtin.command: docker ps --format '{% raw %}{{.Names}}{% endraw %}'
+      register: redis_exporter_before
+      changed_when: false
+      failed_when: expected_exporter_container not in redis_exporter_before.stdout_lines
+
+    # The exporter reaches redis over the project network by service name, so a
+    # scrape that reports redis_up 1 is also the assertion that the two
+    # containers can see each other at all.
+    - name: Scrape the exporter from inside the redis network
+      ansible.builtin.command: >-
+        docker run --rm --network {{ expected_network }} {{ expected_image }}
+        wget -qO- http://exporter:9121/metrics
+      register: redis_metrics_before
+      changed_when: false
+      retries: 12
+      delay: 5
+      until:
+        - redis_metrics_before.rc == 0
+        - "'redis_up 1' in redis_metrics_before.stdout"
+
+    # combine rather than a second literal dict: the whole point of the re-run is
+    # that only this one key differs from what converge used, and a hand-copied
+    # dict could drift and hide that
+    - name: Build the vars with the exporter turned off
+      ansible.builtin.set_fact:
+        redis_no_exporter: "{{ redis | combine({'exporter': redis.exporter | combine({'enabled': false})}) }}"
+
+    - name: Re-run the role with the exporter turned off
+      ansible.builtin.include_role:
+        name: alesharik.baseinfra.redis
+      vars:
+        redis: "{{ redis_no_exporter }}"

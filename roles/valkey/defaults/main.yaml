@@ -1,7 +1,7 @@
 ---
-redis: # noqa: var-naming[no-role-prefix]
-  image: redis
-  version: 8.10-alpine
+valkey: # noqa: var-naming[no-role-prefix]
+  image: valkey/valkey
+  version: 9.1-alpine
   # Empty means no `requirepass` line at all, which is how the upstream image
   # ships. Nothing is published to the host - the server only listens on the
   # docker network below - but anything on that network can then read and write
@@ -10,21 +10,23 @@ redis: # noqa: var-naming[no-role-prefix]
   # The docker network the role creates, and the name consumers attach to. It is
   # also what tells two instances on one host apart, in the metrics label and in
   # docker, so give the second one its own.
-  network: redis
-  # Extra redis.conf directives, appended verbatim below the ones the role
-  # writes. Anything not named here or below keeps redis's compiled-in default -
+  network: valkey
+  # Extra valkey.conf directives, appended verbatim below the ones the role
+  # writes. Anything not named here or below keeps valkey's compiled-in default -
   # the same set the image runs with when it is given no config file at all - so
   # this is where `maxmemory`, `maxmemory-policy` and `appendonly` go.
   config: ""
-  # Redis forks to write RDB and AOF, and the child briefly shares the parent's
+  # Valkey forks to write RDB and AOF, and the child briefly shares the parent's
   # page tables, so a save can fail on a host that refuses to overcommit. This is
   # not namespaced: in a container it reaches the host kernel, which is why it is
   # a flag rather than something the role always does.
   overcommit_memory: true
+  # redis_exporter, not a valkey-specific build: valkey speaks the same protocol
+  # and answers the same INFO, and this exporter supports it directly.
   exporter:
     enabled: true
     image: oliver006/redis_exporter
     version: v1.89.0
   directories:
-    ansible: "{{ dir.ansible }}/redis"
-    data: "{{ dir.data }}/redis"
+    ansible: "{{ dir.ansible }}/valkey"
+    data: "{{ dir.data }}/valkey"

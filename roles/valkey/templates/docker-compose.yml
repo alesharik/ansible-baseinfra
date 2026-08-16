@@ -1,46 +1,48 @@
 #jinja2: trim_blocks: True, lstrip_blocks: True
 networks:
-  redis:
-    name: "{{ redis.network }}"
+  valkey:
+    name: "{{ valkey.network }}"
 services:
-  redis:
-    image: "{{ redis.image }}:{{ redis.version }}"
+  valkey:
+    image: "{{ valkey.image }}:{{ valkey.version }}"
     restart: unless-stopped
-    # The entrypoint would prepend `redis-server` for an argument ending in
+    # The entrypoint would prepend `valkey-server` for an argument ending in
     # .conf on its own, but naming the binary is what makes the container start
     # as the server rather than as whatever else the image can run.
-    command: ["redis-server", "/etc/redis/redis.conf"]
+    command: ["valkey-server", "/etc/valkey/valkey.conf"]
     volumes:
-      - "{{ redis.directories.data }}:/data"
-      - "{{ redis.directories.ansible }}/redis.conf:/etc/redis/redis.conf:ro"
+      - "{{ valkey.directories.data }}:/data"
+      - "{{ valkey.directories.ansible }}/valkey.conf:/etc/valkey/valkey.conf:ro"
     networks:
-      - redis
+      - valkey
     healthcheck:
       # NOAUTH is as good an answer as PONG: both prove the server is up and
       # speaking RESP, and only one of them needs a copy of the password in the
       # container environment. A refused connection matches neither and fails,
       # which is the case this is here to catch.
-      test: ["CMD-SHELL", "redis-cli ping 2>&1 | grep -qE 'PONG|NOAUTH'"]
+      test: ["CMD-SHELL", "valkey-cli ping 2>&1 | grep -qE 'PONG|NOAUTH'"]
       interval: 30s
       timeout: 20s
       retries: 3
-{% if redis.exporter.enabled %}
+{% if valkey.exporter.enabled %}
   exporter:
-    image: "{{ redis.exporter.image }}:{{ redis.exporter.version }}"
+    image: "{{ valkey.exporter.image }}:{{ valkey.exporter.version }}"
     restart: unless-stopped
     environment:
-      REDIS_ADDR: redis://redis:6379
-{% if redis.password | length > 0 %}
-      REDIS_PASSWORD: "{{ redis.password }}"
+      # redis:// is the protocol scheme, not the server: valkey answers the same
+      # protocol on the same port, and the exporter has no valkey:// of its own.
+      REDIS_ADDR: redis://valkey:6379
+{% if valkey.password | length > 0 %}
+      REDIS_PASSWORD: "{{ valkey.password }}"
 {% endif %}
     networks:
-      - redis
+      - valkey
     depends_on:
-      - redis
+      - valkey
     labels:
       prometheus.io.path: /metrics
       prometheus.io.port: 9121
       # `network` rather than a name of its own: it is what tells two instances
       # on one host apart, so it is what keeps their series apart too.
-      prometheus.io.instance: "{{ inventory_hostname }}-{{ redis.network }}"
+      prometheus.io.instance: "{{ inventory_hostname }}-{{ valkey.network }}"
 {% endif %}

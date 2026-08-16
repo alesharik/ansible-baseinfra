@@ -11,7 +11,9 @@
 - [`loki`](./roles/loki/README.md) - deploy loki log store
 - [`mimir`](./roles/mimir/README.md) - deploy mimir metrics store
 - [`node_exporter`](./roles/node_exporter/README.md) - deploy node exporter
+- [`redis`](./roles/redis/README.md) - deploy a single-node redis
 - [`traefik`](./roles/traefik/README.md) - deploy traefik reverse proxy
+- [`valkey`](./roles/valkey/README.md) - deploy a single-node valkey
 - [`vinyl`](./roles/vinyl/README.md) - deploy varnish cache with an haproxy outbound TLS connector
 - [`vmagent`](./roles/vmagent/README.md) - deploy vmagent metrics scraper
 - [`watchtower`](./roles/watchtower/README.md) - deploy watchtower container updater
@@ -53,7 +55,8 @@ prometheus.io.address: 127.0.0.1:9586 # full address to server
 | `nginx_proxy`            | nginx - `1.7-alpine`, le - `2.5` |              |              |
 | `node_exporter`          | `v1.8.1`                         | 2026-08-02   |              |
 | `postgres`               | `16.3`, exporter - `v0.15.0`     |              |              |
-| `redis`                  | `7.2.5`                          |              |              |
+| `redis`                  | `8.10-alpine`, exporter - `v1.89.0` | 2026-08-15   | 2026-08-15   |
+| `valkey`                 | `9.1-alpine`, exporter - `v1.89.0` | 2026-08-15   | 2026-08-15   |
 | `vmagent`                | `v1.101.0`                       |              |              |
 | `watchtower`             | `1.14.3`                         | 2026-07-30   | 2026-07-30   |
 | `wg_exporter`            | `3.6.6`                          | 2026-08-02   |              |
