@@ -1,0 +1,6 @@
+---
+- name: restart zookeeper
+  tags: zookeeper
+  community.docker.docker_compose_v2:
+    project_src: "{{ zookeeper.directories.ansible }}"
+    state: restarted

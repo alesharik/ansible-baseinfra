@@ -1,0 +1,93 @@
+#jinja2: trim_blocks: True, lstrip_blocks: True
+{# Entries are joined with spaces because the image's entrypoint expands both
+   ZOO_SERVERS and ZOO_CFG_EXTRA with `for x in $VAR` - they are word-split
+   lists, not single strings. #}
+{% set zk_servers = [] %}
+{% if zookeeper.quorum | length > 0 %}
+{% for zk_member in zookeeper.quorum %}
+{% set zk_peer = hostvars[zk_member].zookeeper %}
+{# This server's own entry is 0.0.0.0, not its peer_ip: the address here is the
+   one it binds, and a container cannot bind the host address its peer ports are
+   published on. The other members still dial the real peer_ip from their own
+   copy of this list, and ZooKeeper knows which entry is its own from myid
+   rather than from the address. #}
+{% set zk_addr = '0.0.0.0' if zk_member == inventory_hostname else zk_peer.peer_ip %}
+{% set _ = zk_servers.append('server.' ~ zk_peer.id ~ '=' ~ zk_addr ~ ':2888:3888;' ~ zk_peer.client_port) %}
+{% endfor %}
+{% else %}
+{# Standalone still needs a server entry: the entrypoint writes no clientPort
+   directive at all, so the ;port suffix here is the only thing that puts the
+   server on client_port. With one entry and standaloneEnabled, the quorum and
+   election ports are never bound. #}
+{% set _ = zk_servers.append('server.' ~ zookeeper.id ~ '=localhost:2888:3888;' ~ zookeeper.client_port) %}
+{% endif %}
+{% set zk_cfg = [] %}
+{% if zookeeper.metrics.enabled %}
+{% set _ = zk_cfg.append('metricsProvider.className=org.apache.zookeeper.metrics.prometheus.PrometheusMetricsProvider') %}
+{% set _ = zk_cfg.append('metricsProvider.httpPort=' ~ zookeeper.metrics.port) %}
+{% endif %}
+{% set _ = zk_cfg.extend(zookeeper.config) %}
+networks:
+  zookeeper:
+    name: "{{ zookeeper.network }}"
+services:
+  zookeeper:
+    image: "{{ zookeeper.image }}:{{ zookeeper.version }}"
+    restart: unless-stopped
+    # The `zookeeper` user in the image. Named here rather than left to the
+    # entrypoint, which would otherwise start as root and chown the whole data
+    # directory on every boot before dropping to this same uid.
+    user: "1000:1000"
+    environment:
+      ZOO_MY_ID: "{{ zookeeper.id }}"
+      ZOO_SERVERS: "{{ zk_servers | join(' ') }}"
+      ZOO_TICK_TIME: "{{ zookeeper.tick_time }}"
+      ZOO_INIT_LIMIT: "{{ zookeeper.init_limit }}"
+      ZOO_SYNC_LIMIT: "{{ zookeeper.sync_limit }}"
+      ZOO_MAX_CLIENT_CNXNS: "{{ zookeeper.max_client_cnxns }}"
+      ZOO_AUTOPURGE_PURGEINTERVAL: "{{ zookeeper.autopurge.purge_interval }}"
+      ZOO_AUTOPURGE_SNAPRETAINCOUNT: "{{ zookeeper.autopurge.snap_retain_count }}"
+      # With a quorum configured this has to be off, or a shrinking ensemble
+      # would silently fall back to a standalone server that serves reads and
+      # writes on its own.
+      ZOO_STANDALONE_ENABLED: "{{ (zookeeper.quorum | length == 0) | ternary('true', 'false') }}"
+      ZOO_ADMINSERVER_ENABLED: "{{ zookeeper.admin_server | ternary('true', 'false') }}"
+      ZOO_4LW_COMMANDS_WHITELIST: "{{ zookeeper.four_lw_commands }}"
+      JVMFLAGS: "{{ zookeeper.jvm_flags }}"
+      ZOO_CFG_EXTRA: "{{ zk_cfg | join(' ') }}"
+    volumes:
+      - "{{ zookeeper.directories.data }}:/data"
+      - "{{ zookeeper.directories.datalog }}:/datalog"
+      - "{{ zookeeper.directories.logs }}:/logs"
+    networks:
+      - zookeeper
+    {% if zookeeper.listen_ips | length > 0 or zookeeper.quorum | length > 0 %}
+    ports:
+    {% for zk_ip in zookeeper.listen_ips %}
+      - "{{ zk_ip }}:{{ zookeeper.client_port }}:{{ zookeeper.client_port }}"
+    {% endfor %}
+    {% if zookeeper.quorum | length > 0 %}
+      - "{{ zookeeper.peer_ip }}:2888:2888"
+      - "{{ zookeeper.peer_ip }}:3888:3888"
+    {% endif %}
+    {% endif %}
+    healthcheck:
+      # Against the client port, so this tracks the port consumers actually use
+      # rather than the admin server on 8080. `ruok` answers `imok` whenever the
+      # server process is up and that port is bound - including while it is still
+      # LOOKING for a quorum - so this is a liveness check, not a quorum check.
+      # `mntr`'s zk_server_state is the one to look at for the latter.
+      test: ["CMD-SHELL", "echo ruok | nc -w 2 127.0.0.1 {{ zookeeper.client_port }} | grep -q imok"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 30s
+    {% if zookeeper.metrics.enabled %}
+    labels:
+      prometheus.io.path: /metrics
+      prometheus.io.port: {{ zookeeper.metrics.port }}
+      # `network` rather than a name of its own: it is what tells two instances
+      # on one host apart, so it is what keeps their series apart too.
+      prometheus.io.network: "{{ zookeeper.network }}"
+      prometheus.io.instance: "{{ ansible_hostname }}-{{ zookeeper.directories.ansible | basename }}"
+    {% endif %}

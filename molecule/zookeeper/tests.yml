@@ -1,0 +1,483 @@
+---
+# ==========================================================================
+# Both hosts - what the role wrote to disk
+# ==========================================================================
+- name: Stat the directories the role owns
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: zookeeper_dirs
+  loop:
+    - "{{ expected_compose_dir }}"
+    - "{{ expected_data_dir }}"
+    - "{{ expected_datalog_dir }}"
+    - "{{ expected_logs_dir }}"
+
+# 1000:1000 is the `zookeeper` user inside the official image. The ownership is
+# what lets the container run as that user from the start: handed directories it
+# does not own, the entrypoint would instead start as root and chown the whole
+# snapshot directory recursively on every boot.
+- name: Check the directories, their modes and their ownership
+  vars:
+    compose_dir: "{{ zookeeper_dirs.results[0].stat }}"
+    data_dir: "{{ zookeeper_dirs.results[1].stat }}"
+    datalog_dir: "{{ zookeeper_dirs.results[2].stat }}"
+    logs_dir: "{{ zookeeper_dirs.results[3].stat }}"
+  ansible.builtin.assert:
+    that:
+      - compose_dir.isdir
+      - compose_dir.mode == '0755'
+      - data_dir.isdir
+      - data_dir.mode == '0700'
+      - data_dir.uid == 1000
+      - data_dir.gid == 1000
+      - datalog_dir.isdir
+      - datalog_dir.mode == '0700'
+      - datalog_dir.uid == 1000
+      - datalog_dir.gid == 1000
+      - logs_dir.isdir
+      - logs_dir.mode == '0700'
+      - logs_dir.uid == 1000
+      - logs_dir.gid == 1000
+    fail_msg: >-
+      compose dir {{ compose_dir }}, data dir {{ data_dir }},
+      datalog dir {{ datalog_dir }}, logs dir {{ logs_dir }}
+
+- name: Read the myid the entrypoint wrote
+  ansible.builtin.slurp:
+    src: "{{ expected_data_dir }}/myid"
+  register: zookeeper_myid_raw
+
+# This is the file the entrypoint refuses to rewrite once it exists, so it is
+# also this member's permanent identity - the number every other member's server
+# entry addresses it by. A mismatch here is the failure the role's own assert
+# exists to prevent.
+- name: Check this member took the identity it was given
+  vars:
+    myid: "{{ zookeeper_myid_raw.content | b64decode | trim }}"
+  ansible.builtin.assert:
+    that:
+      - myid == expected_id
+    fail_msg: "myid on disk is {{ myid }}, expected {{ expected_id }}"
+
+# ==========================================================================
+# Both hosts - the rendered compose file
+# ==========================================================================
+- name: Read the rendered compose file
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/docker-compose.yml"
+  register: zookeeper_compose_raw
+
+# Spelled out rather than derived from `zookeeper`: an expectation built from
+# the same var the template reads would agree with a broken template. The server
+# list is rebuilt here from the two hosts' gathered facts, which is an
+# independent source from the zookeeper.peer_ip the template consumed.
+- name: Check the compose file starts the server as the ensemble member it should be
+  vars:
+    compose: "{{ zookeeper_compose_raw.content | b64decode | from_yaml }}"
+    env: "{{ (zookeeper_compose_raw.content | b64decode | from_yaml).services.zookeeper.environment }}"
+    own_ip: "{{ ansible_default_ipv4.address }}"
+    node1_ip: "{{ hostvars['zk-node-1'].ansible_default_ipv4.address }}"
+    node2_ip: "{{ hostvars['zk-node-2'].ansible_default_ipv4.address }}"
+    # Each member's own slot is 0.0.0.0 - the address in a server entry is the
+    # one that member binds, and a container cannot bind the host address its
+    # peer ports are published on.
+    expected_servers: >-
+      {{ 'server.1=0.0.0.0:2888:3888;2181 server.2=' ~ node2_ip ~ ':2888:3888;2181'
+         if inventory_hostname == 'zk-node-1'
+         else 'server.1=' ~ node1_ip ~ ':2888:3888;2181 server.2=0.0.0.0:2888:3888;2181' }}
+  ansible.builtin.assert:
+    that:
+      - compose.services | list == ['zookeeper']
+      - compose.networks.zookeeper.name == expected_network
+      # the image's own user; without it the entrypoint starts as root
+      - compose.services.zookeeper.user == '1000:1000'
+      - env.ZOO_MY_ID == expected_id
+      - env.ZOO_SERVERS == expected_servers
+      # off, or a shrinking ensemble would fall back to a lone standalone server
+      - env.ZOO_STANDALONE_ENABLED == 'false'
+      - env.ZOO_ADMINSERVER_ENABLED == 'true'
+      # ruok has to stay whitelisted or the healthcheck can never pass
+      - "'ruok' in env.ZOO_4LW_COMMANDS_WHITELIST"
+      - env.ZOO_TICK_TIME == '2000'
+      - env.ZOO_AUTOPURGE_PURGEINTERVAL == '1'
+      - env.JVMFLAGS == '-XX:+UseShenandoahGC -Xmx512m'
+      # space separated, because the entrypoint word-splits this into one
+      # zoo.cfg line per entry
+      - env.ZOO_CFG_EXTRA == expected_cfg_extra
+      - (expected_data_dir ~ ':/data') in compose.services.zookeeper.volumes
+      - (expected_datalog_dir ~ ':/datalog') in compose.services.zookeeper.volumes
+      # bound even though ZooKeeper logs to stdout: /logs is a declared VOLUME,
+      # so leaving it unbound mints an anonymous volume on every recreate
+      - (expected_logs_dir ~ ':/logs') in compose.services.zookeeper.volumes
+      # client port on listen_ips, peer and election ports on peer_ip
+      - >-
+        compose.services.zookeeper.ports ==
+        [own_ip ~ ':' ~ expected_client_port ~ ':' ~ expected_client_port,
+         own_ip ~ ':2888:2888', own_ip ~ ':3888:3888']
+      # against the client port, not the admin server on 8080
+      - compose.services.zookeeper.healthcheck.test[0] == 'CMD-SHELL'
+      - compose.services.zookeeper.healthcheck.test[1] is search('ruok')
+      - compose.services.zookeeper.healthcheck.test[1] is search('imok')
+      - compose.services.zookeeper.healthcheck.test[1] is search(expected_client_port | string)
+    fail_msg: "rendered compose is {{ compose }}"
+
+# ==========================================================================
+# Both hosts - what is actually running
+# ==========================================================================
+- name: List the running containers
+  ansible.builtin.command: docker ps --format '{% raw %}{{.Names}}{% endraw %}'
+  register: zookeeper_ps
+  changed_when: false
+
+- name: Check this member's container is running
+  ansible.builtin.assert:
+    that:
+      - expected_container in zookeeper_ps.stdout_lines
+    fail_msg: "containers present: {{ zookeeper_ps.stdout_lines }}"
+
+- name: List the docker networks
+  ansible.builtin.command: docker network ls --format '{% raw %}{{.Name}}{% endraw %}'
+  register: zookeeper_networks
+  changed_when: false
+
+- name: Check the role created the network under the name consumers use
+  ansible.builtin.assert:
+    that:
+      - expected_network in zookeeper_networks.stdout_lines
+    fail_msg: "networks present: {{ zookeeper_networks.stdout_lines }}"
+
+- name: Inspect the member container
+  ansible.builtin.command: "docker inspect {{ expected_container }}"
+  register: zookeeper_inspect
+  changed_when: false
+
+# HostConfig.Binds carries a :rw or :ro suffix that a host:container pair does
+# not, so strip it before comparing.
+- name: Check the three data directories are the mounts the server actually got
+  vars:
+    binds: >-
+      {{ (zookeeper_inspect.stdout | from_json)[0].HostConfig.Binds
+         | map('regex_replace', ':(rw|ro)$', '') | list }}
+  ansible.builtin.assert:
+    that:
+      - binds | sort == expected_mounts | sort
+    fail_msg: "container is bound to {{ binds }}"
+
+- name: Check docker published the client, peer and election ports
+  vars:
+    bindings: "{{ (zookeeper_inspect.stdout | from_json)[0].NetworkSettings.Ports }}"
+    own_ip: "{{ ansible_default_ipv4.address }}"
+    client: "{{ expected_client_port }}/tcp"
+  ansible.builtin.assert:
+    that:
+      - bindings[client][0].HostIp == own_ip
+      - bindings[client][0].HostPort == expected_client_port | string
+      - bindings['2888/tcp'][0].HostIp == own_ip
+      - bindings['2888/tcp'][0].HostPort == '2888'
+      - bindings['3888/tcp'][0].HostIp == own_ip
+      - bindings['3888/tcp'][0].HostPort == '3888'
+    fail_msg: "container published {{ bindings }}"
+
+# ==========================================================================
+# Both hosts - the config the entrypoint actually generated
+#
+# Read out of the running container rather than from the compose file: this is
+# what proves ZOO_CFG_EXTRA was word-split into real zoo.cfg directives instead
+# of being written somewhere as one inert string.
+# ==========================================================================
+- name: Read the zoo.cfg the entrypoint generated
+  ansible.builtin.command: "docker exec {{ expected_container }} cat /conf/zoo.cfg"
+  register: zookeeper_zoo_cfg
+  changed_when: false
+
+- name: Check every expected directive landed on its own line
+  ansible.builtin.assert:
+    that:
+      - item in zookeeper_zoo_cfg.stdout_lines
+    fail_msg: "generated zoo.cfg is {{ zookeeper_zoo_cfg.stdout }}"
+  loop: "{{ expected_zoo_cfg_lines }}"
+
+# The entrypoint writes no clientPort directive at all - the client port comes
+# from the ;<port> suffix on this member's server entry, and setting both forms
+# would conflict. A clientPort line appearing here means the role went back to
+# configuring it the other way.
+- name: Check the client port comes from the server entry and not a clientPort line
+  vars:
+    node1_ip: "{{ hostvars['zk-node-1'].ansible_default_ipv4.address }}"
+    node2_ip: "{{ hostvars['zk-node-2'].ansible_default_ipv4.address }}"
+    own_entry: "server.{{ expected_id }}=0.0.0.0:2888:3888;{{ expected_client_port }}"
+    peer_entry: >-
+      {{ 'server.2=' ~ node2_ip ~ ':2888:3888;2181'
+         if inventory_hostname == 'zk-node-1'
+         else 'server.1=' ~ node1_ip ~ ':2888:3888;2181' }}
+  ansible.builtin.assert:
+    that:
+      - "'clientPort' not in zookeeper_zoo_cfg.stdout"
+      - own_entry in zookeeper_zoo_cfg.stdout_lines
+      - peer_entry in zookeeper_zoo_cfg.stdout_lines
+      - "'standaloneEnabled=false' in zookeeper_zoo_cfg.stdout_lines"
+      - "'4lw.commands.whitelist=srvr,ruok,mntr' in zookeeper_zoo_cfg.stdout_lines"
+    fail_msg: "generated zoo.cfg is {{ zookeeper_zoo_cfg.stdout }}"
+
+# ==========================================================================
+# Both hosts - the ensemble itself
+#
+# Every command below runs from a container that is not part of the compose
+# project, reaching the server by service name on the network the role created -
+# which is how every consumer reaches it.
+# ==========================================================================
+- name: Ask the server whether it is up
+  ansible.builtin.command: >-
+    docker run --rm --network {{ expected_network }} --entrypoint sh
+    {{ expected_image }} -c 'echo ruok | nc -w 2 zookeeper {{ expected_client_port }}'
+  register: zookeeper_ruok
+  changed_when: false
+  retries: 12
+  delay: 5
+  until:
+    - zookeeper_ruok.rc == 0
+    - "'imok' in zookeeper_ruok.stdout"
+
+# ruok answers imok as soon as the process is up and the client port is bound,
+# including while the member is still LOOKING - so it proves liveness, not
+# membership. zk_server_state is what distinguishes a member that joined the
+# ensemble from one that came up alone, and `standalone` here would mean the
+# quorum config never took effect at all.
+- name: Ask the server what state it settled in
+  ansible.builtin.command: >-
+    docker run --rm --network {{ expected_network }} --entrypoint sh
+    {{ expected_image }} -c 'echo mntr | nc -w 2 zookeeper {{ expected_client_port }}'
+  register: zookeeper_mntr
+  changed_when: false
+  retries: 30
+  delay: 5
+  until:
+    - zookeeper_mntr.rc == 0
+    - zookeeper_mntr.stdout is search('zk_server_state\s+(leader|follower)')
+
+- name: Check this member joined the ensemble rather than coming up alone
+  ansible.builtin.assert:
+    that:
+      - zookeeper_mntr.stdout is search('zk_server_state\s+(leader|follower)')
+      - zookeeper_mntr.stdout is not search('zk_server_state\s+standalone')
+    fail_msg: "mntr reports {{ zookeeper_mntr.stdout }}"
+
+# The real proof. A 2-member ensemble is a strict majority of two, so it cannot
+# commit anything without both members - a write here that reads back on the
+# other host means the two containers found each other across the molecule
+# network, elected a leader and replicated the transaction. Nothing about that
+# is observable from a single server.
+- name: Create a znode on node-1
+  ansible.builtin.command: >-
+    docker run --rm --network {{ expected_network }} --entrypoint zkCli.sh
+    {{ expected_image }} -server zookeeper:{{ expected_client_port }}
+    create {{ molecule_znode }} {{ molecule_znode_value }}
+  register: zookeeper_create
+  # zkCli.sh writes command results to stderr and its logback output to stdout,
+  # so both streams have to be read - checking stdout alone silently misses the
+  # answer entirely.
+  changed_when: "'Created' in (zookeeper_create.stdout ~ zookeeper_create.stderr)"
+  # NodeExists is success for this purpose: it means a previous verify already
+  # wrote it. No retry loop - the mntr check above already waited for this
+  # member to join the ensemble, so a failure here is a real one.
+  failed_when:
+    - "'Created' not in (zookeeper_create.stdout ~ zookeeper_create.stderr)"
+    - "'NodeExists' not in (zookeeper_create.stdout ~ zookeeper_create.stderr)"
+  when: inventory_hostname == 'zk-node-1'
+
+- name: Read that znode back on node-2
+  ansible.builtin.command: >-
+    docker run --rm --network {{ expected_network }} --entrypoint zkCli.sh
+    {{ expected_image }} -server zookeeper:{{ expected_client_port }}
+    get {{ molecule_znode }}
+  register: zookeeper_get
+  changed_when: false
+  retries: 12
+  delay: 5
+  until:
+    - zookeeper_get.rc == 0
+    # stderr as well as stdout: zkCli.sh answers on stderr and logs on stdout
+    - molecule_znode_value in (zookeeper_get.stdout ~ zookeeper_get.stderr)
+  when: inventory_hostname == 'zk-node-2'
+
+# Matched as a whole line rather than as a substring, so this cannot pass on the
+# value merely appearing inside some log message.
+- name: Check the write replicated across the ensemble
+  ansible.builtin.assert:
+    that:
+      - molecule_znode_value in (zookeeper_get.stdout_lines + zookeeper_get.stderr_lines)
+    fail_msg: "node-2 read back {{ zookeeper_get.stdout }}{{ zookeeper_get.stderr }}"
+  when: inventory_hostname == 'zk-node-2'
+
+# ==========================================================================
+# zk-node-1 - the published defaults, metrics on
+# ==========================================================================
+- name: Check the metrics service is labelled for autodiscovery
+  vars:
+    compose: "{{ zookeeper_compose_raw.content | b64decode | from_yaml }}"
+    labels: "{{ (zookeeper_compose_raw.content | b64decode | from_yaml).services.zookeeper.labels }}"
+  ansible.builtin.assert:
+    that:
+      # key by key, and the port through `string`: compose YAML parses it as an
+      # integer, while the label docker ends up carrying is text
+      - labels['prometheus.io.path'] == '/metrics'
+      - labels['prometheus.io.port'] | string == expected_metrics_port | string
+      - labels['prometheus.io.network'] == expected_network
+      - labels['prometheus.io.instance'] == expected_instance_label
+    fail_msg: "rendered compose is {{ compose }}"
+  when: expected_metrics_enabled
+
+# ZooKeeper's own PrometheusMetricsProvider, not a sidecar. quorum_size is the
+# anchor because it is ZooKeeper-specific and doubles as the ensemble's own
+# account of how many members it expects. Note there is no zk_ prefix here -
+# that belongs to the mntr four letter word output, a different interface.
+- name: Scrape the metrics endpoint from inside the network
+  ansible.builtin.command: >-
+    docker run --rm --network {{ expected_network }} --entrypoint wget
+    {{ expected_image }} -qO- http://zookeeper:{{ expected_metrics_port }}/metrics
+  register: zookeeper_metrics
+  changed_when: false
+  retries: 12
+  delay: 5
+  until:
+    - zookeeper_metrics.rc == 0
+    - ('quorum_size ' ~ molecule_expected_quorum_size) in zookeeper_metrics.stdout
+  when: expected_metrics_enabled
+
+- name: Check the provider reports this ensemble's size
+  ansible.builtin.assert:
+    that:
+      - ('quorum_size ' ~ molecule_expected_quorum_size) in zookeeper_metrics.stdout
+      - "'znode_count' in zookeeper_metrics.stdout"
+      # the mntr prefix must not appear here - these are different interfaces
+      - "'zk_server_state' not in zookeeper_metrics.stdout"
+    fail_msg: "metrics endpoint returned {{ zookeeper_metrics.stdout[:2000] }}"
+  when: expected_metrics_enabled
+
+# This host pins a copy of the published defaults, so the copy has to be checked
+# against the defaults themselves or it could drift and quietly stop testing
+# them. `directories` is compared by shape rather than by value: this dict came
+# out of slurp + from_yaml, which the templar never renders, so its paths are
+# still the literal "{{ dir.data }}/zookeeper/data" the file contains.
+- name: Read the role defaults from the controller
+  ansible.builtin.slurp:
+    src: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}/roles/zookeeper/defaults/main.yaml"
+  delegate_to: localhost
+  become: false
+  register: zookeeper_defaults_raw
+  when: inventory_hostname == 'zk-node-1'
+
+- name: Check this host still pins what the role actually ships
+  vars:
+    role_defaults: "{{ (zookeeper_defaults_raw.content | b64decode | from_yaml).zookeeper }}"
+  ansible.builtin.assert:
+    that:
+      - role_defaults.image == 'zookeeper'
+      - role_defaults.image == zookeeper.image
+      - role_defaults.version == zookeeper.version
+      - role_defaults.id == zookeeper.id
+      - role_defaults.network == zookeeper.network
+      - role_defaults.client_port == zookeeper.client_port
+      - role_defaults.tick_time == zookeeper.tick_time
+      - role_defaults.init_limit == zookeeper.init_limit
+      - role_defaults.sync_limit == zookeeper.sync_limit
+      - role_defaults.max_client_cnxns == zookeeper.max_client_cnxns
+      - role_defaults.autopurge == zookeeper.autopurge
+      - role_defaults.four_lw_commands == zookeeper.four_lw_commands
+      - role_defaults.admin_server == zookeeper.admin_server
+      - role_defaults.jvm_flags == zookeeper.jvm_flags
+      - role_defaults.config == zookeeper.config
+      - role_defaults.metrics == zookeeper.metrics
+      # the healthcheck's word has to be in the shipped list, not just in this
+      # host's copy of it
+      - "'ruok' in role_defaults.four_lw_commands"
+      # The three keys this host deliberately differs on - asserted the other
+      # way round, so that a default gaining a value would fail here rather than
+      # silently make this host stop covering the standalone shape.
+      - role_defaults.peer_ip == ''
+      - role_defaults.quorum == []
+      - role_defaults.listen_ips == []
+      - zookeeper.peer_ip != ''
+      - zookeeper.quorum | length == 2
+      - zookeeper.listen_ips | length == 1
+      - "'dir.ansible' in role_defaults.directories.ansible"
+      - role_defaults.directories.ansible.endswith('/zookeeper')
+      - "'dir.data' in role_defaults.directories.data"
+      - role_defaults.directories.data.endswith('/zookeeper/data')
+      - "'dir.data' in role_defaults.directories.datalog"
+      - role_defaults.directories.datalog.endswith('/zookeeper/datalog')
+      - "'dir.data' in role_defaults.directories.logs"
+      - role_defaults.directories.logs.endswith('/zookeeper/logs')
+    fail_msg: "role ships {{ role_defaults }}, this host pins {{ zookeeper }}"
+  when: inventory_hostname == 'zk-node-1'
+
+# ==========================================================================
+# zk-node-2 - relocated directories, renamed network, operator config, no metrics
+# ==========================================================================
+- name: Check no metrics labels or provider directives were rendered
+  vars:
+    compose: "{{ zookeeper_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - compose.services.zookeeper.labels is not defined
+      - "'metricsProvider' not in compose.services.zookeeper.environment.ZOO_CFG_EXTRA"
+    fail_msg: "metrics off still rendered {{ compose }}"
+  when: not expected_metrics_enabled
+
+- name: Check the metrics port is not served with metrics off
+  ansible.builtin.command: >-
+    docker run --rm --network {{ expected_network }} --entrypoint sh
+    {{ expected_image }} -c 'nc -z -w 2 zookeeper {{ expected_metrics_port }}'
+  register: zookeeper_metrics_closed
+  changed_when: false
+  failed_when: false
+  when: not expected_metrics_enabled
+
+- name: Check nothing answers on the metrics port
+  ansible.builtin.assert:
+    that:
+      - zookeeper_metrics_closed.rc != 0
+    fail_msg: "something is listening on {{ expected_metrics_port }} with metrics off"
+  when: not expected_metrics_enabled
+
+# The file having the directive is not the same as ZooKeeper running with it -
+# this asks the server itself, which is the only thing that proves `config`
+# reached the running configuration.
+- name: Ask the running server what it loaded
+  ansible.builtin.command: >-
+    docker run --rm --network {{ expected_network }} --entrypoint sh
+    {{ expected_image }} -c 'echo conf | nc -w 2 zookeeper {{ expected_client_port }}'
+  register: zookeeper_conf
+  changed_when: false
+  failed_when: false
+  when: unexpected_paths is defined
+
+# `conf` is not in the whitelist, so this must be refused rather than answered -
+# which is itself the assertion that four_lw_commands is enforced and not just
+# written. The loaded value is checked through the generated zoo.cfg above.
+- name: Check an unwhitelisted four letter word is refused
+  ansible.builtin.assert:
+    that:
+      - "'maxSessionTimeout' not in zookeeper_conf.stdout"
+    fail_msg: >-
+      `conf` was answered despite not being whitelisted: {{ zookeeper_conf.stdout }}
+  when: unexpected_paths is defined
+
+- name: Stat the paths this host relocated away from
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: zookeeper_unexpected
+  # default([]) because a loop is expanded before `when` is consulted, and this
+  # var only exists on the host that relocated anything
+  loop: "{{ unexpected_paths | default([]) }}"
+  when: unexpected_paths is defined
+
+- name: Check the default paths were left alone
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists
+    fail_msg: "{{ item.item }} exists, so directories did not move"
+  loop: "{{ zookeeper_unexpected.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: unexpected_paths is defined

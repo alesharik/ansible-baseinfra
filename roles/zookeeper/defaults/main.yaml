@@ -1,0 +1,55 @@
+---
+zookeeper: # noqa: var-naming[no-role-prefix]
+  image: zookeeper
+  version: "3.9.5"
+  # Written to <directories.data>/myid, and the number this member is known by in
+  # every other member's `quorum` entry. The image's entrypoint writes myid only
+  # when it does not already exist, so changing this on a live node would
+  # otherwise be a silent no-op - the role fails instead.
+  id: 1
+  # The address the other members dial. Required once `quorum` is set, ignored
+  # without it. The peer and election ports are published on it.
+  peer_ip: ""
+  # Inventory hostnames of every ensemble member, this host included. Empty runs
+  # a standalone server, which is the single-node case and needs no peer_ip.
+  quorum: []
+  # Host IPs the client port is published on. Empty publishes nothing, leaving
+  # the server reachable only from the docker network below.
+  listen_ips: []
+  # The docker network the role creates, and the name consumers attach to. It is
+  # also what tells two instances on one host apart in the metrics labels and in
+  # docker, so give the second one its own.
+  network: zookeeper
+  client_port: 2181
+  tick_time: 2000
+  init_limit: 5
+  sync_limit: 2
+  max_client_cnxns: 60
+  autopurge:
+    # Hours between purges. The image ships 0, which means never - snapshots and
+    # transaction logs then accumulate until the disk fills.
+    purge_interval: 1
+    snap_retain_count: 3
+  # The healthcheck sends `ruok`, so that command has to stay in this list.
+  four_lw_commands: "srvr,ruok,mntr"
+  admin_server: true
+  jvm_flags: "-XX:+UseShenandoahGC -Xmx512m"
+  # Extra zoo.cfg directives, as "key=value" strings. The image's entrypoint
+  # word-splits this into one line each, so no single entry may contain
+  # whitespace - the role rejects one that does.
+  config: []
+  # ZooKeeper's own PrometheusMetricsProvider, not a sidecar exporter: it is
+  # built into the server and configured through two zoo.cfg directives.
+  metrics:
+    enabled: true
+    port: 7070
+  directories:
+    ansible: "{{ dir.ansible }}/zookeeper"
+    data: "{{ dir.data }}/zookeeper/data"
+    # Its own key because keeping the transaction log on a separate device is an
+    # upstream recommendation - it is what every write waits on.
+    datalog: "{{ dir.data }}/zookeeper/datalog"
+    # ZooKeeper logs to stdout, so this stays empty. It is bound anyway because
+    # the image declares /logs as a VOLUME, and an unbound one means a new
+    # anonymous volume on every recreate.
+    logs: "{{ dir.data }}/zookeeper/logs"

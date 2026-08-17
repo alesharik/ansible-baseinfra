@@ -19,6 +19,7 @@
 - [`watchtower`](./roles/watchtower/README.md) - deploy watchtower container updater
 - [`wg_exporter`](./roles/wg_exporter/README.md) - deploy wireguard exporter
 - [`etcd`](./roles/etcd/README.md) - deploy wireguard exporter
+- [`zookeeper`](./roles/zookeeper/README.md) - deploy apache zookeeper, standalone or as an ensemble
 
 ## Users and groups
 This role creates and manages users specified in config. It also can create homes for users, and set up their groups.
@@ -65,3 +66,4 @@ prometheus.io.address: 127.0.0.1:9586 # full address to server
 | `traefik`                | `v3.6.15`                                                               | 2026-07-30   | 2026-07-30   |
 | `etcd`                   | `v3.6.12`                                                               | 2026-08-17   | 2026-08-17   |
 | `vinyl`                  | varnish - `9`, haproxy - `3.2-alpine`, exporter - `1.8.3-varnish-9.0.0` | 2026-08-12   | 2026-08-12   |
+| `zookeeper`              | `3.9.5`                                                                 | 2026-08-18   | 2026-08-18   |

@@ -1,0 +1,154 @@
+---
+# The image's entrypoint expands ZOO_CFG_EXTRA with `for e in $ZOO_CFG_EXTRA`, so
+# it word-splits on whitespace and writes one zoo.cfg line per word. An entry
+# with a space in it would silently become two directives, neither of them the
+# one that was meant - fail here, where the cause has a name.
+- name: Check every extra config entry is a single directive
+  tags: zookeeper
+  ansible.builtin.assert:
+    that:
+      - item is not search('\s')
+      - item is search('=')
+    fail_msg: >-
+      zookeeper.config entry "{{ item }}" is not a single key=value directive.
+      The entrypoint splits this list on whitespace and writes one zoo.cfg line
+      per word, so an entry containing a space becomes two broken directives.
+  loop: "{{ zookeeper.config }}"
+
+# The healthcheck is `ruok`, and four letter words that are not whitelisted are
+# answered with an error rather than refused - so a container that dropped ruok
+# would come up and then never pass its healthcheck, which is an obscure way to
+# discover a typo in this list.
+- name: Check the healthcheck's four letter word is whitelisted
+  tags: zookeeper
+  vars:
+    zookeeper_lw: "{{ zookeeper.four_lw_commands | split(',') | map('trim') | list }}"
+  ansible.builtin.assert:
+    that:
+      - "'ruok' in zookeeper_lw or '*' in zookeeper_lw"
+    fail_msg: >-
+      zookeeper.four_lw_commands is "{{ zookeeper.four_lw_commands }}", which does
+      not allow ruok. The container healthcheck sends ruok, so it would never
+      report healthy.
+
+- name: Check this server has a usable id
+  tags: zookeeper
+  ansible.builtin.assert:
+    that:
+      - zookeeper.id | string is match('^[0-9]+$')
+      - zookeeper.id | int >= 1
+      - zookeeper.id | int <= 255
+    fail_msg: >-
+      zookeeper.id is "{{ zookeeper.id }}"; it has to be a whole number between
+      1 and 255.
+
+# Checked across hostvars rather than per host: every member renders the whole
+# server list, so a member missing a peer_ip or sharing an id breaks the ensemble
+# for everyone, not just for itself.
+- name: Check the ensemble is coherent
+  tags: zookeeper
+  when: zookeeper.quorum | length > 0
+  vars:
+    zookeeper_ids: >-
+      {{ zookeeper.quorum | map('extract', hostvars, ['zookeeper', 'id'])
+         | map('default', '') | list }}
+    zookeeper_ips: >-
+      {{ zookeeper.quorum | map('extract', hostvars, ['zookeeper', 'peer_ip'])
+         | map('default', '') | list }}
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname in zookeeper.quorum
+      - zookeeper.quorum | difference(hostvars | list) | length == 0
+      - zookeeper_ips | select('equalto', '') | list | length == 0
+      - zookeeper_ids | unique | length == zookeeper.quorum | length
+    fail_msg: >-
+      zookeeper.quorum is {{ zookeeper.quorum }}, which must contain
+      {{ inventory_hostname }}, name only hosts in this play, give every member a
+      peer_ip and give every member a distinct id. Members resolve to ids
+      {{ zookeeper_ids }} at addresses {{ zookeeper_ips }}.
+
+- name: Look for a myid this server was already started with
+  tags: zookeeper
+  ansible.builtin.stat:
+    path: "{{ zookeeper.directories.data }}/myid"
+  register: zookeeper_myid
+
+- name: Read the existing myid
+  tags: zookeeper
+  when: zookeeper_myid.stat.exists
+  ansible.builtin.slurp:
+    src: "{{ zookeeper.directories.data }}/myid"
+  register: zookeeper_myid_raw
+
+# The entrypoint writes myid only when the file is absent, so on a server that
+# has already run once a changed zookeeper.id would be ignored: the container
+# would keep its old identity while every other member addressed it by the new
+# one. Nothing about that is visible in the role's output, which is why it is an
+# error rather than a rewrite - renumbering a live member is a data-directory
+# decision, not a template one.
+- name: Check the existing myid still agrees with zookeeper.id
+  tags: zookeeper
+  when: zookeeper_myid.stat.exists
+  vars:
+    zookeeper_myid_on_disk: "{{ zookeeper_myid_raw.content | b64decode | trim }}"
+  ansible.builtin.assert:
+    that:
+      - zookeeper_myid_on_disk == zookeeper.id | string
+    fail_msg: >-
+      {{ zookeeper.directories.data }}/myid holds {{ zookeeper_myid_on_disk }} but
+      zookeeper.id is {{ zookeeper.id }}. The image writes myid only when it is
+      missing, so this server would keep identity {{ zookeeper_myid_on_disk }}.
+      Either put zookeeper.id back, or remove the data directory to rebuild this
+      member from the rest of the ensemble.
+
+- name: Create compose dir
+  tags: zookeeper
+  ansible.builtin.file:
+    path: "{{ zookeeper.directories.ansible }}"
+    state: directory
+    mode: "0755"
+
+# 1000:1000 is the `zookeeper` user inside the official image. Handing it
+# directories that are already right is what lets the container run as that user
+# from the start: the entrypoint's first branch only chowns them - recursively,
+# over the whole snapshot directory - when it is entered as root.
+- name: Create the dirs the server writes to
+  tags: zookeeper
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0700"
+    owner: "1000"
+    group: "1000"
+  loop:
+    - "{{ zookeeper.directories.data }}"
+    - "{{ zookeeper.directories.datalog }}"
+    - "{{ zookeeper.directories.logs }}"
+
+- name: Move compose files
+  tags: zookeeper
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ zookeeper.directories.ansible }}/docker-compose.yml"
+    mode: "0700"
+  notify:
+    - restart zookeeper
+
+# Pull separately: on an up that also pulls, compose 5.4.0 labels the container
+# with the local image ID, then recreates it once on the next up.
+- name: Pull zookeeper image
+  tags: zookeeper
+  community.docker.docker_compose_v2_pull:
+    project_src: "{{ zookeeper.directories.ansible }}"
+    policy: missing
+
+- name: Start zookeeper
+  tags: zookeeper
+  community.docker.docker_compose_v2:
+    project_src: "{{ zookeeper.directories.ansible }}"
+    state: present
+    remove_orphans: true
+
+- name: Make sure handlers are flushed immediately
+  tags: zookeeper
+  ansible.builtin.meta: flush_handlers
