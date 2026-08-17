@@ -1,0 +1,41 @@
+---
+# Pre-create vinyl-connector's data dir owned by root, before converge ever runs
+# the role.
+#
+# The role now creates that dir as uid 1000 because varnishd opens `-s file` from
+# its *child* process, which the jail always drops to the image's varnish user -
+# a root-owned dir gets `Child () said Error: (-sfile) "/data"
+# mkstemp(/data/vinyl.XXXXXX) failed (Permission denied)` and a container that
+# restarts forever. On a path that does not exist yet the role would be creating
+# the dir from scratch, which cannot regress in the way the bug did; handing it
+# one that is already root-owned means the ownership assertions in tests.yml are
+# about the role correcting real state.
+- name: Pre-create the data dir owned by root
+  ansible.builtin.file:
+    path: "{{ expected_data_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Read back the pre-created data dir
+  ansible.builtin.stat:
+    path: "{{ expected_data_dir }}"
+  register: vinyl_prepare_data
+  when: inventory_hostname == 'vinyl-connector'
+
+# Loudly, here rather than in tests.yml: if this fixture never landed, the
+# ownership assertion later would pass on a dir the role created itself and prove
+# nothing about the case that actually broke.
+- name: Check the fixture really starts out root-owned
+  ansible.builtin.assert:
+    that:
+      - vinyl_prepare_data.stat.exists
+      - vinyl_prepare_data.stat.isdir
+      - vinyl_prepare_data.stat.uid == 0
+    fail_msg: >-
+      pre-converge fixture is uid
+      {{ vinyl_prepare_data.stat.uid | default('<missing>') }}, expected 0 -
+      tests.yml would then assert the role chowned a dir it had just created
+  when: inventory_hostname == 'vinyl-connector'
