@@ -179,7 +179,9 @@ then declare at least one of its own. VCL with no backend does not compile
 ### Effects
 - creates and manages `{{ vinyl.directories.ansible }}` — `vinyl.vcl`,
   `haproxy.cfg`, `docker-varnish-entrypoint` and the compose project
-- creates `{{ vinyl.directories.data }}`, only with `file`/`persistent` storage
+- creates `{{ vinyl.directories.data }}` as `0700` owned by uid 1000 — the
+  varnish user inside the image — and mounts it at `/data`, only with
+  `file`/`persistent` storage
 - deploys docker compose project `vinyl` with containers `vinyl` and,
   with the connector on, `connector`
 - the connector container starts as root, because the haproxy image's own uid

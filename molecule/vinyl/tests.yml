@@ -71,6 +71,46 @@
     (vinyl_off_inspect.stdout | from_json)[0].State.Running
   when: inventory_hostname == 'vinyl-defaults'
 
+# --- the malloc side of the storage branch -----------------------------------
+# vinyl-connector runs file storage and asserts the data dir exists, is owned by
+# the varnish uid and is mounted. Here nothing of that may happen. Read the
+# default from the role's own defaults file first: if it ever changed to file
+# storage, "nothing was created" would start passing for the wrong reason.
+- name: Read the role defaults from the controller
+  ansible.builtin.slurp:
+    src: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}/roles/vinyl/defaults/main.yaml"
+  delegate_to: localhost
+  become: false
+  register: vinyl_storage_defaults_raw
+  when: inventory_hostname == 'vinyl-defaults'
+
+- name: Check the role defaults still ask for in-memory storage
+  vars:
+    role_defaults: "{{ vinyl_storage_defaults_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - role_defaults.vinyl.storage == expected_default_storage
+    fail_msg: "role default storage is {{ role_defaults.vinyl.storage }}"
+  when: inventory_hostname == 'vinyl-defaults'
+
+- name: Look for a data dir on the malloc host
+  ansible.builtin.stat:
+    path: "{{ expected_absent_data_dir }}"
+  register: vinyl_absent_data
+  when: inventory_hostname == 'vinyl-defaults'
+
+- name: Check malloc storage created no data dir and mounted none
+  vars:
+    compose: "{{ vinyl_off_compose.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - not vinyl_absent_data.stat.exists
+      - compose.services.vinyl.volumes | select('search', ':/data$') | list | length == 0
+    fail_msg: >-
+      {{ expected_absent_data_dir }} exists={{ vinyl_absent_data.stat.exists }},
+      varnish mounts {{ compose.services.vinyl.volumes }}
+  when: inventory_hostname == 'vinyl-defaults'
+
 # ==========================================================================
 # vinyl-connector - rendered artefacts
 # ==========================================================================
@@ -161,9 +201,22 @@
       - >-
         compose.services.connector.labels['prometheus.io.port'] | string
         == expected_connector_labels['prometheus.io.port']
-      # storage is malloc here, so no data dir should be mounted
-      - compose.services.vinyl.volumes | select('search', ':/data$') | list | length == 0
     fail_msg: "rendered compose is {{ compose }}"
+  when: inventory_hostname == 'vinyl-connector'
+
+# The file-storage branch of the template. Only this host renders it - the role
+# defaults are malloc, and vinyl-defaults asserts that side mounts nothing.
+- name: Check file storage reaches varnishd and brings the data dir with it
+  vars:
+    compose: "{{ vinyl_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - compose.services.vinyl.environment.VARNISH_STORAGE == expected_storage
+      - expected_data_mount in compose.services.vinyl.volumes
+      # the storage dir belongs to varnish alone; nothing else may see it
+      - compose.services.connector.volumes | select('search', ':/data$') | list | length == 0
+      - compose.services.exporter.volumes | select('search', ':/data$') | list | length == 0
+    fail_msg: "rendered compose is {{ compose.services }}"
   when: inventory_hostname == 'vinyl-connector'
 
 # The exporter is off in the role defaults, so this platform is the only place
@@ -300,6 +353,61 @@
     that:
       - molecule_external_network in nets
     fail_msg: "varnish is attached to {{ nets }}"
+  when: inventory_hostname == 'vinyl-connector'
+
+# --- file storage ------------------------------------------------------------
+- name: Read the data dir the role created for file storage
+  ansible.builtin.stat:
+    path: "{{ expected_data_dir }}"
+  register: vinyl_data_stat
+  when: inventory_hostname == 'vinyl-connector'
+
+# prepare_tasks.yml handed the role this dir owned by root. varnishd opens `-s
+# file` from its child process, which the jail drops to the varnish uid, so root
+# ownership is what made it die on mkstemp - and starting the container as root
+# would not have helped, since it is the child that lacks the permission.
+- name: Check the role took the data dir off root and gave it to the varnish uid
+  ansible.builtin.assert:
+    that:
+      - vinyl_data_stat.stat.exists
+      - vinyl_data_stat.stat.isdir
+      - vinyl_data_stat.stat.uid == expected_data_uid
+      - vinyl_data_stat.stat.mode == expected_data_mode
+    fail_msg: >-
+      data dir is uid {{ vinyl_data_stat.stat.uid | default('<missing>') }}
+      mode {{ vinyl_data_stat.stat.mode | default('<missing>') }},
+      expected uid {{ expected_data_uid }} mode {{ expected_data_mode }}
+  when: inventory_hostname == 'vinyl-connector'
+
+# The stat above only proves ansible chowned a directory. This is the assertion
+# that varnishd could actually open its storage in it: one that could not is not
+# answering varnishadm at all - it exits status 2 on launch and the restart policy
+# puts it straight back into the same failure.
+- name: Ask varnish which storage devices it opened
+  ansible.builtin.command: "docker exec {{ expected_vinyl_container }} varnishadm storage.list"
+  register: vinyl_storage_list
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: vinyl_storage_list.rc == 0 and expected_storage_device in vinyl_storage_list.stdout
+  when: inventory_hostname == 'vinyl-connector'
+
+- name: Check the file stevedore is the one varnish caches into, and it never crash-looped
+  vars:
+    restarts: "{{ (vinyl_inspect.stdout | from_json)[0].RestartCount }}"
+  ansible.builtin.assert:
+    that:
+      - expected_storage_device in vinyl_storage_list.stdout
+      # the entrypoint falls back to malloc when VARNISH_STORAGE is unset, so a
+      # malloc device here would mean the env var never arrived
+      - vinyl_storage_list.stdout is not search('= malloc')
+      # the permission failure is fatal at launch, not degraded operation: a
+      # varnish that hit it would have been restarted by docker several times
+      # over by now
+      - restarts | int == 0
+    fail_msg: >-
+      varnish reports {{ vinyl_storage_list.stdout_lines | default('<no answer>') }}
+      after {{ restarts }} restarts
   when: inventory_hostname == 'vinyl-connector'
 
 # healthy over a UDS is the whole point - this fails if the socket is missing,

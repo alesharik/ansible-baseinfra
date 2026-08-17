@@ -42,12 +42,8 @@
     path: "{{ vinyl.directories.data }}"
     state: directory
     mode: "0700"
+    owner: '1000'
 
-# 0444, not 0400: these files are written as root but read from inside the
-# containers, and both images run unprivileged - varnish as uid 1000, haproxy as
-# uid 99. A root-owned 0400 file is unreadable there and varnishd exits with
-# "Cannot read -f file ... (Permission denied)", which surfaces as a container
-# stuck in a restart loop. Same reason the entrypoint below is 0555.
 - name: Move vinyl.vcl
   tags: vinyl
   ansible.builtin.template:

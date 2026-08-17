@@ -1,8 +1,9 @@
 ---
 # Two platforms on purpose. `vinyl-defaults` runs the role defaults untouched -
 # it sets no `vinyl` dict at all, so it cannot drift from them - and is where
-# the "connector off" state is covered, via side_effect.yml. `vinyl-connector`
-# relocates the directories, publishes a port and caches a real HTTPS origin
+# the "connector off" state is covered, via side_effect.yml - and, being malloc,
+# the storage branch that creates nothing. `vinyl-connector` relocates the
+# directories, publishes a port, runs file storage and caches a real HTTPS origin
 # through the connector. The shared converge.yml includes the role by scenario
 # name, so a second scenario is not an option - a scenario is a role name here.
 # A third platform would push this docker-in-docker run past ~15 minutes.
@@ -81,6 +82,12 @@ provisioner:
         # on this host
         expected_vinyl_container: vinyl-vinyl-1
         expected_connector_container: vinyl-connector-1
+        # the malloc side of the storage branch: the defaults ask for in-memory
+        # storage, so this host must end up with no data dir and no /data mount.
+        # tests.yml asserts the default is still malloc before trusting that -
+        # otherwise "nothing was created" would pass for the wrong reason.
+        expected_default_storage: malloc
+        expected_absent_data_dir: /data/vinyl
         # side_effect.yml re-runs the role with the connector off. With no
         # connector backend and an empty vinyl.config the VCL would have no
         # backend at all and varnishd refuses to load it, so the flip supplies a
@@ -106,7 +113,13 @@ provisioner:
           # it - docker only exists after converge has run the role's docker
           # dependency, so this is the first hook where that is possible
           networks: []
-          storage: malloc
+          # file storage on this host rather than the default malloc: it is the
+          # only place the data-dir branch of the role runs at all. Varnishd
+          # opens `-s file` from its child process, which the jail drops to the
+          # image's varnish uid, so a root-owned dir dies with `mkstemp(...)
+          # failed (Permission denied)` in a restart loop. prepare_tasks.yml
+          # hands the role exactly that dir. vinyl-defaults covers malloc.
+          storage: file,/data,100M
           connector:
             enabled: true
             image: haproxy
@@ -152,6 +165,20 @@ provisioner:
           80/tcp: 127.0.0.1:8080
         expected_vcl_path: /data/ansible/vinyl-moved/vinyl.vcl
         expected_haproxy_path: /data/ansible/vinyl-moved/haproxy.cfg
+        # spelled out, not built from vinyl.storage/vinyl.directories.data: an
+        # expectation derived from the var the template reads would agree with a
+        # broken template
+        expected_storage: file,/data,100M
+        expected_data_dir: /data/vinyl-moved
+        expected_data_mount: /data/vinyl-moved:/data
+        # the varnish user inside the image, and the whole point of these
+        # assertions - `stat -c %u /var/lib/varnish` in varnish:9 is 1000
+        expected_data_uid: 1000
+        expected_data_mode: "0700"
+        # what `varnishadm storage.list` prints for a single `-s file`. A
+        # `= malloc` line instead would mean VARNISH_STORAGE never reached
+        # varnishd and the entrypoint's own default took over.
+        expected_storage_device: storage.s0 = file
         # directories.ansible is relocated here, and compose names the project
         # after it - so these names also prove the move actually took effect
         expected_vinyl_container: vinyl-moved-vinyl-1
