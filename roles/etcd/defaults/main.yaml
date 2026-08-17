@@ -1,5 +1,5 @@
 ---
-etcd:
+etcd: # noqa: var-naming[no-role-prefix]
   version: v3.6.12
   image: "quay.io/coreos/etcd"
   listen_ips: []
@@ -11,7 +11,7 @@ etcd:
     ansible: "{{ dir.ansible }}/etcd"
     data: "{{ dir.data }}/etcd"
     ca: "{{ playbook_dir }}/certs/etcd"
-    vmagent_conf: "{{ dir.ansible }}/vmagent/config/conf.d"
+    vmagent_conf: "{{ vmagent.directories.ansible | default(dir.ansible ~ '/vmagent') }}/config/conf.d"
   pki:
     organization: "ETCD"
     organizational_unit: "Etcd"

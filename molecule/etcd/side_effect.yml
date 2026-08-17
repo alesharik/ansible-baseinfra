@@ -1,0 +1,81 @@
+---
+# node-2 observes two states the converge alone cannot reach. verify only runs
+# after side_effect, so everything about the *first* state - vmagent conf.d
+# missing, so both drops skipped - has to be asserted here, before the flip.
+# Everything after the flip is asserted in tests.yml.
+#
+# Docker only exists after converge has run the role's docker dependency, so
+# this is also the first hook where an external network can be created or the
+# role re-run attached to one.
+- name: Check the skipped vmagent drop, then supply conf.d and a network
+  hosts: etcd-node-2
+  environment:
+    ANSIBLE_UNSAFE_WRITES: "1"
+  tasks:
+    - name: Stat the vmagent conf.d the role must not have created
+      ansible.builtin.stat:
+        path: "{{ molecule_vmagent_conf_dir }}"
+      register: etcd_conf_d_before
+
+    # The precondition and the assertion in one place: if converge had created
+    # this directory, the "nothing was written" check below would be vacuous.
+    - name: Check the role left another role's directory alone
+      ansible.builtin.assert:
+        that:
+          - not etcd_conf_d_before.stat.exists
+        fail_msg: >-
+          the role created {{ molecule_vmagent_conf_dir }}, which the vmagent
+          role owns: {{ etcd_conf_d_before.stat }}
+
+    # file_type: file, not any - this host's own compose dir is named
+    # etcd-moved, so `any` would match that directory and fail for the wrong
+    # reason. The four vmagent drops are all plain files named etcd-<basename>.*
+    - name: Look for any vmagent material the role might have written elsewhere
+      ansible.builtin.find:
+        paths: "{{ dir.ansible }}"
+        patterns: "etcd-*"
+        recurse: true
+        file_type: file
+      register: etcd_stray_vmagent_files
+
+    # A missing conf.d must mean the drop is skipped, not redirected somewhere
+    # else - the client key in particular has no business on disk if nothing
+    # scrapes with it.
+    - name: Check no scrape config or client key was written at all
+      ansible.builtin.assert:
+        that:
+          - etcd_stray_vmagent_files.files | length == 0
+        fail_msg: >-
+          the role wrote {{ etcd_stray_vmagent_files.files | map(attribute='path') | list }}
+          with no vmagent conf.d present
+
+    # This is the documented recovery path: the vmagent role gets deployed after
+    # etcd, and the next run of this role fills its conf.d in.
+    - name: Create the vmagent conf.d, as deploying vmagent later would
+      ansible.builtin.file:
+        path: "{{ molecule_vmagent_conf_dir }}"
+        state: directory
+        mode: "0755"
+
+    # not community.docker.*: those modules need the docker SDK for python, and
+    # roles/docker installs only the cli and the compose plugin
+    - name: Create the external network the role will attach to
+      ansible.builtin.command: "docker network create {{ molecule_external_network }}"
+      register: etcd_network_create
+      changed_when: etcd_network_create.rc == 0
+      failed_when: >-
+        etcd_network_create.rc != 0 and
+        'already exists' not in etcd_network_create.stderr
+
+    # combine rather than a second literal dict: the whole point of the re-run
+    # is that only this one key differs from what converge used, and a
+    # hand-copied dict could drift and hide that
+    - name: Build the etcd vars attached to the shared network
+      ansible.builtin.set_fact:
+        etcd_on_net: "{{ etcd | combine({'networks': [molecule_external_network]}) }}"
+
+    - name: Re-run the role attached to the shared network
+      ansible.builtin.include_role:
+        name: alesharik.baseinfra.etcd
+      vars:
+        etcd: "{{ etcd_on_net }}"

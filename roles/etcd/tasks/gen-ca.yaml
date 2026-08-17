@@ -1,8 +1,12 @@
+---
+# 0700, not 0644: this directory holds the CA private key, and a directory
+# without its execute bit cannot be written into at all - creating ca.key inside
+# a 0644 directory fails with EACCES for the unprivileged runner.
 - name: Create local certs dir
   ansible.builtin.file:
     path: "{{ etcd.directories.ca }}"
     state: directory
-    mode: "644"
+    mode: "0700"
   delegate_to: 127.0.0.1
   become: false
   run_once: true
@@ -11,6 +15,7 @@
 - name: Create CA private key
   community.crypto.openssl_privatekey:
     path: "{{ etcd.directories.ca }}/ca.key"
+    mode: "0600"
   delegate_to: 127.0.0.1
   become: false
   tags: etcd
@@ -35,16 +40,18 @@
   tags: etcd
   run_once: true
   become: false
-  register: ca_csr
+  register: etcd_ca_csr
+  changed_when: false
   vars:
     ansible_remote_tmp: "{{ playbook_dir }}/tmp"
 
 - name: Create self-signed CA certificate from CSR
   community.crypto.x509_certificate:
     path: "{{ etcd.directories.ca }}/ca.pem"
-    csr_content: "{{ ca_csr.csr }}"
+    csr_content: "{{ etcd_ca_csr.csr }}"
     privatekey_path: "{{ etcd.directories.ca }}/ca.key"
     provider: selfsigned
+    mode: "0644"
   delegate_to: 127.0.0.1
   tags: etcd
   become: false
@@ -53,11 +60,11 @@
     ansible_remote_tmp: "{{ playbook_dir }}/tmp"
 
 - name: Write CA
-  copy:
+  ansible.builtin.copy:
     src: "{{ etcd.directories.ca }}/ca.pem"
     dest: "{{ etcd.directories.ansible }}/config/ca.pem"
     owner: '10010'
-    mode: "500"
+    mode: "0444"
   tags: etcd
   notify:
     - restart etcd

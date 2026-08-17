@@ -1,16 +1,45 @@
+---
 - name: Create server private key
   tags: etcd
   community.crypto.openssl_privatekey:
     path: "{{ etcd.directories.ansible }}/config/server.key"
     owner: '10010'
-    mode: "500"
+    mode: "0400"
 
 - name: Create certificate signing request (CSR) for new certificate
   tags: etcd
   community.crypto.openssl_csr_pipe:
     privatekey_path: "{{ etcd.directories.ansible }}/config/server.key"
+    # A certificate with an EMPTY subject is only valid when its SAN extension
+    # is marked critical (RFC 5280 4.2.1.6). Go's TLS does not enforce that, so
+    # etcd itself accepts a subject-less certificate and the cluster comes up -
+    # but strict verifiers do, and any other client fails the handshake with
+    # "Subject empty and Subject Alt Name extension not critical". Naming the
+    # member is the fix, and it makes the certificate identifiable besides.
+    common_name: "{{ ansible_hostname }}"
+    organization_name: "{{ etcd.pki.organization }}"
+    organizational_unit_name: "{{ etcd.pki.organizational_unit }}"
+    # the SANs are the listen addresses below and nothing else
+    use_common_name_for_san: false
     subject_alt_name: "{{ ['IP:'] | product(etcd.listen_ips) | map('join') | list }}"
-  register: csr
+  register: etcd_server_csr
+  # A _pipe module writes nothing - it hands the CSR back as data for the
+  # signing step - so it has no state to have changed. The certificate below is
+  # what carries a real change, and it compares against the file on disk.
+  changed_when: false
+
+# Handed to x509_certificate_pipe below as `content`. Without it the module has
+# nothing to compare against and mints a fresh certificate on every run, which
+# rewrites server.cer and bounces the cluster through `restart etcd` - the role
+# would never be idempotent. Missing file is the first-run case, hence
+# failed_when: false rather than a stat.
+- name: Read the existing server certificate
+  ansible.builtin.slurp:
+    src: "{{ etcd.directories.ansible }}/config/server.cer"
+  register: etcd_server_certificate_existing
+  failed_when: false
+  changed_when: false
+  tags: etcd
 
 - name: Sign certificate with our CA
   tags: etcd
@@ -19,20 +48,23 @@
   vars:
     ansible_remote_tmp: "{{ playbook_dir }}/tmp"
   community.crypto.x509_certificate_pipe:
-    csr_content: "{{ csr.csr }}"
+    content: >-
+      {{ (etcd_server_certificate_existing.content | b64decode)
+         if etcd_server_certificate_existing.content is defined else omit }}
+    csr_content: "{{ etcd_server_csr.csr }}"
     provider: ownca
     ownca_path: "{{ etcd.directories.ca }}/ca.pem"
     ownca_privatekey_path: "{{ etcd.directories.ca }}/ca.key"
     ownca_not_after: +365d  # valid for one year
     ownca_not_before: "-1d"  # valid since yesterday
-  register: certificate
+  register: etcd_server_certificate
 
 - name: Write certificate
-  copy:
+  ansible.builtin.copy:
     dest: "{{ etcd.directories.ansible }}/config/server.cer"
-    content: "{{ certificate.certificate }}"
+    content: "{{ etcd_server_certificate.certificate }}"
     owner: '10010'
-    mode: "500"
+    mode: "0444"
   tags: etcd
   notify:
     - restart etcd

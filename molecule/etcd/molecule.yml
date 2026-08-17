@@ -1,0 +1,213 @@
+---
+# Two platforms forming ONE cluster, not two independent instances. That is the
+# whole point of this scenario: `ETCD_INITIAL_CLUSTER` is built by extracting
+# every quorum member's `peer_ip` out of `hostvars`, and the peer certificates
+# are issued by a single CA on the controller for each member's own address.
+# Nothing about either mechanism is exercised by a one-member cluster - a write
+# on node-1 that reads back on node-2 is, because a 2-member etcd only commits
+# with both members healthy over mutually authenticated peer TLS.
+#
+# The two hosts also split the option matrix:
+#   etcd-node-1  default directories, vmagent conf.d pre-created by
+#                prepare_tasks.yml, so the scrape config and the client
+#                certificate are written on the first converge
+#   etcd-node-2  relocated directories, `env` entries, and vmagent conf.d
+#                deliberately ABSENT at converge - that covers the skip guard
+#                for a directory the vmagent role owns. side_effect.yml then
+#                creates it and re-runs the role, which is the documented
+#                "deploy vmagent later and re-run" path.
+#
+# The shared converge.yml includes the role by scenario name, so a second
+# scenario is not an option - a scenario is a role name here. `networks` also
+# has to move to side_effect.yml: an external network cannot exist before
+# converge has run the role's docker dependency.
+platforms:
+  - name: etcd-node-1
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+    # This scenario runs docker inside the instance, and overlayfs refuses to
+    # stack on overlayfs: without a real filesystem under the image store, the
+    # inner daemon fails every pull with "invalid argument" on the overlay
+    # mount. Anonymous volumes are host-backed, which is enough. Docker >= 25
+    # keeps snapshots in containerd, older ones in /var/lib/docker - mount both
+    # so this does not depend on which one the instance installs.
+    volumes:
+      - /var/lib/docker
+      - /var/lib/containerd
+    # anonymous volumes are kept by default; nothing here should outlive destroy
+    keep_volumes: false
+  - name: etcd-node-2
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+    volumes:
+      - /var/lib/docker
+      - /var/lib/containerd
+    keep_volumes: false
+
+provisioner:
+  inventory:
+    group_vars:
+      all:
+        # etcd's meta pulls in bootstrap, so this scenario has to satisfy it.
+        # `bootstrap` is a plain dict override - it replaces the role defaults
+        # wholesale, so every key the role reads has to be listed here.
+        bootstrap:
+          # would reach the host kernel through the privileged container
+          disable_algif_aead: false
+          disable_transparent_huge_pages: false
+          # nothing under test here needs users or sudoers
+          setup_users: false
+          setup_sudo: false
+          # ETCD_NAME is ansible_hostname and the quorum list is matched against
+          # it by name, so the instances must actually carry their names
+          set_hostname: true
+          limits:
+            enabled: true
+            nofile:
+              soft: 8192
+              hard: 1048576
+          swap:
+            enabled: false
+            # NOT /swapfile: /proc/swaps is not namespaced, so teardown-swap.yaml
+            # would match the docker *host's* active swap and swapoff a file this
+            # container never activated. See molecule/bootstrap/molecule.yml.
+            file: /molecule_swapfile
+            size_mb: 4096
+        dir:
+          data: /data
+          ansible: /data/ansible
+
+        # Written on node-1, read back on node-2. A 2-member cluster cannot
+        # commit a write without both members, so this single pair is the
+        # assertion that the cluster formed over peer TLS at all.
+        molecule_kv_key: /molecule/etcd/replicated
+        molecule_kv_value: written-by-etcd-node-1
+        # Created by side_effect.yml on node-2, once docker exists.
+        molecule_external_network: molecule-etcd
+        # Where both hosts point `directories.vmagent_conf`. Owned by the vmagent
+        # role, which is not in this play - node-1 has it pre-created by
+        # prepare_tasks.yml, node-2 does not until side_effect.yml.
+        molecule_vmagent_conf_dir: /data/ansible/vmagent/config/conf.d
+
+    # expected_* is what tests.yml asserts against, spelled out per host rather
+    # than derived from `etcd`. Deriving the expectation from the same var the
+    # templates read would let a broken template agree with a broken test.
+    host_vars:
+      etcd-node-1:
+        etcd:
+          version: v3.6.12
+          image: "quay.io/coreos/etcd"
+          # The instance's own address on the molecule network. Both members
+          # publish their peer port on it and dial each other there, so this is
+          # also what the peer certificate is issued for.
+          peer_ip: "{{ ansible_default_ipv4.address }}"
+          # 127.0.0.1 deliberately left out: it would end up in
+          # ETCD_ADVERTISE_CLIENT_URLS, where every member would advertise a
+          # loopback endpoint that resolves to a different etcd on each host.
+          listen_ips:
+            - "{{ ansible_default_ipv4.address }}"
+          # the empty branch of the networks block; node-2 covers the other one
+          networks: []
+          env: []
+          quorum:
+            - etcd-node-1
+            - etcd-node-2
+          vmagent: true
+          directories:
+            ansible: "{{ dir.ansible }}/etcd"
+            data: "{{ dir.data }}/etcd"
+            # NOT the role default of "{{ playbook_dir }}/certs/etcd" - that is
+            # molecule/certs/ inside this repo's working tree. The CA is shared
+            # by both members, so it has to be one path on the controller.
+            ca: "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/certs/etcd"
+            # Same value the role's own default resolves to when the vmagent
+            # role is absent from the play, spelled out because a wholesale
+            # override has to list every key the role reads.
+            vmagent_conf: "{{ dir.ansible }}/vmagent/config/conf.d"
+          pki:
+            organization: ETCD
+            organizational_unit: Etcd
+
+        expected_compose_dir: /data/ansible/etcd
+        expected_config_dir: /data/ansible/etcd/config
+        expected_data_dir: /data/etcd
+        # compose names the project after project_src, which is dir.ansible/etcd
+        # on this host
+        expected_container: etcd-etcd-1
+        expected_member_name: etcd-node-1
+        expected_mounts:
+          - /data/etcd:/etcd-data
+          - /data/ansible/etcd/config:/etcd-config
+        # the image the role already pulled, reused for etcdctl so the test
+        # costs no extra pull
+        expected_image: quay.io/coreos/etcd:v3.6.12
+        # basename of directories.ansible, which is what the role suffixes every
+        # vmagent filename and the scrape job name with
+        expected_vmagent_prefix: etcd-etcd
+        expected_vmagent_job: docker-etcd-etcd
+        expected_instance_label: etcd-node-1-etcd
+        # this host attaches to no external network at all
+        expected_networks_absent: true
+
+      etcd-node-2:
+        etcd:
+          version: v3.6.12
+          image: "quay.io/coreos/etcd"
+          peer_ip: "{{ ansible_default_ipv4.address }}"
+          listen_ips:
+            - "{{ ansible_default_ipv4.address }}"
+          # flipped to [molecule-etcd] by side_effect.yml, once docker exists
+          # and the network can be created
+          networks: []
+          # Operator environment. A list appended to a compose `environment:`
+          # mapping does not parse as YAML at all, so any non-empty value here
+          # is enough to catch that regression.
+          env:
+            - "ETCD_MAX_TXN_OPS=256"
+            - "ETCD_LOG_LEVEL=debug"
+          quorum:
+            - etcd-node-1
+            - etcd-node-2
+          # true, but molecule_vmagent_conf_dir does not exist on this host at
+          # converge - the role must skip both drops rather than fail or create
+          # a directory the vmagent role owns
+          vmagent: true
+          directories:
+            ansible: "{{ dir.ansible }}/etcd-moved"
+            data: "{{ dir.data }}/etcd-moved"
+            ca: "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/certs/etcd"
+            vmagent_conf: "{{ dir.ansible }}/vmagent/config/conf.d"
+          pki:
+            organization: ETCD
+            organizational_unit: Etcd
+
+        expected_compose_dir: /data/ansible/etcd-moved
+        expected_config_dir: /data/ansible/etcd-moved/config
+        expected_data_dir: /data/etcd-moved
+        # directories.ansible is relocated here, and compose names the project
+        # after it - so these names also prove the move actually took effect
+        expected_container: etcd-moved-etcd-1
+        expected_member_name: etcd-node-2
+        expected_mounts:
+          - /data/etcd-moved:/etcd-data
+          - /data/ansible/etcd-moved/config:/etcd-config
+        expected_image: quay.io/coreos/etcd:v3.6.12
+        expected_vmagent_prefix: etcd-etcd-moved
+        expected_vmagent_job: docker-etcd-etcd-moved
+        expected_instance_label: etcd-node-2-etcd-moved
+        expected_networks_absent: false
+        expected_network: molecule-etcd
+        # spelled out rather than read back from etcd.env
+        expected_env_extra:
+          - "ETCD_MAX_TXN_OPS=256"
+          - "ETCD_LOG_LEVEL=debug"
+        # the default paths this host must no longer touch
+        unexpected_paths:
+          - /data/ansible/etcd
+          - /data/etcd

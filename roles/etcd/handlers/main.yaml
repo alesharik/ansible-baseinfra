@@ -1,6 +1,6 @@
 ---
 - name: restart etcd
   community.docker.docker_compose_v2:
-    project_src: "{{ dir.ansible }}/etcd"
+    project_src: "{{ etcd.directories.ansible }}"
     state: restarted
   tags: etcd

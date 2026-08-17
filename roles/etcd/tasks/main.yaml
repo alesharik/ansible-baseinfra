@@ -1,42 +1,59 @@
 ---
+- name: Install the crypto library the key generation needs
+  ansible.builtin.apt:
+    name: python3-cryptography
+    state: present
+    update_cache: true
+  tags: etcd
+
 - name: Create compose dir
   ansible.builtin.file:
     path: "{{ etcd.directories.ansible }}"
     state: directory
-    mode: "755"
+    mode: "0755"
   tags: etcd
+
 - name: Create config dir
   ansible.builtin.file:
     path: "{{ etcd.directories.ansible }}/config"
     state: directory
-    mode: "755"
+    mode: "0755"
   tags: etcd
+
 - name: Create data dir
   ansible.builtin.file:
     path: "{{ etcd.directories.data }}"
     state: directory
-    mode: "700"
+    mode: "0700"
     owner: '10010'
   tags: etcd
 
 - name: Generate CA
   tags: etcd
-  include_tasks: "gen-ca.yaml"
+  ansible.builtin.include_tasks: "gen-ca.yaml"
+
 - name: Generate server keys
   tags: etcd
-  include_tasks: "gen-cert-server.yaml"
-- name: Generate server keys
+  ansible.builtin.include_tasks: "gen-cert-server.yaml"
+
+- name: Generate peer keys
   tags: etcd
-  include_tasks: "gen-cert-peer.yaml"
+  ansible.builtin.include_tasks: "gen-cert-peer.yaml"
 
 - name: Move compose files
   ansible.builtin.template:
     src: docker-compose.yml
     dest: "{{ etcd.directories.ansible }}/docker-compose.yml"
-    mode: "755"
+    mode: "0755"
   tags: etcd
   notify:
     - restart etcd
+
+- name: Pull etcd images
+  community.docker.docker_compose_v2_pull:
+    project_src: "{{ etcd.directories.ansible }}"
+    policy: missing
+  tags: etcd
 
 - name: Start etcd
   community.docker.docker_compose_v2:
@@ -44,16 +61,28 @@
     state: present
   tags: etcd
 
+- name: Check for the vmagent conf.d directory
+  ansible.builtin.stat:
+    path: "{{ etcd.directories.vmagent_conf }}"
+  register: etcd_vmagent_conf_d
+  when: "etcd.vmagent"
+  tags: etcd
+
 - name: Generate vmagent keys
   tags: etcd
-  when: "etcd.vmagent"
-  include_tasks: "gen-cert-vmagent.yaml"
+  when:
+    - etcd.vmagent
+    - etcd_vmagent_conf_d.stat.isdir | default(false)
+  ansible.builtin.include_tasks: "gen-cert-vmagent.yaml"
+
 - name: Move vmagent config
-  when: "etcd.vmagent"
+  when:
+    - etcd.vmagent
+    - etcd_vmagent_conf_d.stat.isdir | default(false)
   ansible.builtin.template:
     src: vmagent.yaml
-    dest: "{{ dir.ansible }}/vmagent/config/conf.d/etcd-{{ etcd.directories.ansible | basename }}.yml"
-    mode: "755"
+    dest: "{{ etcd.directories.vmagent_conf }}/etcd-{{ etcd.directories.ansible | basename }}.yml"
+    mode: "0444"
   tags: etcd
 
 - name: Make sure handlers are flushed immediately

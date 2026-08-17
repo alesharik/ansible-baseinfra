@@ -1,17 +1,40 @@
+---
+# These three files land in the vmagent role's conf.d and are read by the
+# vmagent container, never by etcd - so they are not chowned to etcd's uid and
+# they do not notify `restart etcd`. Rotating a scrape client's certificate is
+# no reason to bounce a cluster member.
 - name: Create vmagent private key
   tags: etcd
   community.crypto.openssl_privatekey:
     path: "{{ etcd.directories.vmagent_conf }}/etcd-{{ etcd.directories.ansible | basename }}.key"
-    owner: '10010'
-    mode: "500"
+    mode: "0400"
 
 - name: Create certificate signing request (CSR) for new certificate
   tags: etcd
   community.crypto.openssl_csr_pipe:
     privatekey_path: "{{ etcd.directories.vmagent_conf }}/etcd-{{ etcd.directories.ansible | basename }}.key"
+    # See gen-cert-server.yaml: an empty subject needs a critical SAN to be a
+    # valid certificate, so name the client instead.
+    common_name: vmagent
+    organization_name: "{{ etcd.pki.organization }}"
+    organizational_unit_name: "{{ etcd.pki.organizational_unit }}"
+    use_common_name_for_san: false
     subject_alt_name:
       - "IP:127.0.0.1"
-  register: csr
+  register: etcd_vmagent_csr
+  # See gen-cert-server.yaml: a _pipe module writes nothing, so it has no state
+  # to have changed.
+  changed_when: false
+
+# See gen-cert-server.yaml: without `content` the pipe module regenerates the
+# certificate on every run and the role never reaches idempotence.
+- name: Read the existing vmagent certificate
+  ansible.builtin.slurp:
+    src: "{{ etcd.directories.vmagent_conf }}/etcd-{{ etcd.directories.ansible | basename }}.cer"
+  register: etcd_vmagent_certificate_existing
+  failed_when: false
+  changed_when: false
+  tags: etcd
 
 - name: Sign certificate with our CA
   tags: etcd
@@ -20,30 +43,27 @@
   vars:
     ansible_remote_tmp: "{{ playbook_dir }}/tmp"
   community.crypto.x509_certificate_pipe:
-    csr_content: "{{ csr.csr }}"
+    content: >-
+      {{ (etcd_vmagent_certificate_existing.content | b64decode)
+         if etcd_vmagent_certificate_existing.content is defined else omit }}
+    csr_content: "{{ etcd_vmagent_csr.csr }}"
     provider: ownca
     ownca_path: "{{ etcd.directories.ca }}/ca.pem"
     ownca_privatekey_path: "{{ etcd.directories.ca }}/ca.key"
     ownca_not_after: +365d  # valid for one year
     ownca_not_before: "-1d"  # valid since yesterday
-  register: certificate
+  register: etcd_vmagent_certificate
 
 - name: Write certificate
-  copy:
+  ansible.builtin.copy:
     dest: "{{ etcd.directories.vmagent_conf }}/etcd-{{ etcd.directories.ansible | basename }}.cer"
-    content: "{{ certificate.certificate }}"
-    owner: '10010'
-    mode: "500"
+    content: "{{ etcd_vmagent_certificate.certificate }}"
+    mode: "0444"
   tags: etcd
-  notify:
-    - restart etcd
 
 - name: Write CA
-  copy:
+  ansible.builtin.copy:
     src: "{{ etcd.directories.ca }}/ca.pem"
     dest: "{{ etcd.directories.vmagent_conf }}/etcd-{{ etcd.directories.ansible | basename }}-ca.cer"
-    owner: '10010'
-    mode: "500"
+    mode: "0444"
   tags: etcd
-  notify:
-    - restart etcd

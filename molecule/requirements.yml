@@ -3,3 +3,5 @@ collections:
   - name: community.general
   - name: community.docker
   - name: ansible.posix
+  # etcd's PKI tasks
+  - name: community.crypto

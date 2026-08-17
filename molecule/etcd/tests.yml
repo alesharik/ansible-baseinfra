@@ -1,0 +1,424 @@
+---
+# ==========================================================================
+# Both hosts - what the role wrote to disk
+# ==========================================================================
+- name: Stat the directories the role owns
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: etcd_dirs
+  loop:
+    - "{{ expected_compose_dir }}"
+    - "{{ expected_config_dir }}"
+    - "{{ expected_data_dir }}"
+
+# The config dir is 0755 rather than 0700 on purpose: the container runs as uid
+# 10010 and has to traverse it to reach the key material it owns inside. The
+# data dir is 0700 and owned outright, because etcd writes its raft log there.
+- name: Check the directories, their modes and their ownership
+  vars:
+    compose_dir: "{{ etcd_dirs.results[0].stat }}"
+    config_dir: "{{ etcd_dirs.results[1].stat }}"
+    data_dir: "{{ etcd_dirs.results[2].stat }}"
+  ansible.builtin.assert:
+    that:
+      - compose_dir.isdir
+      - compose_dir.mode == '0755'
+      - config_dir.isdir
+      - config_dir.mode == '0755'
+      - data_dir.isdir
+      - data_dir.mode == '0700'
+      - data_dir.uid == 10010
+    fail_msg: >-
+      compose dir {{ compose_dir }}, config dir {{ config_dir }},
+      data dir {{ data_dir }}
+
+- name: Stat the key material the role generated
+  ansible.builtin.stat:
+    path: "{{ expected_config_dir }}/{{ item.name }}"
+  register: etcd_key_material
+  loop:
+    - {name: ca.pem, mode: "0444"}
+    - {name: server.key, mode: "0400"}
+    - {name: server.cer, mode: "0444"}
+    - {name: peer.key, mode: "0400"}
+    - {name: peer.cer, mode: "0444"}
+  loop_control:
+    label: "{{ item.name }}"
+
+# Modes matter twice over: the container reads these as uid 10010, so material
+# it cannot open does not fail here - it fails as a container stuck restarting.
+# And the two private keys must not be readable by anyone else.
+- name: Check every file is present, owned by the container uid and correctly moded
+  ansible.builtin.assert:
+    that:
+      - item.stat.isreg
+      - item.stat.mode == item.item.mode
+      - item.stat.uid == 10010
+    fail_msg: "{{ item.item.name }} is {{ item.stat }}"
+  loop: "{{ etcd_key_material.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Read the peer certificate this member presents to the other one
+  community.crypto.x509_certificate_info:
+    path: "{{ expected_config_dir }}/peer.cer"
+  register: etcd_peer_cert
+
+- name: Read the server certificate clients connect against
+  community.crypto.x509_certificate_info:
+    path: "{{ expected_config_dir }}/server.cer"
+  register: etcd_server_cert
+
+# The peer SAN is what the *other* member validates when it dials this one, so a
+# wrong address here is exactly the failure that leaves a cluster unable to form
+# while both containers look healthy. Both certificates must also chain to the
+# CA built from etcd.pki, not to some other issuer.
+- name: Check both certificates are issued by our CA for this member's address
+  vars:
+    expected_san: "IP:{{ ansible_default_ipv4.address }}"
+  ansible.builtin.assert:
+    that:
+      - expected_san in etcd_peer_cert.subject_alt_name
+      - expected_san in etcd_server_cert.subject_alt_name
+      - etcd_peer_cert.issuer.commonName == 'Etcd CA'
+      - etcd_peer_cert.issuer.organizationName == 'ETCD'
+      - etcd_peer_cert.issuer.organizationalUnitName == 'Etcd'
+      - etcd_server_cert.issuer.commonName == 'Etcd CA'
+      # Neither subject may be EMPTY. RFC 5280 4.2.1.6 only allows that when the
+      # SAN extension is marked critical, which these are not - Go's TLS lets it
+      # pass, so etcd would come up happily while every strict verifier refused
+      # the handshake. The scrape below is what would actually break.
+      - etcd_peer_cert.subject.commonName == expected_member_name
+      - etcd_server_cert.subject.commonName == expected_member_name
+      - etcd_peer_cert.subject.organizationName == 'ETCD'
+      - etcd_server_cert.subject.organizationName == 'ETCD'
+    fail_msg: "peer cert {{ etcd_peer_cert }}, server cert {{ etcd_server_cert }}"
+
+# ==========================================================================
+# Both hosts - the rendered compose file
+# ==========================================================================
+- name: Read the rendered compose file
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/docker-compose.yml"
+  register: etcd_compose_raw
+
+# Spelled out rather than derived from `etcd`: an expectation built from the
+# same var the template reads would agree with a broken template. The cluster
+# string is built from the two hosts' gathered facts, which is an independent
+# source from the etcd.peer_ip the template consumes.
+- name: Check the compose file starts etcd against the generated key material
+  vars:
+    compose: "{{ etcd_compose_raw.content | b64decode | from_yaml }}"
+    env: "{{ (etcd_compose_raw.content | b64decode | from_yaml).services.etcd.environment }}"
+    own_ip: "{{ ansible_default_ipv4.address }}"
+    node1_ip: "{{ hostvars['etcd-node-1'].ansible_default_ipv4.address }}"
+    node2_ip: "{{ hostvars['etcd-node-2'].ansible_default_ipv4.address }}"
+  ansible.builtin.assert:
+    that:
+      - compose.services | list == ['etcd']
+      # environment must be a LIST, not a mapping: etcd.env appends to it, and a
+      # list appended to a mapping does not parse as YAML at all
+      - env is sequence
+      - env is not mapping
+      - ('ETCD_NAME=' ~ expected_member_name) in env
+      - "'ETCD_DATA_DIR=/etcd-data' in env"
+      - ('ETCD_INITIAL_ADVERTISE_PEER_URLS=https://' ~ own_ip ~ ':2380') in env
+      - "'ETCD_LISTEN_PEER_URLS=https://0.0.0.0:2380' in env"
+      - ('ETCD_ADVERTISE_CLIENT_URLS=https://' ~ own_ip ~ ':2379') in env
+      - "'ETCD_LISTEN_CLIENT_URLS=https://0.0.0.0:2379' in env"
+      # every member, by name, at the address that member advertises
+      - >-
+        ('ETCD_INITIAL_CLUSTER=etcd-node-1=https://' ~ node1_ip ~ ':2380,'
+         ~ 'etcd-node-2=https://' ~ node2_ip ~ ':2380') in env
+      # both directions of TLS are mutually authenticated
+      - "'ETCD_PEER_CLIENT_CERT_AUTH=true' in env"
+      - "'ETCD_CLIENT_CERT_AUTH=true' in env"
+      - "'ETCD_PEER_TRUSTED_CA_FILE=/etcd-config/ca.pem' in env"
+      - "'ETCD_PEER_CERT_FILE=/etcd-config/peer.cer' in env"
+      - "'ETCD_PEER_KEY_FILE=/etcd-config/peer.key' in env"
+      - "'ETCD_TRUSTED_CA_FILE=/etcd-config/ca.pem' in env"
+      - "'ETCD_CERT_FILE=/etcd-config/server.cer' in env"
+      - "'ETCD_KEY_FILE=/etcd-config/server.key' in env"
+      # the peer port on the advertised address, the client port on listen_ips
+      - compose.services.etcd.ports == [own_ip ~ ':2380:2380', own_ip ~ ':2379:2379']
+      - (expected_data_dir ~ ':/etcd-data') in compose.services.etcd.volumes
+      # read-only: nothing in the cluster should be able to rewrite its own keys
+      - (expected_config_dir ~ ':/etcd-config:ro') in compose.services.etcd.volumes
+      - compose.services.etcd.user == '10010'
+      # key by key, and the port through `string`: compose YAML parses it as an
+      # integer, while the label docker ends up carrying is text. 2379 is the
+      # client port - etcd serves /metrics there, no separate metrics listener
+      # is configured.
+      - compose.services.etcd.labels['prometheus.io.port'] | string == '2379'
+      - compose.services.etcd.labels['prometheus.io.instance'] == expected_instance_label
+    fail_msg: "rendered compose is {{ compose }}"
+
+# ==========================================================================
+# Both hosts - what is actually running
+# ==========================================================================
+- name: List the running containers
+  ansible.builtin.command: docker ps --format '{% raw %}{{.Names}}{% endraw %}'
+  register: etcd_ps
+  changed_when: false
+
+- name: Check this member's container is running
+  ansible.builtin.assert:
+    that:
+      - expected_container in etcd_ps.stdout_lines
+    fail_msg: "containers present: {{ etcd_ps.stdout_lines }}"
+
+- name: Inspect the member container
+  ansible.builtin.command: "docker inspect {{ expected_container }}"
+  register: etcd_inspect
+  changed_when: false
+
+# HostConfig.Binds carries a :rw or :ro suffix that a host:container pair does
+# not, so strip it before comparing.
+- name: Check the data dir and the config dir are the mounts etcd actually got
+  vars:
+    binds: >-
+      {{ (etcd_inspect.stdout | from_json)[0].HostConfig.Binds
+         | map('regex_replace', ':(rw|ro)$', '') | list }}
+  ansible.builtin.assert:
+    that:
+      - binds | sort == expected_mounts | sort
+    fail_msg: "container is bound to {{ binds }}"
+
+- name: Check docker published both ports on the advertised address
+  vars:
+    bindings: "{{ (etcd_inspect.stdout | from_json)[0].NetworkSettings.Ports }}"
+    own_ip: "{{ ansible_default_ipv4.address }}"
+  ansible.builtin.assert:
+    that:
+      - bindings['2380/tcp'][0].HostIp == own_ip
+      - bindings['2380/tcp'][0].HostPort == '2380'
+      - bindings['2379/tcp'][0].HostIp == own_ip
+      - bindings['2379/tcp'][0].HostPort == '2379'
+    fail_msg: "container published {{ bindings }}"
+
+# ==========================================================================
+# Both hosts - the vmagent drop. node-1 got it at converge; node-2 only after
+# side_effect.yml created the conf.d the role refuses to create itself.
+# ==========================================================================
+- name: Stat the files the role dropped into the vmagent conf.d
+  ansible.builtin.stat:
+    path: "{{ molecule_vmagent_conf_dir }}/{{ item.name }}"
+  register: etcd_vmagent_files
+  loop:
+    - {name: "{{ expected_vmagent_prefix }}.yml", mode: "0444"}
+    - {name: "{{ expected_vmagent_prefix }}.cer", mode: "0444"}
+    - {name: "{{ expected_vmagent_prefix }}-ca.cer", mode: "0444"}
+    - {name: "{{ expected_vmagent_prefix }}.key", mode: "0400"}
+  loop_control:
+    label: "{{ item.name }}"
+
+# uid 0, not 10010: these live in the vmagent role's directory and are read by
+# the vmagent container, never by etcd. Chowning them to etcd's container uid
+# would be a guess about a user this role does not own.
+- name: Check the scrape config and the client certificate landed correctly
+  ansible.builtin.assert:
+    that:
+      - item.stat.isreg
+      - item.stat.mode == item.item.mode
+      - item.stat.uid == 0
+    fail_msg: "{{ item.item.name }} is {{ item.stat }}"
+  loop: "{{ etcd_vmagent_files.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Read the rendered scrape config
+  ansible.builtin.slurp:
+    src: "{{ molecule_vmagent_conf_dir }}/{{ expected_vmagent_prefix }}.yml"
+  register: etcd_scrape_raw
+
+- name: Check the scrape config points vmagent at this member over mTLS
+  vars:
+    scrape: "{{ (etcd_scrape_raw.content | b64decode | from_yaml)[0] }}"
+    conf_d: /etc/vmagent/conf.d
+  ansible.builtin.assert:
+    that:
+      - scrape.job_name == expected_vmagent_job
+      - scrape.metrics_path == '/metrics'
+      # container-side paths, which is where vmagent bind-mounts its conf.d -
+      # they must not follow the controller-side directory
+      - scrape.tls_config.cert_file == conf_d ~ '/' ~ expected_vmagent_prefix ~ '.cer'
+      - scrape.tls_config.key_file == conf_d ~ '/' ~ expected_vmagent_prefix ~ '.key'
+      - scrape.tls_config.ca_file == conf_d ~ '/' ~ expected_vmagent_prefix ~ '-ca.cer'
+    fail_msg: "rendered scrape config is {{ scrape }}"
+
+# ==========================================================================
+# Both hosts - the cluster itself
+#
+# Every etcdctl call below authenticates with the client certificate the role
+# generated for vmagent. That is deliberate: it is the only client credential
+# the role issues, so a successful call is also the assertion that it passes
+# etcd's client-cert-auth rather than merely existing on disk.
+# ==========================================================================
+- name: Build the etcdctl command this host talks to its own member with
+  ansible.builtin.set_fact:
+    etcd_ctl: >-
+      docker run --rm --network host --user 0
+      -v {{ molecule_vmagent_conf_dir }}:/certs:ro
+      {{ expected_image }} etcdctl
+      --endpoints=https://{{ ansible_default_ipv4.address }}:2379
+      --cacert=/certs/{{ expected_vmagent_prefix }}-ca.cer
+      --cert=/certs/{{ expected_vmagent_prefix }}.cer
+      --key=/certs/{{ expected_vmagent_prefix }}.key
+
+# Retried: converge starts the two members in parallel and side_effect.yml
+# recreates node-2 onto a new network, so the cluster may still be settling.
+# A member that has not started yet is listed without a name, which is why the
+# condition counts named members rather than entries.
+- name: Ask this member for the cluster membership
+  ansible.builtin.command: "{{ etcd_ctl }} member list -w json"
+  register: etcd_member_list
+  changed_when: false
+  retries: 30
+  delay: 5
+  until:
+    - etcd_member_list.rc == 0
+    - (etcd_member_list.stdout | from_json).members | selectattr('name', 'defined') | list | length == 2
+
+- name: Check both members are known to this one, at the right peer addresses
+  vars:
+    members: "{{ (etcd_member_list.stdout | from_json).members }}"
+    node1_ip: "{{ hostvars['etcd-node-1'].ansible_default_ipv4.address }}"
+    node2_ip: "{{ hostvars['etcd-node-2'].ansible_default_ipv4.address }}"
+  ansible.builtin.assert:
+    that:
+      - members | map(attribute='name') | sort == ['etcd-node-1', 'etcd-node-2']
+      - >-
+        members | selectattr('name', 'eq', 'etcd-node-1') | map(attribute='peerURLs')
+        | first == ['https://' ~ node1_ip ~ ':2380']
+      - >-
+        members | selectattr('name', 'eq', 'etcd-node-2') | map(attribute='peerURLs')
+        | first == ['https://' ~ node2_ip ~ ':2380']
+    fail_msg: "this member sees {{ members }}"
+
+# The real proof. A 2-member etcd needs both members to commit anything, so a
+# write here that reads back on the other host means the two containers
+# authenticated each other over peer TLS, agreed on a leader and replicated the
+# raft log. Nothing about that is observable from a single-node cluster.
+- name: Write a key on node-1
+  ansible.builtin.command: "{{ etcd_ctl }} put {{ molecule_kv_key }} {{ molecule_kv_value }}"
+  register: etcd_put
+  changed_when: true
+  retries: 12
+  delay: 5
+  until: etcd_put.rc == 0
+  when: inventory_hostname == 'etcd-node-1'
+
+- name: Read that key back on node-2
+  ansible.builtin.command: "{{ etcd_ctl }} get {{ molecule_kv_key }} --print-value-only"
+  register: etcd_get
+  changed_when: false
+  retries: 12
+  delay: 5
+  until:
+    - etcd_get.rc == 0
+    - molecule_kv_value in etcd_get.stdout
+  when: inventory_hostname == 'etcd-node-2'
+
+- name: Check the value replicated across the cluster
+  ansible.builtin.assert:
+    that:
+      - etcd_get.stdout_lines | first == molecule_kv_value
+    fail_msg: "node-2 read back {{ etcd_get.stdout }}"
+  when: inventory_hostname == 'etcd-node-2'
+
+# Scraped exactly the way vmagent would: same certificate, same port, over
+# HTTPS with client-cert auth. This is also what pins the metrics port - etcd
+# serves /metrics on the client port, and no separate metrics listener exists.
+- name: Scrape this member's metrics with the client certificate the role issued
+  ansible.builtin.uri:
+    url: "https://{{ ansible_default_ipv4.address }}:2379/metrics"
+    client_cert: "{{ molecule_vmagent_conf_dir }}/{{ expected_vmagent_prefix }}.cer"
+    client_key: "{{ molecule_vmagent_conf_dir }}/{{ expected_vmagent_prefix }}.key"
+    ca_path: "{{ molecule_vmagent_conf_dir }}/{{ expected_vmagent_prefix }}-ca.cer"
+    return_content: true
+  register: etcd_metrics
+  retries: 12
+  delay: 5
+  until:
+    - etcd_metrics.status == 200
+    - "'etcd_server_has_leader 1' in etcd_metrics.content"
+
+- name: Check the member reports a leader on its own metrics endpoint
+  ansible.builtin.assert:
+    that:
+      - "'etcd_server_has_leader 1' in etcd_metrics.content"
+    fail_msg: "metrics did not show a leader"
+
+# ==========================================================================
+# etcd-node-1 - default directories, no external network
+# ==========================================================================
+- name: Check no network block was rendered for a host that asked for none
+  vars:
+    compose: "{{ etcd_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - compose.networks is not defined
+      - compose.services.etcd.networks is not defined
+      # the label only exists to tell vmagent which network to scrape over
+      - "'prometheus.io.network' not in compose.services.etcd.labels"
+    fail_msg: "rendered compose is {{ compose }}"
+  when: expected_networks_absent
+
+# ==========================================================================
+# etcd-node-2 - relocated directories, operator env, external network
+# ==========================================================================
+- name: Check the external network is declared and attached
+  vars:
+    compose: "{{ etcd_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      # declared external, so the role never creates a network it does not own
+      - compose.networks[expected_network].external
+      - compose.networks[expected_network].name == expected_network
+      - compose.services.etcd.networks == [expected_network]
+      - compose.services.etcd.labels['prometheus.io.network'] == expected_network
+    fail_msg: "rendered compose is {{ compose }}"
+  when: not expected_networks_absent
+
+- name: Check the container really joined that network
+  vars:
+    networks: "{{ (etcd_inspect.stdout | from_json)[0].NetworkSettings.Networks | list }}"
+  ansible.builtin.assert:
+    that:
+      - expected_network in networks
+    fail_msg: "container is attached to {{ networks }}"
+  when: not expected_networks_absent
+
+# Read off the running container, not the compose file: this is what proves the
+# operator entries survived all the way into the process environment rather than
+# just being written to a file that docker then refused to parse.
+- name: Check the operator env reached the running container
+  vars:
+    container_env: "{{ (etcd_inspect.stdout | from_json)[0].Config.Env }}"
+  ansible.builtin.assert:
+    that:
+      - expected_env_extra | difference(container_env) | length == 0
+      # the role's own entries are still there alongside them
+      - ('ETCD_NAME=' ~ expected_member_name) in container_env
+      - "'ETCD_AUTO_COMPACTION_RETENTION=1' in container_env"
+    fail_msg: "container env is {{ container_env }}"
+  when: expected_env_extra is defined
+
+- name: Stat the paths this host relocated away from
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: etcd_unexpected
+  # default([]) because a loop is expanded before `when` is consulted, and this
+  # var only exists on the host that relocated anything
+  loop: "{{ unexpected_paths | default([]) }}"
+  when: unexpected_paths is defined
+
+- name: Check the default paths were left alone
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists
+    fail_msg: "{{ item.item }} exists, so directories did not move"
+  loop: "{{ etcd_unexpected.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: unexpected_paths is defined

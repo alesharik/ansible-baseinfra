@@ -1,0 +1,30 @@
+---
+# node-1 only. The role drops a scrape config and a client certificate into the
+# vmagent role's conf.d, but never creates that directory - so on this host it
+# has to exist before converge for the vmagent branch to be covered at all.
+# node-2 deliberately does not get one: that is where the skip guard is tested,
+# and side_effect.yml creates it there afterwards.
+- name: Create the vmagent conf.d the role drops its scrape config into
+  ansible.builtin.file:
+    path: "{{ molecule_vmagent_conf_dir }}"
+    state: directory
+    mode: "0755"
+  when: inventory_hostname == 'etcd-node-1'
+
+# Guards the negative half of this scenario. If this directory ever appeared on
+# node-2 - a stale volume, a changed default - the "nothing was written" checks
+# in side_effect.yml would pass for the wrong reason.
+- name: Check node-2 starts without a vmagent conf.d
+  ansible.builtin.stat:
+    path: "{{ molecule_vmagent_conf_dir }}"
+  register: etcd_prepare_conf_d
+  when: inventory_hostname == 'etcd-node-2'
+
+- name: Fail loudly if node-2 already has one
+  ansible.builtin.assert:
+    that:
+      - not etcd_prepare_conf_d.stat.exists
+    fail_msg: >-
+      {{ molecule_vmagent_conf_dir }} already exists on this host, so the skip
+      guard cannot be observed: {{ etcd_prepare_conf_d.stat }}
+  when: inventory_hostname == 'etcd-node-2'

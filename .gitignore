@@ -3,3 +3,6 @@
 /cache
 CLAUDE.md
 /.ansible
+# roles/etcd delegates its CA tasks to the controller with
+# ansible_remote_tmp: "{{ playbook_dir }}/tmp", which lands here under molecule
+/molecule/tmp
