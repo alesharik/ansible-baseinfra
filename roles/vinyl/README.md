@@ -221,9 +221,9 @@ collection's prometheus autodiscovery. The port is not published: the scrape
 comes from vmagent over the docker network.
 
 The image's root path serves an HTML landing page rather than metrics, so the
-`prometheus.io.path` label is `/metrics`. Note the exporter tag pins a varnish
-version too, and `1.8.1-varnish-9.0.1` is published **arm64 only** — pick a tag
-that carries the architecture you deploy on.
+`prometheus.io.path` label is `/metrics`. The `prometheus.io.instance` label is
+the basename of `directories.ansible` — the same value the connector carries,
+since the two containers are one varnish instance as far as scraping goes.
 
 #### Connector
 The connector exports its own metrics whenever it runs. There is no sidecar and

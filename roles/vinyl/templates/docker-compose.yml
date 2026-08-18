@@ -35,9 +35,9 @@ services:
     environment:
       VSM_NOPID: 1
     labels:
-      # /metrics, not / - the exporter serves an HTML landing page at the root
       prometheus.io.path: /metrics
       prometheus.io.port: 9131
+      prometheus.io.instance: "{{ vinyl.directories.ansible | basename }}"
     depends_on:
       - vinyl
 {% if vinyl.networks is defined and vinyl.networks|length > 0 %}

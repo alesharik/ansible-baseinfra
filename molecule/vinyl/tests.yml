@@ -239,6 +239,7 @@
       - exporter.environment.VSM_NOPID == 1
       - exporter.labels['prometheus.io.path'] == expected_exporter_labels['prometheus.io.path']
       - exporter.labels['prometheus.io.port'] | string == expected_exporter_labels['prometheus.io.port']
+      - exporter.labels['prometheus.io.instance'] == expected_exporter_labels['prometheus.io.instance']
       - "'vinyl' in exporter.depends_on"
     fail_msg: "exporter service is {{ exporter }}"
   when: inventory_hostname == 'vinyl-connector'

@@ -152,6 +152,8 @@ provisioner:
         expected_exporter_labels:
           prometheus.io.path: /metrics
           prometheus.io.port: "9131"
+          # basename of directories.ansible on this host, same as the connector's
+          prometheus.io.instance: vinyl-moved
         # haproxy's built-in exporter, on the same listener as the healthcheck -
         # there is no sidecar and no flag, so these labels are expected on every
         # connector the role renders
