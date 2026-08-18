@@ -1,0 +1,69 @@
+---
+# pulsar depends on bootstrap and docker, not on zookeeper or bookkeeper:
+# external ones are the ordinary case, and a role that deployed them would take
+# that choice away. So the scenario brings its own here, before converge - which
+# also means the role under test runs with both of their defaults out of scope,
+# exactly as it does in any play that does not list all three roles, and its
+# `default()` fallbacks are what actually resolve.
+- name: Gather facts
+  ansible.builtin.setup:
+
+- name: Deploy the zookeeper the cluster keeps its metadata in
+  ansible.builtin.include_role:
+    name: alesharik.baseinfra.zookeeper
+
+# The precondition every assertion after converge rests on. Without it a
+# zookeeper that never came up would show as a broker hanging on its metadata
+# store, which says nothing about the role under test. zk_server_state rather
+# than ruok: on the two cluster members this is also the assertion that the
+# ensemble formed, and neither the bookie nor the broker can write metadata to a
+# member that is still LOOKING.
+- name: Check zookeeper is up and has settled into a state
+  ansible.builtin.command: >-
+    timeout 60 docker run --rm --network {{ zookeeper.network }} --entrypoint sh
+    {{ zookeeper.image }}:{{ zookeeper.version }}
+    -c 'echo mntr | nc -w 2 zookeeper {{ zookeeper.client_port }}'
+  register: pulsar_prepare_mntr
+  changed_when: false
+  retries: 30
+  delay: 5
+  until:
+    - pulsar_prepare_mntr.rc == 0
+    - pulsar_prepare_mntr.stdout is search('zk_server_state\s+(leader|follower|standalone)')
+
+- name: Deploy the bookkeeper the topics are stored in
+  ansible.builtin.include_role:
+    name: alesharik.baseinfra.bookkeeper
+
+# Same reason. A broker whose bookies are missing starts, holds its ports open
+# and fails every topic creation - so without this check a broken bookkeeper
+# would surface as an obscure failure in the produce test rather than here.
+# is_ready is the bookie's own answer to "would I take a write", which is what
+# the broker is about to need.
+- name: Check the bookie is up and would take a write
+  ansible.builtin.command: >-
+    timeout 60 docker run --rm --network {{ bookkeeper.network }} --entrypoint wget
+    {{ bookkeeper.image }}:{{ bookkeeper.version }}
+    -qO- http://bookkeeper:{{ bookkeeper.http.port }}/api/v1/bookie/is_ready
+  register: pulsar_prepare_bookie
+  changed_when: false
+  retries: 30
+  delay: 10
+  until: pulsar_prepare_bookie.rc == 0
+
+# The two cluster members write their topics with ensemble 2, so both bookies
+# have to be registered before the broker starts - one host's bookie coming up
+# late would fail a produce that has nothing to do with this role. Asserted
+# against the roster in the metadata, which is the whole of cluster membership.
+- name: Check every bookie this host's broker needs has registered
+  ansible.builtin.command: >-
+    timeout 60 docker run --rm --network {{ bookkeeper.network }} --entrypoint wget
+    {{ bookkeeper.image }}:{{ bookkeeper.version }}
+    -qO- 'http://bookkeeper:{{ bookkeeper.http.port }}/api/v1/bookie/list_bookies?type=rw'
+  register: pulsar_prepare_roster
+  changed_when: false
+  retries: 30
+  delay: 10
+  until:
+    - pulsar_prepare_roster.rc == 0
+    - (pulsar_prepare_roster.stdout | from_json | length) >= (pulsar.managed_ledger.ensemble_size | int)

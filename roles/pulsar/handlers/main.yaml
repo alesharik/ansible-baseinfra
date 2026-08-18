@@ -1,0 +1,6 @@
+---
+- name: restart pulsar
+  tags: pulsar
+  community.docker.docker_compose_v2:
+    project_src: "{{ pulsar.directories.ansible }}"
+    state: restarted

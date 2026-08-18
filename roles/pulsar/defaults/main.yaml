@@ -1,0 +1,80 @@
+---
+pulsar: # noqa: var-naming[no-role-prefix]
+  image: apachepulsar/pulsar
+  version: "4.2.1"
+  # The cluster's name in the metadata, written by the init this role runs. Every
+  # broker pointed at the same metadata has to agree with it - and changing it on
+  # a deployment that has already run creates a *second*, empty cluster rather
+  # than renaming the first. See the README.
+  cluster_name: cluster-a
+  # The address clients and the other brokers reach this one at. Empty advertises
+  # the compose service name, which resolves on the docker network below and
+  # nowhere else: that is the single-host case. A cluster gives every broker a
+  # routable host IP here, and the role publishes both ports on it.
+  advertised_ip: ""
+  # Existing docker networks to attach the broker to, in order. The role creates
+  # none of them: it joins what is already there, so the addresses below decide
+  # what it talks to and this decides how it can reach them. Empty leaves the
+  # broker on the compose project's own default network, which is right when
+  # everything below is a routable address rather than a name.
+  #
+  # The first entry is also the one the metrics label names, because that is the
+  # network a scraper has to be on to reach this container.
+  networks: []
+  # Where clients produce and consume.
+  broker_port: 6650
+  # The admin REST API, and where /metrics comes from.
+  web_port: 8080
+  # Where the cluster keeps its metadata. This is the whole of broker membership:
+  # there is no member list in this role, and a broker pointed at the same
+  # zookeeper joins the same cluster by registering itself in it.
+  zookeeper:
+    # host:port[,host:port...]. A name here has to resolve on one of `networks`;
+    # an address has to be routable from the container. The default is the
+    # zookeeper role's container by service name, which needs its network listed
+    # above - read the port off that role when both sit in the same play.
+    servers: "zookeeper:{{ zookeeper.client_port | default(2181) }}"
+  # Where the topics' data lives. The broker reads the bookie roster out of
+  # zookeeper and then dials the bookies at the addresses they registered
+  # themselves under, so those have to be reachable too - see the README.
+  bookkeeper:
+    # Has to be the znode the bookies actually registered under, or the broker
+    # finds an empty cluster and no topic can be created.
+    ledgers_path: "{{ bookkeeper.zookeeper.ledgers_path | default('/ledgers') }}"
+    # The table service's container count. This role does not run the table
+    # service - but its cluster init writes that metadata anyway when it finds
+    # none, so the two roles have to agree on the number or whichever runs first
+    # silently decides it. Read off bookkeeper for that reason; see the README.
+    num_storage_containers: "{{ bookkeeper.stream_storage.num_storage_containers | default(8) }}"
+  # How every topic's ledgers are replicated. These are the numbers that have to
+  # grow with the bookie count: 1/1/1 needs one bookie, and asking for more than
+  # the cluster has means topics cannot be written at all.
+  managed_ledger:
+    ensemble_size: 1
+    write_quorum: 1
+    ack_quorum: 1
+  # Pulsar Functions, run inside the broker's own process rather than as a worker
+  # of their own. Off by default; on, it needs bookkeeper's table service.
+  functions_worker:
+    enabled: false
+    # bookkeeper's table service, where function state lives. Read off that role
+    # when both sit in the same play, its default otherwise.
+    state_storage_url: "bk://bookkeeper:{{ bookkeeper.stream_storage.grpc_port | default(4181) }}"
+    # Copies of an uploaded function package kept in the package store. Cannot
+    # exceed the number of bookies.
+    num_package_replicas: 1
+  metrics:
+    enabled: true
+  jvm:
+    mem_opts: "-Xms512m -Xmx512m -XX:MaxDirectMemorySize=256m"
+    gc_opts: "-XX:+UseShenandoahGC"
+  # Extra broker.conf settings, as key: value. Applied through the image's
+  # apply-config-from-env.py, which the role reaches with the PULSAR_PREFIX_ form
+  # so that a key absent from the shipped conf is appended rather than dropped.
+  config: {}
+  directories:
+    ansible: "{{ dir.ansible }}/pulsar"
+    # The functions worker's package download directory - created only when that
+    # worker runs. The broker itself keeps no state on disk: it is all in
+    # zookeeper and bookkeeper.
+    functions: "{{ dir.data }}/pulsar/functions"

@@ -1,0 +1,143 @@
+#jinja2: trim_blocks: True, lstrip_blocks: True
+{# The broker's identity in the cluster. Empty advertised_ip falls back to this
+   service's name, which the docker network below resolves - right for a single
+   host, useless to anything off it. It is what the broker registers in zookeeper
+   and what every lookup then hands back to a client, including a client that
+   asked a different broker. #}
+{% set pulsar_id = pulsar.advertised_ip | default('broker', true) %}
+{% set pulsar_zk = pulsar.zookeeper.servers %}
+{% if pulsar.networks is defined and pulsar.networks | length > 0 %}
+{# Joined, not created: every one of these belongs to somebody else. #}
+networks:
+{% for pulsar_net in pulsar.networks %}
+  "{{ pulsar_net }}":
+    name: "{{ pulsar_net }}"
+    external: true
+{% endfor %}
+{% endif %}
+services:
+  broker:
+    image: "{{ pulsar.image }}:{{ pulsar.version }}"
+    restart: unless-stopped
+    # Same string as this service's network alias, so that whatever resolves the
+    # container's own name inside it gets an address its clients can resolve too.
+    # Left to docker it would be the container id, which resolves to one address
+    # per network the container is on - and this container is on three.
+    hostname: broker
+    # The `pulsar` user in the image, in the root group its conf directory is
+    # group-writable through. It has to be writable: apply-config-from-env.py
+    # rewrites conf/broker.conf in place before the broker starts.
+    user: "10000:0"
+    # The image ships no entrypoint that applies the environment, so the command
+    # does it: every variable below whose name is a broker.conf key is written
+    # into that file, and the broker reads the file rather than the environment.
+    {% if pulsar.functions_worker.enabled %}
+    # gen-yml-from-env.py does the same for the worker's config from the PF_
+    # variables, *patching* the file the image ships rather than replacing it.
+    # That distinction matters: the worker's defaults live in that YAML and not
+    # in its Java class, so a config written from scratch silently loses them -
+    # topicCompactionFrequencySec becomes 0, and the broker dies on startup
+    # scheduling a task at that period.
+    command: >-
+      bash -c "bin/apply-config-from-env.py conf/broker.conf &&
+      bin/gen-yml-from-env.py conf/functions_worker.yml &&
+      exec bin/pulsar broker"
+    {% else %}
+    command: >-
+      bash -c "bin/apply-config-from-env.py conf/broker.conf && exec bin/pulsar broker"
+    {% endif %}
+    environment:
+      clusterName: "{{ pulsar.cluster_name }}"
+      # metadataStoreUrl and configurationMetadataStoreUrl, not the zookeeperServers
+      # and configurationStoreServers this role used to set - those have been the
+      # deprecated spelling since 2.10 and name a zookeeper rather than a store.
+      metadataStoreUrl: "zk:{{ pulsar_zk }}"
+      configurationMetadataStoreUrl: "zk:{{ pulsar_zk }}"
+      # Where the bookies registered themselves. Left unset the broker derives it
+      # from metadataStoreUrl and the *default* ledgers path, which is wrong the
+      # moment the bookkeeper role is pointed somewhere else - and the symptom is
+      # an empty cluster rather than an error.
+      bookkeeperMetadataServiceUri: "zk+hierarchical://{{ pulsar_zk }}{{ pulsar.bookkeeper.ledgers_path }}"
+      advertisedAddress: "{{ pulsar_id }}"
+      brokerServicePort: "{{ pulsar.broker_port }}"
+      webServicePort: "{{ pulsar.web_port }}"
+      # A write goes to ensemble bookies, write_quorum of them hold each entry and
+      # ack_quorum have to answer. Asking for more bookies than the cluster has
+      # means no topic can be written at all.
+      managedLedgerDefaultEnsembleSize: "{{ pulsar.managed_ledger.ensemble_size }}"
+      managedLedgerDefaultWriteQuorum: "{{ pulsar.managed_ledger.write_quorum }}"
+      managedLedgerDefaultAckQuorum: "{{ pulsar.managed_ledger.ack_quorum }}"
+      functionsWorkerEnabled: "{{ pulsar.functions_worker.enabled | ternary('true', 'false') }}"
+    {% if pulsar.functions_worker.enabled %}
+      # PF_, not PULSAR_PREFIX_: these are keys of conf/functions_worker.yml and
+      # gen-yml-from-env.py is what applies them. Only the three the role
+      # genuinely decides are here - in embedded mode the broker derives the
+      # worker's id, hostname and service urls from its own config, so setting
+      # them would describe nothing.
+      PF_numFunctionPackageReplicas: "{{ pulsar.functions_worker.num_package_replicas }}"
+      PF_downloadDirectory: /pulsar/download
+      PF_stateStorageServiceUrl: "{{ pulsar.functions_worker.state_storage_url }}"
+    {% endif %}
+      PULSAR_MEM: "{{ pulsar.jvm.mem_opts }}"
+      PULSAR_GC: "{{ pulsar.jvm.gc_opts }}"
+    {% if pulsar.config | length > 0 %}
+      # PULSAR_PREFIX_ rather than the bare key: apply-config-from-env.py rewrites
+      # a bare variable only where broker.conf already has that key, and appends
+      # the prefixed form where it does not. The prefix covers both.
+    {% for pulsar_key, pulsar_value in pulsar.config | dictsort %}
+      "PULSAR_PREFIX_{{ pulsar_key }}": "{{ pulsar_value }}"
+    {% endfor %}
+    {% endif %}
+    {% if pulsar.functions_worker.enabled %}
+    volumes:
+      # The only thing the broker keeps on disk. Without it, every recreate
+      # throws away the packages the running functions were unpacked from.
+      - "{{ pulsar.directories.functions }}:/pulsar/download"
+    {% endif %}
+    {% if pulsar.networks is defined and pulsar.networks | length > 0 %}
+    # The broker has to reach zookeeper *and* the bookies: it reads the roster
+    # from the metadata and then dials each bookie at the address it registered
+    # itself under, so a network that resolves the first but not the second
+    # leaves it unable to create a topic.
+    networks:
+    {% for pulsar_net in pulsar.networks %}
+      - "{{ pulsar_net }}"
+    {% endfor %}
+    {% endif %}
+    {% if pulsar.advertised_ip | length > 0 %}
+    # Both ports, because a lookup can send a client to any broker in the
+    # cluster: the one it asked hands back this address, and the client has to be
+    # able to reach both the topic on broker_port and the admin API on web_port.
+    ports:
+      - "{{ pulsar.advertised_ip }}:{{ pulsar.broker_port }}:{{ pulsar.broker_port }}"
+      - "{{ pulsar.advertised_ip }}:{{ pulsar.web_port }}:{{ pulsar.web_port }}"
+    {% endif %}
+    healthcheck:
+      # brokers/health produces and consumes a message on a system topic, so it
+      # goes all the way through bookkeeper - a broker whose bookies are gone
+      # fails this while still holding its port open, which a port check would
+      # call healthy.
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:{{ pulsar.web_port }}/admin/v2/brokers/health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      # A broker loads its metadata, claims its bundles and waits for bookies
+      # before it answers this at all.
+      start_period: 90s
+    {% if pulsar.metrics.enabled %}
+    labels:
+      # The web service's own endpoint - the broker binds no separate metrics
+      # port. The trailing slash is the canonical path and not a typo: /metrics
+      # answers 301 to /metrics/, so dropping it costs a redirect on every
+      # scrape and breaks any collector that does not follow one.
+      prometheus.io.path: /metrics/
+      prometheus.io.port: {{ pulsar.web_port }}
+    {% if pulsar.networks is defined and pulsar.networks | length > 0 %}
+      # The first of `networks`: a scraper has to be on the network it reaches
+      # this container through, and with several to choose from the order is the
+      # operator's answer to which. With none listed there is nothing to name -
+      # the broker is then on the compose project's default network.
+      prometheus.io.network: "{{ pulsar.networks[0] }}"
+    {% endif %}
+      prometheus.io.instance: "{{ ansible_hostname }}-{{ pulsar.directories.ansible | basename }}"
+    {% endif %}

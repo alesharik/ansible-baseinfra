@@ -1,0 +1,201 @@
+---
+# Every key below is set by the role from a var that also decides something else
+# - a published port, an external network, the address written into the cluster
+# metadata. Setting one through `config` would move the broker's idea of it
+# without moving the publication or the mount with it, and the only symptom
+# would be a broker that does not come up.
+- name: Check no extra config entry collides with a setting the role owns
+  tags: pulsar
+  vars:
+    pulsar_managed_keys:
+      - clusterName
+      - metadataStoreUrl
+      - configurationMetadataStoreUrl
+      - bookkeeperMetadataServiceUri
+      - advertisedAddress
+      - brokerServicePort
+      - webServicePort
+      - managedLedgerDefaultEnsembleSize
+      - managedLedgerDefaultWriteQuorum
+      - managedLedgerDefaultAckQuorum
+      - functionsWorkerEnabled
+  ansible.builtin.assert:
+    that:
+      - pulsar.config | list | intersect(pulsar_managed_keys) | length == 0
+    fail_msg: >-
+      pulsar.config sets
+      {{ pulsar.config | list | intersect(pulsar_managed_keys) }}, which the role
+      sets itself from its own vars. Those vars also decide what is published and
+      which networks the broker joins, so overriding the setting alone leaves the
+      two disagreeing. Use the var instead.
+
+# A write goes to `ensemble_size` bookies, `write_quorum` of them hold each entry
+# and `ack_quorum` have to answer before it counts - so the sizes only make sense
+# in that order, and a broker asking for more bookies than the cluster has cannot
+# create a topic at all.
+- name: Check the managed ledger replication sizes make sense
+  tags: pulsar
+  vars:
+    pulsar_ml: "{{ pulsar.managed_ledger }}"
+  ansible.builtin.assert:
+    that:
+      - pulsar_ml.ensemble_size | int >= pulsar_ml.write_quorum | int
+      - pulsar_ml.write_quorum | int >= pulsar_ml.ack_quorum | int
+      - pulsar_ml.ack_quorum | int >= 1
+    fail_msg: >-
+      pulsar.managed_ledger is ensemble {{ pulsar_ml.ensemble_size }}, write
+      quorum {{ pulsar_ml.write_quorum }}, ack quorum {{ pulsar_ml.ack_quorum }}.
+      They have to fall in that order, each at least 1, and the ensemble needs
+      that many bookies in the cluster.
+
+# The cluster name is a path segment in the metadata (/admin/clusters/<name>) and
+# goes into every broker's configuration. Whitespace or a slash in it would split
+# that path, and the failure would surface as a broker that cannot find its own
+# cluster rather than as anything about this var.
+- name: Check the cluster name is a single usable token
+  tags: pulsar
+  ansible.builtin.assert:
+    that:
+      - pulsar.cluster_name | length > 0
+      - pulsar.cluster_name is not search('[\s/]')
+    fail_msg: >-
+      pulsar.cluster_name is "{{ pulsar.cluster_name }}"; it has to be a
+      non-empty name with no whitespace and no slash - it is a path segment in
+      the metadata store.
+
+# A package replica is a ledger like any other, so it is bound by the same bookie
+# count the managed ledger sizes are. Asking for more copies than the cluster can
+# hold makes every function upload fail, well after this role has reported
+# success.
+- name: Check the function package replica count fits the cluster
+  tags: pulsar
+  when: pulsar.functions_worker.enabled
+  ansible.builtin.assert:
+    that:
+      - pulsar.functions_worker.num_package_replicas | int >= 1
+      - pulsar.functions_worker.num_package_replicas | int <= pulsar.managed_ledger.ensemble_size | int
+      - pulsar.functions_worker.state_storage_url | length > 0
+    fail_msg: >-
+      pulsar.functions_worker asks for
+      {{ pulsar.functions_worker.num_package_replicas }} package replicas against
+      a managed ledger ensemble of {{ pulsar.managed_ledger.ensemble_size }}, and
+      keeps state at "{{ pulsar.functions_worker.state_storage_url }}". The
+      replicas are ledgers, so they need that many bookies, and the state storage
+      url is bookkeeper's table service - a bookkeeper deployed without
+      stream_storage has nothing listening on it.
+
+- name: Create compose dir
+  tags: pulsar
+  ansible.builtin.file:
+    path: "{{ pulsar.directories.ansible }}"
+    state: directory
+    mode: "0755"
+
+# 10000:0 is the `pulsar` user inside the image, in the root group its own
+# directories are group-writable through. The only host directory the broker
+# writes to: everything else it keeps is in zookeeper and bookkeeper.
+- name: Create the functions worker's download dir
+  tags: pulsar
+  when: pulsar.functions_worker.enabled
+  ansible.builtin.file:
+    path: "{{ pulsar.directories.functions }}"
+    state: directory
+    mode: "0700"
+    owner: "10000"
+    group: "0"
+
+- name: Move compose files
+  tags: pulsar
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ pulsar.directories.ansible }}/docker-compose.yml"
+    mode: "0700"
+  notify:
+    - restart pulsar
+
+# Pull separately: on an up that also pulls, compose 5.4.0 labels the container
+# with the local image ID, then recreates it once on the next up.
+- name: Pull pulsar image
+  tags: pulsar
+  community.docker.docker_compose_v2_pull:
+    project_src: "{{ pulsar.directories.ansible }}"
+    policy: missing
+
+# What the pulsar_init role used to be. It is one command, not a service, so it
+# runs as one - the compose project it lived in left an exited container behind
+# on every host and restarted it on every converge.
+#
+# --existing-bk-metadata-service-uri is the load-bearing flag. Without it this
+# command *also* initialises BookKeeper's ledger metadata, at its own default
+# path, stepping on what the bookkeeper role already owns; with it, the URI is
+# recorded and the bookies' ledger metadata is left alone.
+#
+# It does not stop the command initialising BookKeeper's *stream* metadata - the
+# table service's - which it does whenever it finds none, whether or not this
+# deployment has a table service. So the container count is passed too, from the
+# same var the bookkeeper role initialises it with: left to its own default the
+# command would pick 16 where that role picked 8, and whichever ran first would
+# silently decide it for good.
+#
+# Through the docker CLI rather than community.docker.docker_container: that
+# module talks to the API through python-requests, which is a library this
+# collection otherwise never needs on a target - every other docker task here
+# goes through the compose modules, and those shell out to the CLI as this does.
+- name: Initialise the cluster metadata
+  tags: pulsar
+  # One host at a time. The command is safe to repeat, but two hosts racing to
+  # create the same znodes of a *fresh* cluster are not.
+  throttle: 1
+  vars:
+    pulsar_id: "{{ pulsar.advertised_ip | default('broker', true) }}"
+    # The same networks the broker joins, so this reaches zookeeper.servers the
+    # same way the broker will. Repeated --network needs docker 25 or newer; with
+    # none listed the container is on the default bridge, which is the case where
+    # zookeeper.servers is a routable address rather than a name.
+    pulsar_init_networks: >-
+      {{ pulsar.networks | default([], true)
+         | map('regex_replace', '^', '--network=') | list }}
+  ansible.builtin.command:
+    argv: >-
+      {{ ['docker', 'run', '--rm']
+         + pulsar_init_networks
+         + ['--entrypoint', 'bin/pulsar',
+            pulsar.image ~ ':' ~ pulsar.version,
+            'initialize-cluster-metadata',
+            '--cluster', pulsar.cluster_name,
+            '--metadata-store', 'zk:' ~ pulsar.zookeeper.servers,
+            '--configuration-metadata-store', 'zk:' ~ pulsar.zookeeper.servers,
+            '--web-service-url', 'http://' ~ pulsar_id ~ ':' ~ pulsar.web_port,
+            '--broker-service-url', 'pulsar://' ~ pulsar_id ~ ':' ~ pulsar.broker_port,
+            '--existing-bk-metadata-service-uri',
+            'zk+hierarchical://' ~ pulsar.zookeeper.servers ~ pulsar.bookkeeper.ledgers_path,
+            '--initial-num-stream-storage-containers',
+            pulsar.bookkeeper.num_storage_containers | string] }}
+  register: pulsar_cluster_init
+  # Upstream made this command idempotent: run against metadata that is already
+  # there it reports the same success rather than failing, which is why it can
+  # run on every converge. It reports it in the same words too - the only thing
+  # that tells the two apart is that a repeat run says the namespaces it would
+  # have created are already there. Both streams, because the command answers
+  # through a logger and which one that uses is not this role's to assume.
+  changed_when: >-
+    'already exists' not in (pulsar_cluster_init.stdout ~ pulsar_cluster_init.stderr)
+  failed_when: >-
+    pulsar_cluster_init.rc != 0
+    or 'setup correctly' not in (pulsar_cluster_init.stdout ~ pulsar_cluster_init.stderr)
+  # zookeeper may have only just been started by its own role, which returns as
+  # soon as compose does and not when the server is serving.
+  retries: 6
+  delay: 10
+  until: pulsar_cluster_init is not failed
+
+- name: Start pulsar
+  tags: pulsar
+  community.docker.docker_compose_v2:
+    project_src: "{{ pulsar.directories.ansible }}"
+    state: present
+    remove_orphans: true
+
+- name: Make sure handlers are flushed immediately
+  tags: pulsar
+  ansible.builtin.meta: flush_handlers

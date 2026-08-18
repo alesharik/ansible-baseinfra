@@ -1,0 +1,675 @@
+---
+# ==========================================================================
+# Every host - what the role wrote to disk
+# ==========================================================================
+- name: Stat the compose dir
+  ansible.builtin.stat:
+    path: "{{ expected_compose_dir }}"
+  register: pulsar_compose_dir
+
+- name: Check the compose dir and its mode
+  ansible.builtin.assert:
+    that:
+      - pulsar_compose_dir.stat.isdir
+      - pulsar_compose_dir.stat.mode == '0755'
+    fail_msg: "compose dir is {{ pulsar_compose_dir.stat }}"
+
+- name: Stat the functions download dir
+  ansible.builtin.stat:
+    path: "{{ expected_functions_dir }}"
+  register: pulsar_functions_dir
+
+# The one directory that follows a feature rather than the role: created with the
+# functions worker on, and not created at all without it - so the absent branch
+# has to be checked too, or "it was there anyway" would pass for it. 10000:0 is
+# the `pulsar` user inside the image, which is what lets the worker write the
+# packages it unpacks.
+- name: Check the functions dir exists only where that worker runs
+  ansible.builtin.assert:
+    that:
+      - pulsar_functions_dir.stat.isdir
+      - pulsar_functions_dir.stat.mode == '0700'
+      - pulsar_functions_dir.stat.uid == 10000
+      - pulsar_functions_dir.stat.gid == 0
+    fail_msg: "functions dir is {{ pulsar_functions_dir.stat }}"
+  when: expected_functions_worker
+
+- name: Check no functions dir was created without the functions worker
+  ansible.builtin.assert:
+    that:
+      - not pulsar_functions_dir.stat.exists
+    # not stat.path: a stat of something absent carries `exists` and little else
+    fail_msg: "{{ expected_functions_dir }} exists with the functions worker off"
+  when: not expected_functions_worker
+
+# ==========================================================================
+# Every host - the rendered compose file
+# ==========================================================================
+- name: Read the rendered compose file
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/docker-compose.yml"
+  register: pulsar_compose_raw
+
+# Spelled out rather than derived from `pulsar`: an expectation built from the
+# same var the template reads would agree with a broken template.
+- name: Check the compose file starts the broker it should
+  vars:
+    compose: "{{ pulsar_compose_raw.content | b64decode | from_yaml }}"
+    env: "{{ (pulsar_compose_raw.content | b64decode | from_yaml).services.broker.environment }}"
+  ansible.builtin.assert:
+    that:
+      - compose.services | list == ['broker']
+      # In the order given - the first is the one the metrics label names, so the
+      # order is part of the contract and not just the set. With none listed the
+      # keys must be absent altogether rather than present and empty: an empty
+      # `networks:` would put the broker nowhere instead of on the compose
+      # default.
+      - (compose.networks | default({}) | list) == expected_networks
+      - (compose.services.broker.networks | default([])) == expected_networks
+      - (compose.networks is defined) == (expected_networks | length > 0)
+      - (compose.services.broker.networks is defined) == (expected_networks | length > 0)
+      # the image's own user; the conf dir has to be writable because
+      # apply-config-from-env.py rewrites broker.conf in place
+      - compose.services.broker.user == '10000:0'
+      # the same string as the service's network alias, so that what the
+      # container resolves for itself is what its clients resolve too
+      - compose.services.broker.hostname == 'broker'
+      - env.clusterName == expected_cluster_name
+      # the 2.10+ spelling, not the deprecated zookeeperServers this role used to
+      # set
+      - env.metadataStoreUrl == 'zk:' ~ expected_zk_servers
+      - env.configurationMetadataStoreUrl == 'zk:' ~ expected_zk_servers
+      - env.bookkeeperMetadataServiceUri == 'zk+hierarchical://' ~ expected_zk_servers ~ '/ledgers'
+      - env.advertisedAddress == expected_advertised
+      - env.brokerServicePort == expected_broker_port | string
+      - env.webServicePort == expected_web_port | string
+      - env.managedLedgerDefaultEnsembleSize == expected_ml_ensemble | string
+      - env.managedLedgerDefaultWriteQuorum == expected_ml_write | string
+      - env.managedLedgerDefaultAckQuorum == expected_ml_ack | string
+      - env.functionsWorkerEnabled == expected_functions_worker | ternary('true', 'false')
+      - env.PULSAR_GC == '-XX:+UseShenandoahGC'
+      # published only where there is an advertised address to publish on
+      - compose.services.broker.ports | default([]) == expected_ports
+    fail_msg: "rendered compose is {{ compose }}"
+
+# Every one of them belongs to somebody else, so each has to be declared
+# `external` under its own name - a role that let compose create one would get a
+# project-prefixed network of its own and reach nothing.
+- name: Check each network is joined rather than created
+  vars:
+    compose: "{{ pulsar_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - compose.networks[item].name == item
+      - compose.networks[item].external
+    fail_msg: "network {{ item }} is declared {{ compose.networks[item] }}"
+  loop: "{{ expected_networks }}"
+
+- name: Check the functions worker is rendered only where it is enabled
+  vars:
+    compose: "{{ pulsar_compose_raw.content | b64decode | from_yaml }}"
+    env: "{{ (pulsar_compose_raw.content | b64decode | from_yaml).services.broker.environment }}"
+    volumes: "{{ (pulsar_compose_raw.content | b64decode | from_yaml).services.broker.volumes | default([]) }}"
+  ansible.builtin.assert:
+    that:
+      # the broker keeps no state on disk, so with the worker off there is
+      # nothing to bind at all and the key must be absent rather than empty
+      - (compose.services.broker.volumes is defined) == expected_functions_worker
+      - ((expected_functions_dir ~ ':/pulsar/download') in volumes) == expected_functions_worker
+      # the PF_ variables gen-yml-from-env.py applies, and the command that runs
+      # it - both only where the worker is on
+      - ('PF_stateStorageServiceUrl' in env) == expected_functions_worker
+      - ('PF_downloadDirectory' in env) == expected_functions_worker
+      - >-
+        (compose.services.broker.command is search('gen-yml-from-env.py'))
+        == expected_functions_worker
+    fail_msg: "rendered compose is {{ compose }}"
+
+# brokers/health produces and consumes on a system topic, so it fails when
+# bookkeeper is unreachable - a plain port check would call that broker healthy.
+- name: Check the healthcheck is the end-to-end one
+  vars:
+    healthcheck: "{{ (pulsar_compose_raw.content | b64decode | from_yaml).services.broker.healthcheck }}"
+  ansible.builtin.assert:
+    that:
+      - healthcheck.test[0] == 'CMD-SHELL'
+      - healthcheck.test[1] is search('/admin/v2/brokers/health')
+      - healthcheck.test[1] is search(expected_web_port | string)
+      - healthcheck.start_period == '90s'
+    fail_msg: "healthcheck is {{ healthcheck }}"
+
+# The role writes no worker config of its own - it patches the image's through
+# PF_ variables - so this is checked in the container, on the generated file.
+- name: Check the role writes no worker config beside the compose file
+  ansible.builtin.stat:
+    path: "{{ expected_compose_dir }}/functions_worker.yml"
+  register: pulsar_fw_stat
+
+- name: Check nothing but the compose file was written to the compose dir
+  ansible.builtin.assert:
+    that:
+      - not pulsar_fw_stat.stat.exists
+    fail_msg: >-
+      {{ expected_compose_dir }}/functions_worker.yml exists. The role patches
+      the image's own config with gen-yml-from-env.py rather than replacing it,
+      so there should be nothing here to bind.
+
+# ==========================================================================
+# Every host - what is actually running
+# ==========================================================================
+- name: List the running containers
+  ansible.builtin.command: docker ps --format '{% raw %}{{.Names}}{% endraw %}'
+  register: pulsar_ps
+  changed_when: false
+
+- name: Check this host's broker is running
+  ansible.builtin.assert:
+    that:
+      - expected_container in pulsar_ps.stdout_lines
+    fail_msg: "containers present: {{ pulsar_ps.stdout_lines }}"
+
+- name: List every container, running or not
+  ansible.builtin.command: docker ps -a --format '{% raw %}{{.Names}} {{.Image}}{% endraw %}'
+  register: pulsar_ps_all
+  changed_when: false
+
+# The cluster metadata init runs as a container of its own, under --rm. One left
+# behind - exited, on the broker's image, outside the compose project - would
+# mean the merge kept pulsar_init's habit of leaving a service around.
+- name: Check the cluster metadata init left nothing behind
+  vars:
+    strays: >-
+      {{ pulsar_ps_all.stdout_lines | select('search', expected_image)
+         | reject('search', '^' ~ expected_container ~ ' ') | list }}
+  ansible.builtin.assert:
+    that:
+      - strays | length == 0
+    fail_msg: "containers left behind: {{ strays }}"
+
+- name: List the docker networks
+  ansible.builtin.command: docker network ls --format '{% raw %}{{.Name}}{% endraw %}'
+  register: pulsar_networks
+  changed_when: false
+
+# The role creates none of these - the zookeeper and bookkeeper roles did, or the
+# operator did. This is only that they are there to be joined.
+- name: Check every network the broker was pointed at exists
+  ansible.builtin.assert:
+    that:
+      - item in pulsar_networks.stdout_lines
+    fail_msg: "networks present: {{ pulsar_networks.stdout_lines }}"
+  loop: "{{ expected_networks }}"
+
+- name: Inspect the broker container
+  ansible.builtin.command: "docker inspect {{ expected_container }}"
+  register: pulsar_inspect
+  changed_when: false
+
+# HostConfig.Binds carries a :rw or :ro suffix that a host:container pair does
+# not, so strip it before comparing.
+- name: Check the broker is bound to what the compose file said
+  vars:
+    binds: >-
+      {{ (pulsar_inspect.stdout | from_json)[0].HostConfig.Binds | default([])
+         | map('regex_replace', ':(rw|ro)$', '') | list }}
+    expected_binds: >-
+      {{ [expected_functions_dir ~ ':/pulsar/download']
+         if expected_functions_worker else [] }}
+  ansible.builtin.assert:
+    that:
+      - binds | sort == expected_binds | sort
+    fail_msg: "container is bound to {{ binds }}"
+
+# What the container is actually attached to, which for a host that joined
+# nothing is the compose project's own default network - the address-only shape.
+- name: Check the broker is attached to exactly what it was pointed at
+  vars:
+    networks: "{{ (pulsar_inspect.stdout | from_json)[0].NetworkSettings.Networks | list }}"
+  ansible.builtin.assert:
+    that:
+      - networks | sort == expected_container_networks | sort
+    fail_msg: "container is on {{ networks }}, expected {{ expected_container_networks }}"
+
+- name: Check docker published both ports on the advertised address
+  vars:
+    bindings: "{{ (pulsar_inspect.stdout | from_json)[0].NetworkSettings.Ports }}"
+    own_ip: "{{ ansible_default_ipv4.address }}"
+  ansible.builtin.assert:
+    that:
+      - bindings[expected_broker_port | string ~ '/tcp'][0].HostIp == own_ip
+      - bindings[expected_broker_port | string ~ '/tcp'][0].HostPort == expected_broker_port | string
+      - bindings[expected_web_port | string ~ '/tcp'][0].HostIp == own_ip
+      - bindings[expected_web_port | string ~ '/tcp'][0].HostPort == expected_web_port | string
+    fail_msg: "container published {{ bindings }}"
+  when: expected_ports | length > 0
+
+- name: Check nothing is published where there is no advertised address
+  vars:
+    bindings: "{{ (pulsar_inspect.stdout | from_json)[0].NetworkSettings.Ports }}"
+  ansible.builtin.assert:
+    that:
+      - bindings.values() | select('truthy') | list | length == 0
+    fail_msg: "container published {{ bindings }} without an advertised_ip"
+  when: expected_ports | length == 0
+
+# The end-to-end check from the compose file, so reaching healthy is also the
+# statement that this broker can produce and consume through its bookies.
+- name: Wait for the container to report healthy
+  ansible.builtin.command: >-
+    docker inspect -f '{% raw %}{{.State.Health.Status}}{% endraw %}' {{ expected_container }}
+  register: pulsar_health
+  changed_when: false
+  retries: 40
+  delay: 15
+  until: pulsar_health.stdout == 'healthy'
+
+# ==========================================================================
+# Every host - the config the entrypoint actually generated
+#
+# Read out of the running container rather than from the compose file: the image
+# applies an environment variable by rewriting broker.conf, and only the
+# generated file says whether a setting landed as a directive or was dropped.
+# ==========================================================================
+- name: Read the broker.conf the container generated
+  ansible.builtin.command: "docker exec {{ expected_container }} cat /pulsar/conf/broker.conf"
+  register: pulsar_conf
+  changed_when: false
+
+- name: Check the settings the role owns landed as directives
+  ansible.builtin.assert:
+    that:
+      - ('clusterName=' ~ expected_cluster_name) in pulsar_conf.stdout_lines
+      - ('metadataStoreUrl=zk:' ~ expected_zk_servers) in pulsar_conf.stdout_lines
+      - ('configurationMetadataStoreUrl=zk:' ~ expected_zk_servers) in pulsar_conf.stdout_lines
+      - ('bookkeeperMetadataServiceUri=zk+hierarchical://' ~ expected_zk_servers ~ '/ledgers')
+        in pulsar_conf.stdout_lines
+      - ('advertisedAddress=' ~ expected_advertised) in pulsar_conf.stdout_lines
+      - ('brokerServicePort=' ~ expected_broker_port) in pulsar_conf.stdout_lines
+      - ('webServicePort=' ~ expected_web_port) in pulsar_conf.stdout_lines
+      - ('managedLedgerDefaultEnsembleSize=' ~ expected_ml_ensemble) in pulsar_conf.stdout_lines
+      - ('managedLedgerDefaultWriteQuorum=' ~ expected_ml_write) in pulsar_conf.stdout_lines
+      - ('managedLedgerDefaultAckQuorum=' ~ expected_ml_ack) in pulsar_conf.stdout_lines
+      - ('functionsWorkerEnabled=' ~ expected_functions_worker | ternary('true', 'false'))
+        in pulsar_conf.stdout_lines
+    fail_msg: "generated conf has {{ pulsar_conf.stdout_lines | select('search', '^(clusterName|advertisedAddress|metadataStoreUrl)') | list }}"
+
+# `config` is the operator's half of the same mechanism, and the two entries take
+# different paths through it: one key is already in the shipped conf and gets its
+# line rewritten, the other is not and is appended - which only happens because
+# the role renders these with the PULSAR_PREFIX_ form. Checking the generated
+# file is the only way to tell a setting that took from one the image dropped.
+- name: Check every operator config entry landed on its own line
+  ansible.builtin.assert:
+    that:
+      - item in pulsar_conf.stdout_lines
+    fail_msg: "{{ item }} is not in the generated conf"
+  loop: "{{ expected_config_lines }}"
+
+- name: Check no operator config leaked in where none was set
+  ansible.builtin.assert:
+    that:
+      - pulsar_conf.stdout_lines | select('search', '^moleculeProbe=') | list | length == 0
+    fail_msg: "generated conf carries a probe key this host never set"
+  when: expected_config_lines | length == 0
+
+# ==========================================================================
+# Every host - the broker itself
+#
+# Reached the way its clients reach it: on the docker network by service name
+# where it advertises one, through the published port from the host's own
+# network where it advertises an address.
+# ==========================================================================
+- name: Ask the broker for the cluster's roster
+  ansible.builtin.command: >-
+    timeout 60 docker run --rm --network {{ expected_client_network }} --entrypoint curl
+    {{ expected_image }} -sf {{ expected_admin_url }}/admin/v2/brokers/{{ expected_cluster_name }}
+  register: pulsar_roster
+  changed_when: false
+  retries: 30
+  delay: 10
+  until:
+    - pulsar_roster.rc == 0
+    - (pulsar_roster.stdout | from_json | sort) == (expected_roster | sort)
+
+# The cluster's own membership, as the brokers registered themselves in
+# zookeeper. On the two cluster members this is where the other host has to
+# appear: nothing in either compose file could produce an entry for a broker
+# running somewhere else.
+- name: Check every member of this cluster is registered and no other
+  ansible.builtin.assert:
+    that:
+      - (pulsar_roster.stdout | from_json | sort) == (expected_roster | sort)
+    fail_msg: "roster is {{ pulsar_roster.stdout }}, expected {{ expected_roster }}"
+
+- name: Check the cluster is recorded under the name the init was given
+  ansible.builtin.command: >-
+    timeout 60 docker run --rm --network {{ expected_client_network }} --entrypoint curl
+    {{ expected_image }} -sf {{ expected_admin_url }}/admin/v2/clusters
+  register: pulsar_clusters
+  changed_when: false
+
+# Exactly one: a second entry here is what changing cluster_name on a live
+# deployment produces, and the README warns about it because the role cannot.
+- name: Check the init created one cluster and not two
+  ansible.builtin.assert:
+    that:
+      - (pulsar_clusters.stdout | from_json) == [expected_cluster_name]
+    fail_msg: "clusters in metadata: {{ pulsar_clusters.stdout }}"
+
+# ==========================================================================
+# Every host - metrics
+# ==========================================================================
+- name: Check the metrics service is labelled for autodiscovery
+  vars:
+    compose: "{{ pulsar_compose_raw.content | b64decode | from_yaml }}"
+    labels: "{{ (pulsar_compose_raw.content | b64decode | from_yaml).services.broker.labels }}"
+  ansible.builtin.assert:
+    that:
+      # key by key, and the port through `string`: compose YAML parses it as an
+      # integer, while the label docker ends up carrying is text
+      # trailing slash: /metrics answers 301 to /metrics/
+      - labels['prometheus.io.path'] == '/metrics/'
+      - labels['prometheus.io.port'] | string == expected_web_port | string
+      - labels['prometheus.io.network'] == expected_metrics_network
+      - labels['prometheus.io.instance'] == expected_instance_label
+    fail_msg: "rendered compose is {{ compose }}"
+  when: expected_metrics_enabled
+
+# Scraped from the web service port: the broker binds no separate metrics port,
+# so a scrape anywhere else would answer nothing at all.
+# The canonical path, with its trailing slash. Deliberately not followed with
+# -L: /metrics answers 301 to /metrics/, and asserting the redirect target
+# directly is what makes this fail if a future version moves it.
+- name: Scrape the metrics endpoint
+  ansible.builtin.command: >-
+    timeout 60 docker run --rm --network {{ expected_client_network }} --entrypoint curl
+    {{ expected_image }} -sf {{ expected_admin_url }}/metrics/
+  register: pulsar_metrics
+  changed_when: false
+  retries: 12
+  delay: 10
+  until:
+    - pulsar_metrics.rc == 0
+    - "'pulsar_topics_count' in pulsar_metrics.stdout"
+  when: expected_metrics_enabled
+
+- name: Check the broker reports its own series
+  ansible.builtin.assert:
+    that:
+      - "'pulsar_topics_count' in pulsar_metrics.stdout"
+      - "'jvm_' in pulsar_metrics.stdout"
+    fail_msg: "metrics endpoint returned {{ pulsar_metrics.stdout[:2000] }}"
+  when: expected_metrics_enabled
+
+- name: Check no metrics labels were rendered where metrics are off
+  vars:
+    compose: "{{ pulsar_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - compose.services.broker.labels is not defined
+    fail_msg: "metrics off still rendered {{ compose }}"
+  when: not expected_metrics_enabled
+
+# ==========================================================================
+# pulsar-single - the functions worker
+#
+# Where it belongs: it keeps state in bookkeeper's table service, and a range
+# server registers itself under a name that only resolves inside docker on its
+# own host. The worker running at all is what proves the embedded mode took -
+# the compose file could set functionsWorkerEnabled and still be ignored.
+# ==========================================================================
+# The generated file, not one the role wrote: gen-yml-from-env.py edits the
+# image's copy in place. The three PF_ keys have to be there - and so does an
+# upstream key the role never touches, because that is the difference between
+# patching this file and replacing it. A config written from scratch loses
+# topicCompactionFrequencySec, whose Java default is 0, and the broker then dies
+# on startup scheduling a task at that period. This assertion is that bug.
+- name: Read the functions worker config the container generated
+  ansible.builtin.command: "docker exec {{ expected_container }} cat /pulsar/conf/functions_worker.yml"
+  register: pulsar_fw_conf
+  changed_when: false
+  when: expected_functions_worker
+
+- name: Check the role's keys were applied and the image's own survived
+  vars:
+    fw: "{{ pulsar_fw_conf.stdout | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      # bookkeeper's table service, which is a different port from the bookie's
+      - fw.stateStorageServiceUrl == 'bk://bookkeeper:4181'
+      - fw.numFunctionPackageReplicas == 1
+      - fw.downloadDirectory == '/pulsar/download'
+      # untouched by the role, and fatal when it is lost
+      - fw.topicCompactionFrequencySec == 1800
+      - fw.rebalanceCheckFreqSec == -1
+    fail_msg: "generated worker config is {{ fw }}"
+  when: expected_functions_worker
+
+- name: Ask the broker for its functions worker cluster
+  ansible.builtin.command: >-
+    timeout 60 docker run --rm --network {{ expected_client_network }} --entrypoint curl
+    {{ expected_image }} -sf {{ expected_admin_url }}/admin/v2/worker/cluster
+  register: pulsar_worker
+  changed_when: false
+  retries: 20
+  delay: 10
+  until:
+    - pulsar_worker.rc == 0
+    - pulsar_worker.stdout | from_json | length > 0
+  when: expected_functions_worker
+
+# On the hostname rather than the workerId: in embedded mode the broker derives
+# the id itself from its cluster and advertised address, so asserting the one the
+# role wrote would be asserting against Pulsar's naming rather than against this
+# deployment. The hostname is what the role actually decides, and one worker
+# rather than none is what says the embedded mode took at all.
+- name: Check the worker registered itself under this broker's address
+  vars:
+    workers: "{{ pulsar_worker.stdout | from_json }}"
+  ansible.builtin.assert:
+    that:
+      - workers | length == 1
+      - workers[0].workerHostname == expected_advertised
+      - workers[0].workerId | length > 0
+    fail_msg: "worker cluster is {{ pulsar_worker.stdout }}"
+  when: expected_functions_worker
+
+# The worker's own namespace, which it creates on first start. This is the
+# statement that it reached the metadata store and not merely that the endpoint
+# answers.
+- name: List the namespaces of the public tenant
+  ansible.builtin.command: >-
+    timeout 60 docker run --rm --network {{ expected_client_network }} --entrypoint curl
+    {{ expected_image }} -sf {{ expected_admin_url }}/admin/v2/namespaces/public
+  register: pulsar_namespaces
+  changed_when: false
+  retries: 20
+  delay: 10
+  until:
+    - pulsar_namespaces.rc == 0
+    - "'public/functions' in (pulsar_namespaces.stdout | from_json)"
+  when: expected_functions_worker
+
+- name: Check the worker created its metadata namespace
+  ansible.builtin.assert:
+    that:
+      - "'public/functions' in (pulsar_namespaces.stdout | from_json)"
+    fail_msg: "public tenant holds {{ pulsar_namespaces.stdout }}"
+  when: expected_functions_worker
+
+# The absent branch: with the worker off this endpoint is not merely empty, it is
+# not served at all. `-sf` fails on the non-2xx, which is the answer.
+- name: Check nothing answers for functions where the worker is off
+  ansible.builtin.command: >-
+    timeout 60 docker run --rm --network {{ expected_client_network }} --entrypoint curl
+    {{ expected_image }} -sf --max-time 15 {{ expected_admin_url }}/admin/v2/worker/cluster
+  register: pulsar_worker_off
+  changed_when: false
+  failed_when: false
+  when: not expected_functions_worker
+
+# Either the endpoint refuses (curl -sf fails on the non-2xx) or it answers with
+# no workers. Which of the two is Pulsar's business; that no worker is running
+# here is this role's, and it is what both forms say.
+- name: Check the functions worker really is off
+  ansible.builtin.assert:
+    that:
+      - pulsar_worker_off.rc != 0 or (pulsar_worker_off.stdout | trim) in ['', '[]']
+    fail_msg: >-
+      the worker API answered "{{ pulsar_worker_off.stdout }}" with
+      functionsWorkerEnabled false
+  when: not expected_functions_worker
+
+# ==========================================================================
+# The round trip
+#
+# The real proof of the cluster. Produced through node-1's service url and
+# consumed through node-2's: a topic is owned by exactly one broker at a time, so
+# the second lookup either finds the owner in the shared metadata and hands back
+# an address the client can reach, or it does not. On top of managed ledgers of
+# 2/2/2, which put every entry on both bookies and wait for both. Nothing about
+# either is observable on one host.
+#
+# The two run as separate tasks so the linear strategy orders them across hosts:
+# every host finishes producing before any host starts consuming.
+#
+# pulsar-single does both against its own broker, over the docker network - the
+# single-host shape, where there is no published address to use.
+# ==========================================================================
+- name: Produce the messages
+  ansible.builtin.command: >-
+    timeout 180 docker run --rm --network {{ expected_client_network }}
+    --entrypoint bin/pulsar-client {{ expected_image }}
+    --url {{ expected_produce_url }}
+    produce {{ molecule_topic }} -m "{{ molecule_message }}" -n {{ molecule_messages }}
+  register: pulsar_produce
+  changed_when: false
+  retries: 6
+  delay: 15
+  until:
+    - pulsar_produce.rc == 0
+    - (molecule_messages | string ~ ' messages successfully produced')
+      in (pulsar_produce.stdout ~ pulsar_produce.stderr)
+  when: expected_produces
+
+- name: Check the messages were committed
+  ansible.builtin.assert:
+    that:
+      - (molecule_messages | string ~ ' messages successfully produced')
+        in (pulsar_produce.stdout ~ pulsar_produce.stderr)
+    fail_msg: "produce said {{ pulsar_produce.stdout }}{{ pulsar_produce.stderr }}"
+  when: expected_produces
+
+- name: Consume the messages
+  ansible.builtin.command: >-
+    timeout 180 docker run --rm --network {{ expected_client_network }}
+    --entrypoint bin/pulsar-client {{ expected_image }}
+    --url {{ expected_consume_url }}
+    consume {{ molecule_topic }} -s {{ molecule_subscription }}
+    -p Earliest -n {{ molecule_messages }}
+  register: pulsar_consume
+  changed_when: false
+  retries: 6
+  delay: 15
+  until:
+    - pulsar_consume.rc == 0
+    - (molecule_messages | string ~ ' messages successfully consumed')
+      in (pulsar_consume.stdout ~ pulsar_consume.stderr)
+  when: expected_consumes
+
+- name: Check every message came back, through whichever broker owns the topic
+  ansible.builtin.assert:
+    that:
+      - (molecule_messages | string ~ ' messages successfully consumed')
+        in (pulsar_consume.stdout ~ pulsar_consume.stderr)
+      - molecule_message in (pulsar_consume.stdout ~ pulsar_consume.stderr)
+    fail_msg: "consume said {{ pulsar_consume.stdout }}{{ pulsar_consume.stderr }}"
+  when: expected_consumes
+
+# ==========================================================================
+# pulsar-single - the published defaults
+#
+# This host pins a copy of them, so the copy has to be checked against the
+# defaults themselves or it could drift and quietly stop testing them.
+# `directories` and the two dependency dicts are compared by shape rather than by
+# value: this dict came out of slurp + from_yaml, which the templar never
+# renders, so its paths are still the literal "{{ dir.ansible }}/pulsar" the file
+# contains.
+# ==========================================================================
+- name: Read the role defaults from the controller
+  ansible.builtin.slurp:
+    src: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}/roles/pulsar/defaults/main.yaml"
+  delegate_to: localhost
+  become: false
+  register: pulsar_defaults_raw
+  when: inventory_hostname == 'pulsar-single'
+
+- name: Check this host still pins what the role actually ships
+  vars:
+    role_defaults: "{{ (pulsar_defaults_raw.content | b64decode | from_yaml).pulsar }}"
+  ansible.builtin.assert:
+    that:
+      - role_defaults.image == 'apachepulsar/pulsar'
+      - role_defaults.image == pulsar.image
+      - role_defaults.version == pulsar.version
+      - role_defaults.cluster_name == pulsar.cluster_name
+      # the role ships no networks: it creates none and joins only what it is
+      # given, so this host listing two is a deliberate deviation
+      - role_defaults.networks == []
+      - pulsar.networks | length == 2
+      - role_defaults.broker_port == pulsar.broker_port
+      - role_defaults.web_port == pulsar.web_port
+      - role_defaults.managed_ledger == pulsar.managed_ledger
+      - role_defaults.metrics == pulsar.metrics
+      - role_defaults.jvm == pulsar.jvm
+      - role_defaults.config == pulsar.config
+      # the single-host shape this host exists to cover: no advertised address,
+      # asserted on both sides so that a default gaining one would fail here
+      # rather than silently stop being tested
+      - role_defaults.advertised_ip == ''
+      - pulsar.advertised_ip == ''
+      # the one key this host deliberately differs on - the functions worker is
+      # off by default and on here, which is the only place its table service is
+      # reachable
+      - role_defaults.functions_worker.enabled == false
+      - pulsar.functions_worker.enabled == true
+      - role_defaults.functions_worker.num_package_replicas == pulsar.functions_worker.num_package_replicas
+      # read off the other two roles, with their defaults as the fallback
+      # addresses read off the other two roles, with their defaults as fallback -
+      # and no network key on either, because the role no longer owns any
+      - "'network' not in role_defaults.zookeeper"
+      - "'network' not in role_defaults.bookkeeper"
+      - "'zookeeper.client_port' in role_defaults.zookeeper.servers"
+      - "'bookkeeper.zookeeper.ledgers_path' in role_defaults.bookkeeper.ledgers_path"
+      # read off bookkeeper so the two roles cannot initialise the table service
+      # metadata with different container counts
+      - "'bookkeeper.stream_storage.num_storage_containers' in role_defaults.bookkeeper.num_storage_containers"
+      - "'bookkeeper.stream_storage.grpc_port' in role_defaults.functions_worker.state_storage_url"
+      - "'dir.ansible' in role_defaults.directories.ansible"
+      - role_defaults.directories.ansible.endswith('/pulsar')
+      - "'dir.data' in role_defaults.directories.functions"
+      - role_defaults.directories.functions.endswith('/pulsar/functions')
+    fail_msg: "role ships {{ role_defaults }}, this host pins {{ pulsar }}"
+  when: inventory_hostname == 'pulsar-single'
+
+# ==========================================================================
+# pulsar-node-2 - relocated directories
+# ==========================================================================
+- name: Stat the paths this host relocated away from
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: pulsar_unexpected
+  # default([]) because a loop is expanded before `when` is consulted, and this
+  # var only exists on the host that relocated anything
+  loop: "{{ unexpected_paths | default([]) }}"
+  when: unexpected_paths is defined
+
+- name: Check the default paths were left alone
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists
+    fail_msg: "{{ item.item }} exists, so directories did not move"
+  loop: "{{ pulsar_unexpected.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: unexpected_paths is defined
