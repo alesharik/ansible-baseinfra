@@ -1,0 +1,218 @@
+---
+# Every key below is set by the role from a var that also decides something
+# else - a bind mount, a published port, the directory a compose volume points
+# at. Setting one through `config` would move the bookie's idea of it without
+# moving the mount or the publication with it, and the only symptom would be a
+# bookie that does not come up.
+- name: Check no extra config entry collides with a setting the role owns
+  tags: bookkeeper
+  vars:
+    bookkeeper_managed_keys:
+      - zkServers
+      - zkLedgersRootPath
+      - metadataServiceUri
+      - advertisedAddress
+      - bookiePort
+      - journalDirectory
+      - journalDirectories
+      - ledgerDirectories
+      - indexDirectories
+      - httpServerEnabled
+      - httpServerPort
+      - enableStatistics
+      - statsProviderClass
+      - autoRecoveryDaemonEnabled
+      - diskUsageThreshold
+      - diskUsageWarnThreshold
+      - extraServerComponents
+      - storageserver.grpc.port
+      - storageserver.grpc.useHostname
+      - storage.range.store.dirs
+      - dlog.bkcEnsembleSize
+      - dlog.bkcWriteQuorumSize
+      - dlog.bkcAckQuorumSize
+  ansible.builtin.assert:
+    that:
+      - bookkeeper.config | list | intersect(bookkeeper_managed_keys) | length == 0
+    fail_msg: >-
+      bookkeeper.config sets
+      {{ bookkeeper.config | list | intersect(bookkeeper_managed_keys) }}, which
+      the role sets itself from its own vars. Those vars also decide what is
+      mounted and published, so overriding the setting alone leaves the two
+      disagreeing. Use the var instead.
+
+# BookKeeper's prometheus provider does not bind a port of its own while the
+# admin server is enabled - it serves /metrics through it. With that server off
+# there is nothing left to scrape, so the two vars cannot disagree.
+- name: Check the metrics have a server to come from
+  tags: bookkeeper
+  when: bookkeeper.metrics.enabled
+  ansible.builtin.assert:
+    that:
+      - bookkeeper.http.enabled
+    fail_msg: >-
+      bookkeeper.metrics.enabled is set with bookkeeper.http.enabled false.
+      /metrics is an endpoint of the bookie's admin server, so turning that
+      server off leaves nothing serving the metrics this would advertise.
+
+# A write goes to `ensemble_size` bookies, `write_quorum` of them hold each
+# entry and `ack_quorum` have to answer before it counts - so the sizes only
+# make sense in that order, and a table service asking for more bookies than the
+# cluster has never creates a log at all.
+- name: Check the table service replication sizes make sense
+  tags: bookkeeper
+  when: bookkeeper.stream_storage.enabled
+  vars:
+    bookkeeper_ss: "{{ bookkeeper.stream_storage }}"
+  ansible.builtin.assert:
+    that:
+      - bookkeeper_ss.ensemble_size | int >= bookkeeper_ss.write_quorum | int
+      - bookkeeper_ss.write_quorum | int >= bookkeeper_ss.ack_quorum | int
+      - bookkeeper_ss.ack_quorum | int >= 1
+    fail_msg: >-
+      bookkeeper.stream_storage is ensemble {{ bookkeeper_ss.ensemble_size }},
+      write quorum {{ bookkeeper_ss.write_quorum }}, ack quorum
+      {{ bookkeeper_ss.ack_quorum }}. They have to fall in that order, each at
+      least 1, and the ensemble needs that many bookies in the cluster.
+
+- name: Look for the cookie a previous start left behind
+  tags: bookkeeper
+  ansible.builtin.stat:
+    path: "{{ bookkeeper.directories.ledgers }}/current/VERSION"
+  register: bookkeeper_cookie
+
+- name: Read the existing cookie
+  tags: bookkeeper
+  when: bookkeeper_cookie.stat.exists
+  ansible.builtin.slurp:
+    src: "{{ bookkeeper.directories.ledgers }}/current/VERSION"
+  register: bookkeeper_cookie_raw
+
+# The cookie is this bookie's identity, kept in both places that matter: beside
+# the data and in zookeeper. A bookie whose configured address stops matching it
+# refuses to start - it cannot tell being renamed from being handed another
+# bookie's disks. Failing here names the cause; the alternative is a container
+# that restart-loops on a BookieException$InvalidCookieException.
+- name: Check the cookie still agrees with the address this bookie advertises
+  tags: bookkeeper
+  when: bookkeeper_cookie.stat.exists
+  vars:
+    # default([], true) before first(): a cookie without a bookieHost line makes
+    # regex_search return nothing at all, and the assert below should report
+    # that rather than blow up templating this var.
+    bookkeeper_cookie_id: >-
+      {{ bookkeeper_cookie_raw.content | b64decode
+         | regex_search('bookieHost:\s*"([^"]+)"', '\1')
+         | default([], true) | first | default('', true) }}
+    bookkeeper_bookie_id: >-
+      {{ bookkeeper.advertised_ip | default('bookkeeper', true) }}:{{ bookkeeper.bookie_port }}
+  ansible.builtin.assert:
+    that:
+      - bookkeeper_cookie_id == bookkeeper_bookie_id
+    fail_msg: >-
+      {{ bookkeeper.directories.ledgers }}/current/VERSION was written by
+      {{ bookkeeper_cookie_id }}, but this bookie would now advertise
+      {{ bookkeeper_bookie_id }}. BookKeeper refuses to start against a cookie
+      that disagrees. Either put bookkeeper.advertised_ip back, or rename the
+      bookie deliberately with `bookkeeper shell updatecookie -bookieId
+      {{ bookkeeper_bookie_id }}` and let this run again.
+
+- name: Create compose dir
+  tags: bookkeeper
+  ansible.builtin.file:
+    path: "{{ bookkeeper.directories.ansible }}"
+    state: directory
+    mode: "0755"
+
+# 10000:0 is the `bookkeeper` user inside the image, which runs as it already.
+# Handing it directories it owns is what keeps it that way: entered as root the
+# entrypoint chowns the whole data directory - recursively, over every entry log
+# - before dropping to this same uid.
+- name: Create the dirs the bookie writes to
+  tags: bookkeeper
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0700"
+    owner: "10000"
+    group: "0"
+  loop: "{{ [bookkeeper.directories.journal, bookkeeper.directories.ledgers]
+            + ([bookkeeper.directories.ranges] if bookkeeper.stream_storage.enabled else []) }}"
+
+- name: Move compose files
+  tags: bookkeeper
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ bookkeeper.directories.ansible }}/docker-compose.yml"
+    mode: "0700"
+  notify:
+    - restart bookkeeper
+
+# Pull separately: on an up that also pulls, compose 5.4.0 labels the container
+# with the local image ID, then recreates it once on the next up.
+- name: Pull bookkeeper image
+  tags: bookkeeper
+  community.docker.docker_compose_v2_pull:
+    project_src: "{{ bookkeeper.directories.ansible }}"
+    policy: missing
+
+# The image's entrypoint initialises the ledger metadata on its own, but not the
+# table service's - and a bookie that loads the stream storage component against
+# a cluster without it exits instead of starting. So this has to run first, and
+# only where that component is actually loaded.
+#
+# `bkctl cluster init` is idempotent against an initialised cluster (it reports
+# loading the metadata it found), which is why it can run on every converge.
+#
+# Through the docker CLI rather than community.docker.docker_container: that
+# module talks to the API through python-requests, which is a library this
+# collection otherwise never needs on a target - every other docker task here
+# goes through the compose modules, and those shell out to the CLI as this does.
+- name: Initialise the cluster's table service metadata
+  tags: bookkeeper
+  when: bookkeeper.stream_storage.enabled
+  # One host at a time. The command is safe to repeat, but two hosts racing to
+  # create the same znodes of a *fresh* cluster are not - unlike the ledger
+  # metadata, which the image's entrypoint guards with a lock znode.
+  throttle: 1
+  vars:
+    # Attached to zookeeper's network to reach it by service name; with no
+    # network configured, zookeeper is somewhere the default bridge can route to.
+    bookkeeper_init_network: >-
+      {{ ['--network', bookkeeper.zookeeper.network]
+         if bookkeeper.zookeeper.network | length > 0 else [] }}
+  ansible.builtin.command:
+    argv: >-
+      {{ ['docker', 'run', '--rm', '--entrypoint', '/opt/bookkeeper/bin/bkctl']
+         + bookkeeper_init_network
+         + [bookkeeper.image ~ ':' ~ bookkeeper.version,
+            'cluster', 'init', 'zk://' ~ bookkeeper.zookeeper.servers,
+            '--ledgers-path', bookkeeper.zookeeper.ledgers_path,
+            '--num-storage-containers',
+            bookkeeper.stream_storage.num_storage_containers | string] }}
+  register: bookkeeper_cluster_init
+  # bkctl answers through a logger and can report a failure while still exiting
+  # 0, so the last line it prints is the thing to check. Both streams, because
+  # which one that logger uses is not this role's to assume.
+  changed_when: >-
+    'Successfully initialized the stream cluster'
+    in (bookkeeper_cluster_init.stdout ~ bookkeeper_cluster_init.stderr)
+  failed_when: >-
+    bookkeeper_cluster_init.rc != 0 or 'Successfully initialized cluster'
+    not in (bookkeeper_cluster_init.stdout ~ bookkeeper_cluster_init.stderr)
+  # zookeeper may have only just been started by its own role, which returns as
+  # soon as compose does and not when the server is serving.
+  retries: 6
+  delay: 10
+  until: bookkeeper_cluster_init is not failed
+
+- name: Start bookkeeper
+  tags: bookkeeper
+  community.docker.docker_compose_v2:
+    project_src: "{{ bookkeeper.directories.ansible }}"
+    state: present
+    remove_orphans: true
+
+- name: Make sure handlers are flushed immediately
+  tags: bookkeeper
+  ansible.builtin.meta: flush_handlers

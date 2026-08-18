@@ -1,0 +1,6 @@
+---
+- name: restart bookkeeper
+  tags: bookkeeper
+  community.docker.docker_compose_v2:
+    project_src: "{{ bookkeeper.directories.ansible }}"
+    state: restarted

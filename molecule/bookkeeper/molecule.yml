@@ -1,0 +1,442 @@
+---
+# Three platforms, because the role has two shapes and only one of them can be
+# seen on a single host:
+#
+#   bk-node-1  cluster member. Default directories, admin server and metrics on.
+#   bk-node-2  cluster member. Relocated directories, its own docker networks,
+#              admin server OFF (so metrics off with it), operator `config`
+#              entries - the absent form of every branch node-1 covers.
+#   bk-single  the single-host shape, on the published defaults: the table
+#              service on, no advertised_ip, so the bookie is known by its
+#              compose service name. tests.yml re-reads defaults/main.yaml from
+#              the controller so this host's copy cannot drift unnoticed.
+#
+# The two cluster members share a 2-member zookeeper ensemble and form one
+# BookKeeper cluster through it. That is what makes them worth two instances: a
+# ledger written with ensemble 2, write quorum 2 and ack quorum 2 cannot be
+# committed without both bookies, so it fails unless the two really did find
+# each other through zookeeper and are reachable at the addresses they
+# advertised. Nothing about that is observable on one host.
+#
+# bk-single keeps the table service, which the cluster members turn off: a range
+# server registers itself under a name that only resolves inside docker on its
+# own host, so the service does not cross hosts however the bookies are wired.
+# Testing it where it works is the honest place for it.
+#
+# The zookeeper each host needs is deployed by prepare_tasks.yml, not by this
+# role - bookkeeper's dependencies are bootstrap and docker, and an external
+# zookeeper is the normal case.
+platforms:
+  - name: bk-node-1
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+    # This scenario runs docker inside the instance, and overlayfs refuses to
+    # stack on overlayfs: without a real filesystem under the image store, the
+    # inner daemon fails every pull with "invalid argument" on the overlay
+    # mount. Anonymous volumes are host-backed, which is enough. Docker >= 25
+    # keeps snapshots in containerd, older ones in /var/lib/docker - mount both
+    # so this does not depend on which one the instance installs.
+    volumes:
+      - /var/lib/docker
+      - /var/lib/containerd
+    # anonymous volumes are kept by default; nothing here should outlive destroy
+    keep_volumes: false
+  - name: bk-node-2
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+    volumes:
+      - /var/lib/docker
+      - /var/lib/containerd
+    keep_volumes: false
+  - name: bk-single
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+    volumes:
+      - /var/lib/docker
+      - /var/lib/containerd
+    keep_volumes: false
+
+provisioner:
+  inventory:
+    group_vars:
+      all:
+        # bookkeeper's meta pulls in bootstrap, so this scenario has to satisfy
+        # it. `bootstrap` is a plain dict override - it replaces the role
+        # defaults wholesale, so every key the role reads has to be listed here.
+        bootstrap:
+          # would reach the host kernel through the privileged container
+          disable_algif_aead: false
+          disable_transparent_huge_pages: false
+          # nothing under test here needs users or sudoers
+          setup_users: false
+          setup_sudo: false
+          # the prometheus.io.instance label is built from ansible_hostname, so
+          # the instances must actually carry their names
+          set_hostname: true
+          limits:
+            enabled: true
+            nofile:
+              soft: 8192
+              hard: 1048576
+          swap:
+            enabled: false
+            # NOT /swapfile: /proc/swaps is not namespaced, so teardown-swap.yaml
+            # would match the docker *host's* active swap and swapoff a file this
+            # container never activated. See molecule/bootstrap/molecule.yml.
+            file: /molecule_swapfile
+            size_mb: 4096
+        dir:
+          data: /data
+          ansible: /data/ansible
+
+        # A ledger written on bk-node-1 across both members. ensemble 2 with
+        # write and ack quorum 2 means every entry is held by both bookies and
+        # both have to answer, so this cannot pass without the cluster.
+        molecule_cluster_entries: 20
+        # The table service round trip on bk-single.
+        molecule_table_ns: molecule
+        molecule_table: molecule-table
+        molecule_table_key: hello
+        molecule_table_value: written-by-molecule
+
+    # expected_* is what tests.yml asserts against, spelled out per host rather
+    # than derived from `bookkeeper`. Deriving the expectation from the same var
+    # the templates read would let a broken template agree with a broken test.
+    host_vars:
+      bk-node-1:
+        zookeeper:
+          image: zookeeper
+          version: "3.9.5"
+          id: 1
+          peer_ip: "{{ ansible_default_ipv4.address }}"
+          quorum:
+            - bk-node-1
+            - bk-node-2
+          # The bookie reaches zookeeper over the docker network below, so the
+          # client port needs no publication. The peer and election ports are
+          # published on peer_ip by the role itself.
+          listen_ips: []
+          network: zookeeper
+          client_port: 2181
+          tick_time: 2000
+          init_limit: 5
+          sync_limit: 2
+          max_client_cnxns: 60
+          autopurge:
+            purge_interval: 1
+            snap_retain_count: 3
+          four_lw_commands: "srvr,ruok,mntr"
+          admin_server: true
+          jvm_flags: "-XX:+UseShenandoahGC -Xmx512m"
+          config: []
+          metrics:
+            enabled: false
+            port: 7070
+          directories:
+            ansible: "{{ dir.ansible }}/zookeeper"
+            data: "{{ dir.data }}/zookeeper/data"
+            datalog: "{{ dir.data }}/zookeeper/datalog"
+            logs: "{{ dir.data }}/zookeeper/logs"
+
+        bookkeeper:
+          image: apache/bookkeeper
+          version: "4.18.0"
+          # The instance's own address on the molecule network. This is what the
+          # bookie registers itself as, so it is also how bk-node-2's client
+          # reaches it.
+          advertised_ip: "{{ ansible_default_ipv4.address }}"
+          network: bookkeeper
+          bookie_port: 3181
+          zookeeper:
+            network: zookeeper
+            servers: "zookeeper:2181"
+            ledgers_path: /ledgers
+          http:
+            enabled: true
+            port: 8080
+          metrics:
+            enabled: true
+          auto_recovery: true
+          disk_usage:
+            # A dind instance shares the host's disk, and a host over 95% full
+            # would put every bookie here into read-only before the first write.
+            threshold: 0.99
+            warn_threshold: 0.99
+          jvm:
+            mem_opts: "-Xms512m -Xmx512m -XX:MaxDirectMemorySize=256m"
+            gc_opts: "-XX:+UseShenandoahGC"
+          # Off on both cluster members: the table service is reachable on its
+          # own host's docker network and nowhere else. bk-single covers it
+          # where it works.
+          stream_storage:
+            enabled: false
+            grpc_port: 4181
+            num_storage_containers: 8
+            ensemble_size: 1
+            write_quorum: 1
+            ack_quorum: 1
+          config: {}
+          directories:
+            ansible: "{{ dir.ansible }}/bookkeeper"
+            journal: "{{ dir.data }}/bookkeeper/journal"
+            ledgers: "{{ dir.data }}/bookkeeper/ledgers"
+            ranges: "{{ dir.data }}/bookkeeper/ranges"
+
+        expected_compose_dir: /data/ansible/bookkeeper
+        expected_journal_dir: /data/bookkeeper/journal
+        expected_ledgers_dir: /data/bookkeeper/ledgers
+        expected_network: bookkeeper
+        expected_zk_network: zookeeper
+        # compose names the project after project_src, which is
+        # dir.ansible/bookkeeper on this host
+        expected_container: bookkeeper-bookkeeper-1
+        expected_bookie_port: 3181
+        expected_image: apache/bookkeeper:4.18.0
+        expected_mounts:
+          - /data/bookkeeper/journal:/bookkeeper/journal
+          - /data/bookkeeper/ledgers:/bookkeeper/ledgers
+        expected_http_enabled: true
+        expected_http_port: 8080
+        expected_metrics_enabled: true
+        expected_instance_label: bk-node-1-bookkeeper
+        expected_stream_storage: false
+        # this host writes the cluster ledger the other member has to serve
+        expected_cluster_writer: true
+        expected_config_lines: []
+        # Built from the instances' gathered facts, which is an independent
+        # source from the bookkeeper.advertised_ip the template consumed.
+        expected_bookie_id: "{{ ansible_default_ipv4.address }}:3181"
+        expected_ports:
+          - "{{ ansible_default_ipv4.address }}:3181:3181"
+        expected_roster:
+          - "{{ hostvars['bk-node-1'].ansible_default_ipv4.address }}:3181"
+          - "{{ hostvars['bk-node-2'].ansible_default_ipv4.address }}:3181"
+
+      bk-node-2:
+        zookeeper:
+          image: zookeeper
+          version: "3.9.5"
+          id: 2
+          peer_ip: "{{ ansible_default_ipv4.address }}"
+          quorum:
+            - bk-node-1
+            - bk-node-2
+          listen_ips: []
+          # renamed, so what bookkeeper.zookeeper.network points at is not just
+          # the role's default name
+          network: zookeeper-ensemble
+          client_port: 2181
+          tick_time: 2000
+          init_limit: 5
+          sync_limit: 2
+          max_client_cnxns: 60
+          autopurge:
+            purge_interval: 1
+            snap_retain_count: 3
+          four_lw_commands: "srvr,ruok,mntr"
+          admin_server: true
+          jvm_flags: "-XX:+UseShenandoahGC -Xmx512m"
+          config: []
+          metrics:
+            enabled: false
+            port: 7070
+          directories:
+            ansible: "{{ dir.ansible }}/zookeeper"
+            data: "{{ dir.data }}/zookeeper/data"
+            datalog: "{{ dir.data }}/zookeeper/datalog"
+            logs: "{{ dir.data }}/zookeeper/logs"
+
+        bookkeeper:
+          image: apache/bookkeeper
+          version: "4.18.0"
+          advertised_ip: "{{ ansible_default_ipv4.address }}"
+          network: bookkeeper-second
+          bookie_port: 3181
+          zookeeper:
+            network: zookeeper-ensemble
+            servers: "zookeeper:2181"
+            ledgers_path: /ledgers
+          # Off here, which is where the compose template's healthcheck and
+          # label branches are covered in their absent form. Metrics have to go
+          # with it - the role asserts that pair.
+          http:
+            enabled: false
+            port: 8080
+          metrics:
+            enabled: false
+          auto_recovery: true
+          disk_usage:
+            threshold: 0.99
+            warn_threshold: 0.99
+          jvm:
+            mem_opts: "-Xms512m -Xmx512m -XX:MaxDirectMemorySize=256m"
+            gc_opts: "-XX:+UseShenandoahGC"
+          stream_storage:
+            enabled: false
+            grpc_port: 4181
+            num_storage_containers: 8
+            ensemble_size: 1
+            write_quorum: 1
+            ack_quorum: 1
+          # Pushed all the way through: tests.yml reads the generated
+          # bk_server.conf out of the running container, so this proves `config`
+          # reaches BookKeeper's configuration and not just an environment
+          # variable the image ignored.
+          config:
+            gcWaitTime: 900000
+            journalMaxSizeMB: 1024
+          directories:
+            ansible: "{{ dir.ansible }}/bookkeeper-moved"
+            journal: "{{ dir.data }}/bookkeeper-moved/journal"
+            ledgers: "{{ dir.data }}/bookkeeper-moved/ledgers"
+            ranges: "{{ dir.data }}/bookkeeper-moved/ranges"
+
+        expected_compose_dir: /data/ansible/bookkeeper-moved
+        expected_journal_dir: /data/bookkeeper-moved/journal
+        expected_ledgers_dir: /data/bookkeeper-moved/ledgers
+        expected_network: bookkeeper-second
+        expected_zk_network: zookeeper-ensemble
+        # directories.ansible is relocated here, and compose names the project
+        # after it - so this name also proves the move actually took effect
+        expected_container: bookkeeper-moved-bookkeeper-1
+        expected_bookie_port: 3181
+        expected_image: apache/bookkeeper:4.18.0
+        expected_mounts:
+          - /data/bookkeeper-moved/journal:/bookkeeper/journal
+          - /data/bookkeeper-moved/ledgers:/bookkeeper/ledgers
+        expected_http_enabled: false
+        expected_http_port: 8080
+        expected_metrics_enabled: false
+        expected_instance_label: bk-node-2-bookkeeper-moved
+        expected_stream_storage: false
+        expected_cluster_writer: false
+        expected_bookie_id: "{{ ansible_default_ipv4.address }}:3181"
+        expected_ports:
+          - "{{ ansible_default_ipv4.address }}:3181:3181"
+        expected_roster:
+          - "{{ hostvars['bk-node-1'].ansible_default_ipv4.address }}:3181"
+          - "{{ hostvars['bk-node-2'].ansible_default_ipv4.address }}:3181"
+        # read back out of the container's generated conf
+        expected_config_lines:
+          - "gcWaitTime=900000"
+          - "journalMaxSizeMB=1024"
+        # the default paths this host must no longer touch
+        unexpected_paths:
+          - /data/ansible/bookkeeper
+          - /data/bookkeeper
+
+      bk-single:
+        # Standalone: one server, no quorum, no peer_ip - the single-host shape
+        # the bookie below is the counterpart of.
+        zookeeper:
+          image: zookeeper
+          version: "3.9.5"
+          id: 1
+          peer_ip: ""
+          quorum: []
+          listen_ips: []
+          network: zookeeper
+          client_port: 2181
+          tick_time: 2000
+          init_limit: 5
+          sync_limit: 2
+          max_client_cnxns: 60
+          autopurge:
+            purge_interval: 1
+            snap_retain_count: 3
+          four_lw_commands: "srvr,ruok,mntr"
+          admin_server: true
+          jvm_flags: "-XX:+UseShenandoahGC -Xmx512m"
+          config: []
+          metrics:
+            enabled: false
+            port: 7070
+          directories:
+            ansible: "{{ dir.ansible }}/zookeeper"
+            data: "{{ dir.data }}/zookeeper/data"
+            datalog: "{{ dir.data }}/zookeeper/datalog"
+            logs: "{{ dir.data }}/zookeeper/logs"
+
+        # A copy of the published defaults, except for the two disk_usage
+        # thresholds, which a dind instance cannot meet. tests.yml reads
+        # roles/bookkeeper/defaults/main.yaml from the controller and asserts
+        # every other key still matches, so this copy cannot go stale unnoticed.
+        bookkeeper:
+          image: apache/bookkeeper
+          version: "4.18.0"
+          # left at the default: the bookie is known by its compose service
+          # name, which is the whole of the single-host shape
+          advertised_ip: ""
+          network: bookkeeper
+          bookie_port: 3181
+          zookeeper:
+            network: zookeeper
+            servers: "zookeeper:2181"
+            ledgers_path: /ledgers
+          http:
+            enabled: true
+            port: 8080
+          metrics:
+            enabled: true
+          auto_recovery: true
+          disk_usage:
+            threshold: 0.99
+            warn_threshold: 0.99
+          jvm:
+            mem_opts: "-Xms512m -Xmx512m -XX:MaxDirectMemorySize=256m"
+            gc_opts: "-XX:+UseShenandoahGC"
+          stream_storage:
+            enabled: true
+            grpc_port: 4181
+            num_storage_containers: 8
+            ensemble_size: 1
+            write_quorum: 1
+            ack_quorum: 1
+          config: {}
+          directories:
+            ansible: "{{ dir.ansible }}/bookkeeper"
+            journal: "{{ dir.data }}/bookkeeper/journal"
+            ledgers: "{{ dir.data }}/bookkeeper/ledgers"
+            ranges: "{{ dir.data }}/bookkeeper/ranges"
+
+        expected_compose_dir: /data/ansible/bookkeeper
+        expected_journal_dir: /data/bookkeeper/journal
+        expected_ledgers_dir: /data/bookkeeper/ledgers
+        expected_ranges_dir: /data/bookkeeper/ranges
+        expected_network: bookkeeper
+        expected_zk_network: zookeeper
+        expected_container: bookkeeper-bookkeeper-1
+        expected_bookie_port: 3181
+        expected_image: apache/bookkeeper:4.18.0
+        expected_mounts:
+          - /data/bookkeeper/journal:/bookkeeper/journal
+          - /data/bookkeeper/ledgers:/bookkeeper/ledgers
+          - /data/bookkeeper/ranges:/bookkeeper/ranges
+        expected_http_enabled: true
+        expected_http_port: 8080
+        expected_metrics_enabled: true
+        expected_instance_label: bk-single-bookkeeper
+        expected_stream_storage: true
+        expected_grpc_port: 4181
+        # for the zkCli that reads the table service's registration back out of
+        # zookeeper - the image the zookeeper role already pulled on this host
+        expected_zk_image: zookeeper:3.9.5
+        expected_cluster_writer: false
+        expected_config_lines: []
+        # No advertised_ip, so the bookie is known by the compose service name -
+        # spelled out, because that fallback is the single-host shape itself.
+        expected_bookie_id: "bookkeeper:3181"
+        # nothing published: without an advertised_ip there is no address to
+        # publish on, and the bookie is reachable on its docker network alone
+        expected_ports: []
+        expected_roster:
+          - "bookkeeper:3181"

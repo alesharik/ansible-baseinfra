@@ -1,0 +1,83 @@
+---
+bookkeeper: # noqa: var-naming[no-role-prefix]
+  image: apache/bookkeeper
+  version: "4.18.0"
+  # The address clients and the other bookies reach this one at - and the
+  # identity it keeps for good, because BookKeeper writes it into a cookie on
+  # disk and into zookeeper on first start and then refuses to come up against a
+  # cookie that disagrees. Empty advertises the compose service name, which
+  # resolves on the docker network below and nowhere else: that is the
+  # single-host case. A cluster gives every member a routable host IP here, and
+  # the role publishes the bookie port on it.
+  advertised_ip: ""
+  # The docker network the role creates, and the name consumers attach to. It is
+  # also what tells two instances on one host apart in the metrics labels and in
+  # docker, so give the second one its own.
+  network: bookkeeper
+  bookie_port: 3181
+  # Where the cluster keeps its metadata. This is the whole of cluster
+  # membership: there is no member list in this role, and a bookie pointed at
+  # the same zookeeper joins the same cluster by registering itself in it.
+  zookeeper:
+    # Read off the zookeeper role when both roles sit in the same play, its
+    # default otherwise. Empty attaches no external network at all, for a
+    # zookeeper reached by address rather than over a docker network.
+    network: "{{ zookeeper.network | default('zookeeper') }}"
+    # host:port[,host:port...]. The default is the zookeeper role's container,
+    # by service name on the network above.
+    servers: "zookeeper:{{ zookeeper.client_port | default(2181) }}"
+    # The znode the ledger metadata is rooted at. Pointing a running cluster at
+    # a different one hides every ledger it has.
+    ledgers_path: /ledgers
+  # The bookie's admin server. It is also where /metrics comes from: with this
+  # enabled the prometheus provider serves through it instead of binding a port
+  # of its own, so metrics need it.
+  http:
+    enabled: true
+    port: 8080
+  metrics:
+    enabled: true
+  # The auditor and the replication worker, inside the bookie's own process.
+  # They are what notices a ledger left under-replicated by a lost bookie and
+  # copies it back up to its write quorum.
+  auto_recovery: true
+  # Fractions of the ledger disk. Past `threshold` the bookie turns read-only
+  # instead of filling it.
+  disk_usage:
+    threshold: 0.95
+    warn_threshold: 0.9
+  jvm:
+    mem_opts: "-Xms512m -Xmx512m -XX:MaxDirectMemorySize=256m"
+    gc_opts: "-XX:+UseShenandoahGC"
+  # BookKeeper's table service - the key/value store on top of the ledgers, and
+  # what Pulsar functions keep their state in. It is local to `network` above: a
+  # range server registers its own container address, so clients on another host
+  # cannot reach it even where the bookies themselves are clustered.
+  stream_storage:
+    enabled: true
+    grpc_port: 4181
+    # Written once, by the cluster init, and in zookeeper from then on -
+    # changing it afterwards does nothing at all.
+    num_storage_containers: 8
+    # How the table service replicates its own logs. These are the numbers that
+    # have to grow with the cluster: 1/1/1 needs one bookie, upstream's 3/2/2
+    # needs three, and asking for more bookies than the cluster has stops the
+    # table service from creating anything.
+    ensemble_size: 1
+    write_quorum: 1
+    ack_quorum: 1
+  # Extra bk_server.conf settings, as key: value. The image applies these by
+  # rewriting the line a key already has in its shipped conf, so a key that is
+  # not in that file is dropped without a word - see the README.
+  config: {}
+  directories:
+    ansible: "{{ dir.ansible }}/bookkeeper"
+    # Its own key because the journal is what every write waits on, and putting
+    # it on a separate device is upstream's first piece of tuning advice.
+    journal: "{{ dir.data }}/bookkeeper/journal"
+    # The entry logs, and the index that goes with them - the index directories
+    # are not a key of their own because BookKeeper defaults them to this one
+    # and the role has no reason to split them.
+    ledgers: "{{ dir.data }}/bookkeeper/ledgers"
+    # The table service's rocksdb state. Created only with stream_storage on.
+    ranges: "{{ dir.data }}/bookkeeper/ranges"

@@ -1,0 +1,135 @@
+#jinja2: trim_blocks: True, lstrip_blocks: True
+{# The bookie's identity in the cluster. Empty advertised_ip falls back to this
+   service's name, which the docker network below resolves - stable across
+   recreates, unlike the container address the bookie would pick on its own, and
+   that matters because this string is written into a cookie the bookie then
+   refuses to start without. #}
+{% set bk_id = bookkeeper.advertised_ip | default('bookkeeper', true) %}
+{% set bk_zk_attached = bookkeeper.zookeeper.network | length > 0 %}
+networks:
+  bookkeeper:
+    name: "{{ bookkeeper.network }}"
+{% if bk_zk_attached %}
+  zookeeper:
+    name: "{{ bookkeeper.zookeeper.network }}"
+    external: true
+{% endif %}
+services:
+  bookkeeper:
+    image: "{{ bookkeeper.image }}:{{ bookkeeper.version }}"
+    restart: unless-stopped
+    # Same string as this service's network alias, so that whatever resolves the
+    # container's own name inside it - the table service does - gets an address
+    # its clients can resolve too. Left to docker it would be the container id,
+    # which resolves to one address per network the container is on.
+    hostname: bookkeeper
+    # The `bookkeeper` user in the image, in the root group its own conf and
+    # scripts are group-readable through. Named here rather than left to the
+    # entrypoint, which would otherwise start as root and chown the whole data
+    # directory - every entry log in it - before dropping to this same uid.
+    user: "10000:0"
+{% if bookkeeper.stream_storage.enabled %}
+    # storageserver.grpc.useHostname has no line in the image's shipped conf, and
+    # the entrypoint can only rewrite settings that do - so it is appended here,
+    # before the entrypoint runs. It decides what the range server registers
+    # itself as: without it that is whichever of the container's addresses
+    # /etc/hosts happens to list first, which on a bookie attached to both this
+    # network and zookeeper's is as likely to be the one clients cannot reach.
+    # With it, the registration is the hostname above, which resolves on either.
+    entrypoint:
+      - /bin/bash
+      - -c
+      - >-
+        grep -q '^storageserver.grpc.useHostname=' /opt/bookkeeper/conf/bk_server.conf
+        || echo 'storageserver.grpc.useHostname=true' >> /opt/bookkeeper/conf/bk_server.conf;
+        exec /opt/bookkeeper/scripts/entrypoint.sh bookie
+{% endif %}
+    # Every BK_ variable names a bk_server.conf setting; the image's entrypoint
+    # rewrites that setting's line in its shipped conf before starting. It can
+    # only rewrite a line that is already there, which is why arbitrary settings
+    # are not a thing this role can offer - see the README on `config`.
+    environment:
+      BK_zkServers: "{{ bookkeeper.zookeeper.servers }}"
+      BK_zkLedgersRootPath: "{{ bookkeeper.zookeeper.ledgers_path }}"
+      BK_metadataServiceUri: "zk+hierarchical://{{ bookkeeper.zookeeper.servers }}{{ bookkeeper.zookeeper.ledgers_path }}"
+      BK_advertisedAddress: "{{ bk_id }}"
+      BK_bookiePort: "{{ bookkeeper.bookie_port }}"
+      # journalDirectories is what the bookie reads; journalDirectory is what
+      # the entrypoint creates and chowns before it starts. They have to name
+      # the same place, so both are set.
+      BK_journalDirectories: /bookkeeper/journal
+      BK_journalDirectory: /bookkeeper/journal
+      BK_ledgerDirectories: /bookkeeper/ledgers
+      BK_indexDirectories: /bookkeeper/ledgers
+      BK_diskUsageThreshold: "{{ bookkeeper.disk_usage.threshold }}"
+      BK_diskUsageWarnThreshold: "{{ bookkeeper.disk_usage.warn_threshold }}"
+      BK_httpServerEnabled: "{{ bookkeeper.http.enabled | ternary('true', 'false') }}"
+      BK_httpServerPort: "{{ bookkeeper.http.port }}"
+      BK_enableStatistics: "{{ bookkeeper.metrics.enabled | ternary('true', 'false') }}"
+      BK_statsProviderClass: org.apache.bookkeeper.stats.prometheus.PrometheusMetricsProvider
+      BK_autoRecoveryDaemonEnabled: "{{ bookkeeper.auto_recovery | ternary('true', 'false') }}"
+    {% if bookkeeper.stream_storage.enabled %}
+      BK_extraServerComponents: org.apache.bookkeeper.stream.server.StreamStorageLifecycleComponent
+      BK_storageserver.grpc.port: "{{ bookkeeper.stream_storage.grpc_port }}"
+      BK_storage.range.store.dirs: /bookkeeper/ranges
+      BK_dlog.bkcEnsembleSize: "{{ bookkeeper.stream_storage.ensemble_size }}"
+      BK_dlog.bkcWriteQuorumSize: "{{ bookkeeper.stream_storage.write_quorum }}"
+      BK_dlog.bkcAckQuorumSize: "{{ bookkeeper.stream_storage.ack_quorum }}"
+    {% endif %}
+      BOOKIE_MEM_OPTS: "{{ bookkeeper.jvm.mem_opts }}"
+      BOOKIE_GC_OPTS: "{{ bookkeeper.jvm.gc_opts }}"
+    {% for bk_key, bk_value in bookkeeper.config | dictsort %}
+      "BK_{{ bk_key }}": "{{ bk_value }}"
+    {% endfor %}
+    volumes:
+      - "{{ bookkeeper.directories.journal }}:/bookkeeper/journal"
+      - "{{ bookkeeper.directories.ledgers }}:/bookkeeper/ledgers"
+    {% if bookkeeper.stream_storage.enabled %}
+      - "{{ bookkeeper.directories.ranges }}:/bookkeeper/ranges"
+    {% endif %}
+    networks:
+      - bookkeeper
+    {% if bk_zk_attached %}
+      - zookeeper
+    {% endif %}
+    {% if bookkeeper.advertised_ip | length > 0 %}
+    # Published because the address a bookie advertises is the one every client
+    # and every other bookie dials it at. The table service's grpc port is not:
+    # a range server registers itself under the container hostname above, which
+    # resolves inside docker and nowhere else, so publishing the port would hand
+    # anything off this host an address it still could not use.
+    ports:
+      - "{{ bookkeeper.advertised_ip }}:{{ bookkeeper.bookie_port }}:{{ bookkeeper.bookie_port }}"
+    {% endif %}
+    {% if bookkeeper.http.enabled %}
+    healthcheck:
+      # is_ready is the bookie's own answer to "would I take a write", so this
+      # covers the read-only-on-full-disk case that a port check would not. It
+      # is not a cluster check: a bookie is ready on its own.
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:{{ bookkeeper.http.port }}/api/v1/bookie/is_ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    {% else %}
+    healthcheck:
+      # No admin server to ask, so this leaves the image's own check in place -
+      # `bookkeeper shell bookiesanity`, which writes and reads back a ledger.
+      # Only its timing is overridden: the image runs it every 10 seconds, and
+      # each run is a JVM start.
+      interval: 120s
+      timeout: 60s
+      retries: 3
+      start_period: 60s
+    {% endif %}
+    {% if bookkeeper.metrics.enabled %}
+    labels:
+      # The admin server's own endpoint - with it enabled the prometheus
+      # provider serves through it and binds no port of its own.
+      prometheus.io.path: /metrics
+      prometheus.io.port: {{ bookkeeper.http.port }}
+      # `network` rather than a name of its own: it is what tells two instances
+      # on one host apart, so it is what keeps their series apart too.
+      prometheus.io.network: "{{ bookkeeper.network }}"
+      prometheus.io.instance: "{{ ansible_hostname }}-{{ bookkeeper.directories.ansible | basename }}"
+    {% endif %}

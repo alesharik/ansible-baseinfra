@@ -1,0 +1,682 @@
+---
+# ==========================================================================
+# Every host - what the role wrote to disk
+# ==========================================================================
+- name: Stat the directories the role owns
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: bookkeeper_dirs
+  loop:
+    - "{{ expected_compose_dir }}"
+    - "{{ expected_journal_dir }}"
+    - "{{ expected_ledgers_dir }}"
+
+# 10000:0 is the `bookkeeper` user inside the image. The ownership is what lets
+# the container run as that user from the start: handed directories it does not
+# own, the entrypoint would instead start as root and chown the whole data
+# directory - every entry log in it - on every boot.
+- name: Check the directories, their modes and their ownership
+  vars:
+    compose_dir: "{{ bookkeeper_dirs.results[0].stat }}"
+    journal_dir: "{{ bookkeeper_dirs.results[1].stat }}"
+    ledgers_dir: "{{ bookkeeper_dirs.results[2].stat }}"
+  ansible.builtin.assert:
+    that:
+      - compose_dir.isdir
+      - compose_dir.mode == '0755'
+      - journal_dir.isdir
+      - journal_dir.mode == '0700'
+      - journal_dir.uid == 10000
+      - journal_dir.gid == 0
+      - ledgers_dir.isdir
+      - ledgers_dir.mode == '0700'
+      - ledgers_dir.uid == 10000
+      - ledgers_dir.gid == 0
+    fail_msg: >-
+      compose dir {{ compose_dir }}, journal dir {{ journal_dir }},
+      ledgers dir {{ ledgers_dir }}
+
+- name: Stat the table service directory
+  ansible.builtin.stat:
+    path: "{{ expected_ranges_dir }}"
+  register: bookkeeper_ranges
+  when: expected_stream_storage
+
+# The one directory that follows a feature rather than the role: created with
+# the table service on, and not created at all without it - so the absent branch
+# has to be checked too, or "it was there anyway" would pass for it.
+- name: Check the table service directory exists only where that service runs
+  ansible.builtin.assert:
+    that:
+      - bookkeeper_ranges.stat.isdir
+      - bookkeeper_ranges.stat.uid == 10000
+      - bookkeeper_ranges.stat.gid == 0
+    fail_msg: "ranges dir is {{ bookkeeper_ranges.stat }}"
+  when: expected_stream_storage
+
+- name: Stat the table service directory where that service is off
+  ansible.builtin.stat:
+    path: "{{ expected_ledgers_dir | dirname }}/ranges"
+  register: bookkeeper_ranges_absent
+  when: not expected_stream_storage
+
+- name: Check no table service directory was created without the table service
+  ansible.builtin.assert:
+    that:
+      - not bookkeeper_ranges_absent.stat.exists
+    # not stat.path: a stat of something absent carries `exists` and little else
+    fail_msg: "{{ expected_ledgers_dir | dirname }}/ranges exists with stream storage off"
+  when: not expected_stream_storage
+
+- name: Read the cookie the bookie wrote on first start
+  ansible.builtin.slurp:
+    src: "{{ expected_ledgers_dir }}/current/VERSION"
+  register: bookkeeper_cookie_raw
+
+# The cookie is this bookie's identity, and BookKeeper refuses to start against
+# one that disagrees with its configuration - so this is both the proof that
+# advertised_ip reached the running bookie and the value the role's own assert
+# exists to protect.
+- name: Check the bookie took the identity it was given
+  vars:
+    cookie: "{{ bookkeeper_cookie_raw.content | b64decode }}"
+    cookie_id: >-
+      {{ bookkeeper_cookie_raw.content | b64decode
+         | regex_search('bookieHost:\s*"([^"]+)"', '\1') | first }}
+  ansible.builtin.assert:
+    that:
+      - cookie_id == expected_bookie_id
+      # the journal the bookie recorded, which is the mount and not the image's
+      # own default under /opt/bookkeeper/data
+      - "'journalDir: \"/bookkeeper/journal\"' in cookie"
+    fail_msg: "cookie on disk is {{ cookie }}, expected {{ expected_bookie_id }}"
+
+# ==========================================================================
+# Every host - the rendered compose file
+# ==========================================================================
+- name: Read the rendered compose file
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/docker-compose.yml"
+  register: bookkeeper_compose_raw
+
+# Spelled out rather than derived from `bookkeeper`: an expectation built from
+# the same var the template reads would agree with a broken template.
+- name: Check the compose file starts the bookie it should
+  vars:
+    compose: "{{ bookkeeper_compose_raw.content | b64decode | from_yaml }}"
+    env: "{{ (bookkeeper_compose_raw.content | b64decode | from_yaml).services.bookkeeper.environment }}"
+  ansible.builtin.assert:
+    that:
+      - compose.services | list == ['bookkeeper']
+      - compose.networks.bookkeeper.name == expected_network
+      # attached to the zookeeper role's network, which this role does not own
+      - compose.networks.zookeeper.name == expected_zk_network
+      - compose.networks.zookeeper.external
+      # the image's own user; without it the entrypoint starts as root
+      - compose.services.bookkeeper.user == '10000:0'
+      # the same string as the service's network alias, so that what the
+      # container resolves for itself is what its clients resolve too
+      - compose.services.bookkeeper.hostname == 'bookkeeper'
+      - env.BK_metadataServiceUri == 'zk+hierarchical://zookeeper:2181/ledgers'
+      - env.BK_zkServers == 'zookeeper:2181'
+      - env.BK_advertisedAddress == expected_bookie_id.split(':')[0]
+      - env.BK_bookiePort == expected_bookie_port | string
+      # journalDirectories is what the bookie reads, journalDirectory what the
+      # entrypoint creates - both, or it prepares one place and uses another
+      - env.BK_journalDirectories == '/bookkeeper/journal'
+      - env.BK_journalDirectory == '/bookkeeper/journal'
+      - env.BK_ledgerDirectories == '/bookkeeper/ledgers'
+      - env.BK_indexDirectories == '/bookkeeper/ledgers'
+      - env.BK_httpServerEnabled == expected_http_enabled | ternary('true', 'false')
+      - env.BK_httpServerPort == expected_http_port | string
+      - env.BK_enableStatistics == expected_metrics_enabled | ternary('true', 'false')
+      - env.BK_autoRecoveryDaemonEnabled == 'true'
+      - env.BOOKIE_GC_OPTS == '-XX:+UseShenandoahGC'
+      - (expected_journal_dir ~ ':/bookkeeper/journal') in compose.services.bookkeeper.volumes
+      - (expected_ledgers_dir ~ ':/bookkeeper/ledgers') in compose.services.bookkeeper.volumes
+      # published only where there is an advertised address to publish on
+      - compose.services.bookkeeper.ports | default([]) == expected_ports
+    fail_msg: "rendered compose is {{ compose }}"
+
+- name: Check the table service is rendered only where it is enabled
+  vars:
+    compose: "{{ bookkeeper_compose_raw.content | b64decode | from_yaml }}"
+    env: "{{ (bookkeeper_compose_raw.content | b64decode | from_yaml).services.bookkeeper.environment }}"
+    stream_component: org.apache.bookkeeper.stream.server.StreamStorageLifecycleComponent
+  ansible.builtin.assert:
+    that:
+      - (env.BK_extraServerComponents | default('')) == (expected_stream_storage | ternary(stream_component, ''))
+      - ('BK_storage.range.store.dirs' in env) == expected_stream_storage
+      - ('BK_dlog.bkcEnsembleSize' in env) == expected_stream_storage
+      # its rocksdb state is bound only when it runs
+      - ((expected_ranges_dir | default('') ~ ':/bookkeeper/ranges') in compose.services.bookkeeper.volumes) == expected_stream_storage
+      # the entrypoint is only wrapped to append the one setting the image
+      # cannot take from the environment, so with the table service off it is
+      # the image's own
+      - (compose.services.bookkeeper.entrypoint is defined) == expected_stream_storage
+      - >-
+        (compose.services.bookkeeper.entrypoint | default([]) | join(' ')
+         is search('storageserver.grpc.useHostname')) == expected_stream_storage
+    fail_msg: "rendered compose is {{ compose }}"
+
+- name: Check the healthcheck asks the admin server where there is one
+  vars:
+    healthcheck: "{{ (bookkeeper_compose_raw.content | b64decode | from_yaml).services.bookkeeper.healthcheck }}"
+  ansible.builtin.assert:
+    that:
+      - healthcheck.test[0] == 'CMD-SHELL'
+      - healthcheck.test[1] is search('is_ready')
+      - healthcheck.test[1] is search(expected_http_port | string)
+    fail_msg: "healthcheck is {{ healthcheck }}"
+  when: expected_http_enabled
+
+# With no admin server there is nothing to ask, so the compose file must leave
+# the image's own check in place and override its timing alone - a `test` key
+# here would mean the role invented a check against a server that is off.
+- name: Check the healthcheck falls back to the image's own without an admin server
+  vars:
+    healthcheck: "{{ (bookkeeper_compose_raw.content | b64decode | from_yaml).services.bookkeeper.healthcheck }}"
+  ansible.builtin.assert:
+    that:
+      - healthcheck.test is not defined
+      - healthcheck.interval == '120s'
+    fail_msg: "healthcheck is {{ healthcheck }}"
+  when: not expected_http_enabled
+
+# ==========================================================================
+# Every host - what is actually running
+# ==========================================================================
+- name: List the running containers
+  ansible.builtin.command: docker ps --format '{% raw %}{{.Names}}{% endraw %}'
+  register: bookkeeper_ps
+  changed_when: false
+
+- name: Check this host's bookie is running
+  ansible.builtin.assert:
+    that:
+      - expected_container in bookkeeper_ps.stdout_lines
+    fail_msg: "containers present: {{ bookkeeper_ps.stdout_lines }}"
+
+- name: List every container, running or not
+  ansible.builtin.command: docker ps -a --format '{% raw %}{{.Names}} {{.Image}}{% endraw %}'
+  register: bookkeeper_ps_all
+  changed_when: false
+
+# The cluster init runs as a container of its own, under --rm. One left behind -
+# exited, on the bookie's image, outside the compose project - would mean the
+# role stopped cleaning up after it.
+- name: Check the cluster init left nothing behind
+  vars:
+    strays: >-
+      {{ bookkeeper_ps_all.stdout_lines | select('search', expected_image)
+         | reject('search', '^' ~ expected_container ~ ' ') | list }}
+  ansible.builtin.assert:
+    that:
+      - strays | length == 0
+    fail_msg: "containers left behind: {{ strays }}"
+
+- name: List the docker networks
+  ansible.builtin.command: docker network ls --format '{% raw %}{{.Name}}{% endraw %}'
+  register: bookkeeper_networks
+  changed_when: false
+
+- name: Check the role created the network under the name consumers use
+  ansible.builtin.assert:
+    that:
+      - expected_network in bookkeeper_networks.stdout_lines
+    fail_msg: "networks present: {{ bookkeeper_networks.stdout_lines }}"
+
+- name: Inspect the bookie container
+  ansible.builtin.command: "docker inspect {{ expected_container }}"
+  register: bookkeeper_inspect
+  changed_when: false
+
+# HostConfig.Binds carries a :rw or :ro suffix that a host:container pair does
+# not, so strip it before comparing.
+- name: Check the data directories are the mounts the bookie actually got
+  vars:
+    binds: >-
+      {{ (bookkeeper_inspect.stdout | from_json)[0].HostConfig.Binds
+         | map('regex_replace', ':(rw|ro)$', '') | list }}
+  ansible.builtin.assert:
+    that:
+      - binds | sort == expected_mounts | sort
+    fail_msg: "container is bound to {{ binds }}"
+
+- name: Check docker published the bookie port on the advertised address
+  vars:
+    bindings: "{{ (bookkeeper_inspect.stdout | from_json)[0].NetworkSettings.Ports }}"
+    bookie: "{{ expected_bookie_port }}/tcp"
+    own_ip: "{{ ansible_default_ipv4.address }}"
+  ansible.builtin.assert:
+    that:
+      - bindings[bookie][0].HostIp == own_ip
+      - bindings[bookie][0].HostPort == expected_bookie_port | string
+    fail_msg: "container published {{ bindings }}"
+  when: expected_ports | length > 0
+
+- name: Check nothing is published where there is no advertised address
+  vars:
+    bindings: "{{ (bookkeeper_inspect.stdout | from_json)[0].NetworkSettings.Ports }}"
+  ansible.builtin.assert:
+    that:
+      - bindings.values() | select('truthy') | list | length == 0
+    fail_msg: "container published {{ bindings }} without an advertised_ip"
+  when: expected_ports | length == 0
+
+- name: Wait for the container to report healthy
+  ansible.builtin.command: >-
+    docker inspect -f '{% raw %}{{.State.Health.Status}}{% endraw %}' {{ expected_container }}
+  register: bookkeeper_health
+  changed_when: false
+  retries: 30
+  delay: 10
+  until: bookkeeper_health.stdout == 'healthy'
+  when: expected_http_enabled
+
+# ==========================================================================
+# Every host - the config the entrypoint actually generated
+#
+# Read out of the running container rather than from the compose file: the image
+# applies a BK_ variable by rewriting the line its key already has in the
+# shipped conf, and drops it without a word when there is no such line. Only the
+# generated file says which of the two happened.
+# ==========================================================================
+- name: Read the bk_server.conf the entrypoint generated
+  ansible.builtin.command: "docker exec {{ expected_container }} cat /opt/bookkeeper/conf/bk_server.conf"
+  register: bookkeeper_conf
+  changed_when: false
+
+- name: Check the settings the role owns landed as directives
+  vars:
+    stream_component: org.apache.bookkeeper.stream.server.StreamStorageLifecycleComponent
+  ansible.builtin.assert:
+    that:
+      - ('advertisedAddress=' ~ expected_bookie_id.split(':')[0]) in bookkeeper_conf.stdout_lines
+      - ('bookiePort=' ~ expected_bookie_port) in bookkeeper_conf.stdout_lines
+      - "'metadataServiceUri=zk+hierarchical://zookeeper:2181/ledgers' in bookkeeper_conf.stdout_lines"
+      - "'journalDirectories=/bookkeeper/journal' in bookkeeper_conf.stdout_lines"
+      - "'ledgerDirectories=/bookkeeper/ledgers' in bookkeeper_conf.stdout_lines"
+      - "'autoRecoveryDaemonEnabled=true' in bookkeeper_conf.stdout_lines"
+      - ('httpServerEnabled=' ~ expected_http_enabled | ternary('true', 'false')) in bookkeeper_conf.stdout_lines
+      - ('enableStatistics=' ~ expected_metrics_enabled | ternary('true', 'false')) in bookkeeper_conf.stdout_lines
+      # the table service is a component the bookie loads, so its absence is a
+      # directive that must not be there rather than one set to false
+      - (('extraServerComponents=' ~ stream_component) in bookkeeper_conf.stdout_lines) == expected_stream_storage
+    fail_msg: "generated conf is {{ bookkeeper_conf.stdout }}"
+
+# `config` is the operator's half of the same mechanism. Checking it in the
+# generated file is the only way to tell a setting that took from one the image
+# quietly dropped.
+- name: Check every operator config entry landed on its own line
+  ansible.builtin.assert:
+    that:
+      - item in bookkeeper_conf.stdout_lines
+    fail_msg: "generated conf is {{ bookkeeper_conf.stdout }}"
+  loop: "{{ expected_config_lines }}"
+
+# ==========================================================================
+# Every host - the bookie itself
+#
+# Every command below runs from a container that is not part of the compose
+# project, reaching the bookie by service name on the network the role created -
+# which is how every consumer reaches it.
+# ==========================================================================
+- name: Ask the bookie whether it would take a write
+  ansible.builtin.command: >-
+    docker run --rm --network {{ expected_network }} --entrypoint wget
+    {{ expected_image }} -qO- http://bookkeeper:{{ expected_http_port }}/api/v1/bookie/state
+  register: bookkeeper_state
+  changed_when: false
+  retries: 30
+  delay: 10
+  until:
+    - bookkeeper_state.rc == 0
+    - "'\"running\" : true' in bookkeeper_state.stdout"
+  when: expected_http_enabled
+
+# read-only is what a bookie turns into when its disk passes diskUsageThreshold,
+# and it stays up in that state - so "running" alone would not catch it.
+- name: Check the bookie is up and writable
+  ansible.builtin.assert:
+    that:
+      - "'\"running\" : true' in bookkeeper_state.stdout"
+      - "'\"readOnly\" : false' in bookkeeper_state.stdout"
+    fail_msg: "bookie state is {{ bookkeeper_state.stdout }}"
+  when: expected_http_enabled
+
+# The cluster's own roster, as the bookies registered themselves in zookeeper.
+# On bk-node-1 this is where the second host has to appear: it is the whole of
+# cluster membership in this role, and nothing in the compose file could produce
+# an entry for a bookie running somewhere else.
+- name: Read the roster the bookies registered in zookeeper
+  ansible.builtin.command: >-
+    docker run --rm --network {{ expected_network }} --entrypoint wget
+    {{ expected_image }} -qO- 'http://bookkeeper:{{ expected_http_port }}/api/v1/bookie/list_bookies?type=rw'
+  register: bookkeeper_roster
+  changed_when: false
+  retries: 30
+  delay: 10
+  until:
+    - bookkeeper_roster.rc == 0
+    - (bookkeeper_roster.stdout | from_json | list | sort) == (expected_roster | sort)
+  when: expected_http_enabled
+
+- name: Check every member of this cluster is registered and no other
+  ansible.builtin.assert:
+    that:
+      - (bookkeeper_roster.stdout | from_json | list | sort) == (expected_roster | sort)
+    fail_msg: "roster is {{ bookkeeper_roster.stdout }}, expected {{ expected_roster }}"
+  when: expected_http_enabled
+
+- name: Check nothing answers where the admin server is off
+  ansible.builtin.command: >-
+    docker run --rm --network {{ expected_network }} --entrypoint wget
+    {{ expected_image }} -q -T 5 -O- http://bookkeeper:{{ expected_http_port }}/api/v1/bookie/state
+  register: bookkeeper_http_closed
+  changed_when: false
+  failed_when: false
+  when: not expected_http_enabled
+
+- name: Check the admin server really is off
+  ansible.builtin.assert:
+    that:
+      - bookkeeper_http_closed.rc != 0
+    fail_msg: "something answered on {{ expected_http_port }} with the admin server off"
+  when: not expected_http_enabled
+
+# ==========================================================================
+# bk-node-1 and bk-single - metrics
+# ==========================================================================
+- name: Check the metrics service is labelled for autodiscovery
+  vars:
+    compose: "{{ bookkeeper_compose_raw.content | b64decode | from_yaml }}"
+    labels: "{{ (bookkeeper_compose_raw.content | b64decode | from_yaml).services.bookkeeper.labels }}"
+  ansible.builtin.assert:
+    that:
+      # key by key, and the port through `string`: compose YAML parses it as an
+      # integer, while the label docker ends up carrying is text
+      - labels['prometheus.io.path'] == '/metrics'
+      - labels['prometheus.io.port'] | string == expected_http_port | string
+      - labels['prometheus.io.network'] == expected_network
+      - labels['prometheus.io.instance'] == expected_instance_label
+    fail_msg: "rendered compose is {{ compose }}"
+  when: expected_metrics_enabled
+
+# Scraped from the admin server's port, not from prometheusStatsHttpPort: with
+# that server enabled BookKeeper's prometheus provider serves through it and
+# binds nothing of its own. A scrape on 8000 would answer nothing at all, which
+# is exactly the mistake this asserts against.
+- name: Scrape the metrics endpoint from inside the network
+  ansible.builtin.command: >-
+    docker run --rm --network {{ expected_network }} --entrypoint wget
+    {{ expected_image }} -qO- http://bookkeeper:{{ expected_http_port }}/metrics
+  register: bookkeeper_metrics
+  changed_when: false
+  retries: 12
+  delay: 5
+  until:
+    - bookkeeper_metrics.rc == 0
+    - "'bookkeeper_server_' in bookkeeper_metrics.stdout"
+  when: expected_metrics_enabled
+
+- name: Check the provider reports the bookie's own series
+  ansible.builtin.assert:
+    that:
+      - "'bookkeeper_server_' in bookkeeper_metrics.stdout"
+      - "'bookie_' in bookkeeper_metrics.stdout"
+    fail_msg: "metrics endpoint returned {{ bookkeeper_metrics.stdout[:2000] }}"
+  when: expected_metrics_enabled
+
+- name: Check no metrics labels were rendered where metrics are off
+  vars:
+    compose: "{{ bookkeeper_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - compose.services.bookkeeper.labels is not defined
+    fail_msg: "metrics off still rendered {{ compose }}"
+  when: not expected_metrics_enabled
+
+# ==========================================================================
+# bk-node-1 - the cluster
+#
+# The real proof. A ledger with ensemble 2, write quorum 2 and ack quorum 2 puts
+# every entry on both bookies and waits for both to answer, so it cannot be
+# written unless the two containers - on two different hosts, with two different
+# zookeeper networks - found each other through the ensemble and are reachable
+# at the addresses they advertised. Nothing about that is observable on one host.
+#
+# The client is a container of its own on the zookeeper network: it reads the
+# roster from the metadata, exactly as any BookKeeper client does.
+# ==========================================================================
+- name: Write a ledger across both members of the cluster
+  ansible.builtin.command: >-
+    timeout 180 docker run --rm --network {{ expected_zk_network }}
+    -e BK_zkServers=zookeeper:2181
+    -e BK_metadataServiceUri=zk+hierarchical://zookeeper:2181/ledgers
+    {{ expected_image }} bookkeeper shell simpletest
+    -ensemble 2 -writeQuorum 2 -ackQuorum 2 -numEntries {{ molecule_cluster_entries }}
+  register: bookkeeper_simpletest
+  changed_when: false
+  retries: 12
+  delay: 10
+  until:
+    - bookkeeper_simpletest.rc == 0
+    - (molecule_cluster_entries | string ~ ' entries written to ledger')
+      in (bookkeeper_simpletest.stdout ~ bookkeeper_simpletest.stderr)
+  when: expected_cluster_writer
+
+- name: Check the ledger was committed by both bookies
+  ansible.builtin.assert:
+    that:
+      - (molecule_cluster_entries | string ~ ' entries written to ledger')
+        in (bookkeeper_simpletest.stdout ~ bookkeeper_simpletest.stderr)
+    fail_msg: >-
+      simpletest said {{ bookkeeper_simpletest.stdout }}{{ bookkeeper_simpletest.stderr }}
+  when: expected_cluster_writer
+
+# ==========================================================================
+# bk-single - the table service
+#
+# Where it belongs: a range server registers its own container address, so the
+# table service is reachable on this docker network and not from another host.
+# The put and the get below go through the storage containers the cluster init
+# allocated, which is what proves that init ran - without it the bookie would
+# not have started at all.
+# ==========================================================================
+# Asked before created, because creating one that is already there answers with
+# a bare INTERNAL_SERVER_ERROR - the same thing a broken table service says, so
+# a create that tolerated it would tolerate the failure too. This is also the
+# first command to reach the table service, so the wait for its storage
+# containers belongs here: "does not exist" is an answer, a connection error is
+# not.
+- name: Look for the namespace a previous verify may have created
+  ansible.builtin.command: >-
+    timeout 60 docker run --rm --network {{ expected_network }}
+    --entrypoint /opt/bookkeeper/bin/bkctl {{ expected_image }}
+    -u bk://bookkeeper:{{ expected_grpc_port }} namespace get {{ molecule_table_ns }}
+  register: bookkeeper_ns_get
+  changed_when: false
+  failed_when: false
+  retries: 10
+  delay: 5
+  # On what it says, not on its exit code: bkctl answers "does not exist" and
+  # still exits 0, so rc distinguishes nothing here. A run that reached neither
+  # answer never reached the table service - that is what is being waited for.
+  until: >-
+    ("Namespace '" ~ molecule_table_ns ~ "' :") in bookkeeper_ns_get.stdout
+    or 'does not exist' in bookkeeper_ns_get.stdout
+  when: expected_stream_storage
+
+- name: Create the namespace
+  ansible.builtin.command: >-
+    timeout 120 docker run --rm --network {{ expected_network }}
+    --entrypoint /opt/bookkeeper/bin/bkctl {{ expected_image }}
+    -u bk://bookkeeper:{{ expected_grpc_port }} namespace create {{ molecule_table_ns }}
+  register: bookkeeper_ns
+  # Both streams, every time: bkctl answers through a logger, and checking the
+  # one it does not happen to use would silently miss the answer entirely.
+  changed_when: "'Successfully created namespace' in (bookkeeper_ns.stdout ~ bookkeeper_ns.stderr)"
+  failed_when: "'Successfully created namespace' not in (bookkeeper_ns.stdout ~ bookkeeper_ns.stderr)"
+  when:
+    - expected_stream_storage
+    - "'does not exist' in bookkeeper_ns_get.stdout"
+
+- name: Look for the table a previous verify may have created
+  ansible.builtin.command: >-
+    timeout 120 docker run --rm --network {{ expected_network }}
+    --entrypoint /opt/bookkeeper/bin/bkctl {{ expected_image }}
+    -u bk://bookkeeper:{{ expected_grpc_port }} -n {{ molecule_table_ns }}
+    tables get {{ molecule_table }}
+  register: bookkeeper_table_get
+  changed_when: false
+  failed_when: false
+  when: expected_stream_storage
+
+- name: Create the table
+  ansible.builtin.command: >-
+    timeout 120 docker run --rm --network {{ expected_network }}
+    --entrypoint /opt/bookkeeper/bin/bkctl {{ expected_image }}
+    -u bk://bookkeeper:{{ expected_grpc_port }} -n {{ molecule_table_ns }}
+    tables create {{ molecule_table }}
+  register: bookkeeper_table
+  changed_when: "'Successfully created table' in (bookkeeper_table.stdout ~ bookkeeper_table.stderr)"
+  failed_when: "'Successfully created table' not in (bookkeeper_table.stdout ~ bookkeeper_table.stderr)"
+  when:
+    - expected_stream_storage
+    - "'does not exist' in bookkeeper_table_get.stdout"
+
+- name: Put a key
+  ansible.builtin.command: >-
+    timeout 120 docker run --rm --network {{ expected_network }}
+    --entrypoint /opt/bookkeeper/bin/bkctl {{ expected_image }}
+    -u bk://bookkeeper:{{ expected_grpc_port }} -n {{ molecule_table_ns }}
+    table put {{ molecule_table }} {{ molecule_table_key }} {{ molecule_table_value }}
+  register: bookkeeper_put
+  changed_when: "'Successfully update kv' in (bookkeeper_put.stdout ~ bookkeeper_put.stderr)"
+  failed_when: "'Successfully update kv' not in (bookkeeper_put.stdout ~ bookkeeper_put.stderr)"
+  when: expected_stream_storage
+
+- name: Read the key back
+  ansible.builtin.command: >-
+    timeout 120 docker run --rm --network {{ expected_network }}
+    --entrypoint /opt/bookkeeper/bin/bkctl {{ expected_image }}
+    -u bk://bookkeeper:{{ expected_grpc_port }} -n {{ molecule_table_ns }}
+    table get {{ molecule_table }} {{ molecule_table_key }}
+  register: bookkeeper_get
+  changed_when: false
+  when: expected_stream_storage
+
+- name: Check the table service stored and returned the value
+  ansible.builtin.assert:
+    that:
+      - ('value = ' ~ molecule_table_value)
+        in (bookkeeper_get.stdout_lines + bookkeeper_get.stderr_lines)
+    fail_msg: "table get returned {{ bookkeeper_get.stdout }}{{ bookkeeper_get.stderr }}"
+  when: expected_stream_storage
+
+# The registration itself, from zookeeper. The put and get above prove the
+# table service answers *this* client; this is what says it will answer any of
+# them, because the address it published is a name every container on the
+# network resolves rather than one of the container's two addresses - which is
+# what it registers when left alone, and which half the time is the one on
+# zookeeper's network.
+- name: Read what the range server registered itself as
+  ansible.builtin.command: >-
+    timeout 120 docker run --rm --network {{ expected_zk_network }} --entrypoint sh
+    {{ expected_zk_image }} -c 'echo "ls /stream/servers/available"
+    | zkCli.sh -server zookeeper:2181'
+  register: bookkeeper_stream_servers
+  changed_when: false
+  when: expected_stream_storage
+
+# Both streams: zkCli answers on one and logs on the other, and which is which
+# is not worth depending on.
+- name: Check the range server published a resolvable name and not a container address
+  vars:
+    answer: "{{ bookkeeper_stream_servers.stdout ~ bookkeeper_stream_servers.stderr }}"
+  ansible.builtin.assert:
+    that:
+      - ('[bookkeeper:' ~ expected_grpc_port ~ ']') in answer
+    fail_msg: "/stream/servers/available holds {{ answer }}"
+  when: expected_stream_storage
+
+# ==========================================================================
+# bk-single - the published defaults
+#
+# This host pins a copy of them, so the copy has to be checked against the
+# defaults themselves or it could drift and quietly stop testing them.
+# `directories` and the zookeeper wiring are compared by shape rather than by
+# value: this dict came out of slurp + from_yaml, which the templar never
+# renders, so its paths are still the literal "{{ dir.data }}/bookkeeper/..."
+# the file contains.
+# ==========================================================================
+- name: Read the role defaults from the controller
+  ansible.builtin.slurp:
+    src: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}/roles/bookkeeper/defaults/main.yaml"
+  delegate_to: localhost
+  become: false
+  register: bookkeeper_defaults_raw
+  when: inventory_hostname == 'bk-single'
+
+- name: Check this host still pins what the role actually ships
+  vars:
+    role_defaults: "{{ (bookkeeper_defaults_raw.content | b64decode | from_yaml).bookkeeper }}"
+  ansible.builtin.assert:
+    that:
+      - role_defaults.image == 'apache/bookkeeper'
+      - role_defaults.image == bookkeeper.image
+      - role_defaults.version == bookkeeper.version
+      - role_defaults.network == bookkeeper.network
+      - role_defaults.bookie_port == bookkeeper.bookie_port
+      - role_defaults.http == bookkeeper.http
+      - role_defaults.metrics == bookkeeper.metrics
+      - role_defaults.auto_recovery == bookkeeper.auto_recovery
+      - role_defaults.jvm == bookkeeper.jvm
+      - role_defaults.stream_storage == bookkeeper.stream_storage
+      - role_defaults.config == bookkeeper.config
+      - role_defaults.zookeeper.ledgers_path == bookkeeper.zookeeper.ledgers_path
+      # the single-host shape this host exists to cover: no advertised address,
+      # asserted on both sides so that a default gaining one would fail here
+      # rather than silently stop being tested
+      - role_defaults.advertised_ip == ''
+      - bookkeeper.advertised_ip == ''
+      # the two keys this host deliberately differs on - a dind instance shares
+      # the docker host's disk and cannot meet the shipped thresholds
+      - role_defaults.disk_usage.threshold == 0.95
+      - role_defaults.disk_usage.warn_threshold == 0.9
+      # read off the zookeeper role, with its default as the fallback
+      - "'zookeeper.network' in role_defaults.zookeeper.network"
+      - "'zookeeper.client_port' in role_defaults.zookeeper.servers"
+      - "'dir.ansible' in role_defaults.directories.ansible"
+      - role_defaults.directories.ansible.endswith('/bookkeeper')
+      - "'dir.data' in role_defaults.directories.journal"
+      - role_defaults.directories.journal.endswith('/bookkeeper/journal')
+      - "'dir.data' in role_defaults.directories.ledgers"
+      - role_defaults.directories.ledgers.endswith('/bookkeeper/ledgers')
+      - "'dir.data' in role_defaults.directories.ranges"
+      - role_defaults.directories.ranges.endswith('/bookkeeper/ranges')
+    fail_msg: "role ships {{ role_defaults }}, this host pins {{ bookkeeper }}"
+  when: inventory_hostname == 'bk-single'
+
+# ==========================================================================
+# bk-node-2 - relocated directories
+# ==========================================================================
+- name: Stat the paths this host relocated away from
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: bookkeeper_unexpected
+  # default([]) because a loop is expanded before `when` is consulted, and this
+  # var only exists on the host that relocated anything
+  loop: "{{ unexpected_paths | default([]) }}"
+  when: unexpected_paths is defined
+
+- name: Check the default paths were left alone
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists
+    fail_msg: "{{ item.item }} exists, so directories did not move"
+  loop: "{{ bookkeeper_unexpected.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: unexpected_paths is defined

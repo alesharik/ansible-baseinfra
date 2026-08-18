@@ -1,0 +1,31 @@
+---
+# bookkeeper depends on bootstrap and docker, not on zookeeper: an external
+# zookeeper is the ordinary case, and a role that deployed one would take that
+# choice away. So the scenario brings its own here, before converge - which also
+# means the role under test runs with zookeeper's defaults out of scope, exactly
+# as it does in any play that does not list both roles.
+- name: Gather facts
+  ansible.builtin.setup:
+
+- name: Deploy the zookeeper the bookies register in
+  ansible.builtin.include_role:
+    name: alesharik.baseinfra.zookeeper
+
+# The precondition every assertion after converge rests on. Without it a
+# zookeeper that never came up would show as bookies hanging in their
+# entrypoint's wait loop, which says nothing about the role under test.
+# zk_server_state rather than ruok: on the two cluster members this is also the
+# assertion that the ensemble formed, and a bookie cannot write metadata to a
+# member that is still LOOKING.
+- name: Check zookeeper is up and has settled into a state
+  ansible.builtin.command: >-
+    docker run --rm --network {{ zookeeper.network }} --entrypoint sh
+    {{ zookeeper.image }}:{{ zookeeper.version }}
+    -c 'echo mntr | nc -w 2 zookeeper {{ zookeeper.client_port }}'
+  register: bookkeeper_prepare_mntr
+  changed_when: false
+  retries: 30
+  delay: 5
+  until:
+    - bookkeeper_prepare_mntr.rc == 0
+    - bookkeeper_prepare_mntr.stdout is search('zk_server_state\s+(leader|follower|standalone)')
