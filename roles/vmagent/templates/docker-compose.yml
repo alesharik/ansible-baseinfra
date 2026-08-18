@@ -11,8 +11,8 @@ services:
 {% for key, value in vmagent.remoteWrite.items() %}
       - '-remoteWrite.{{ key }}={{ value }}'
 {% endfor %}
-{% if vmagent.host_label | default(true) %}
-      - '-remoteWrite.label=host={{ ansible_hostname }}'
+{% if vmagent.node_label | default(true) %}
+      - '-remoteWrite.label=node={{ ansible_hostname }}'
 {% endif %}
       - '-httpListenAddr=127.0.0.1:8429'
       - '-httpAuth.username=vmagent-auth'

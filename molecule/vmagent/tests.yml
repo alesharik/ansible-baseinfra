@@ -73,12 +73,12 @@
       - "'-remoteWrite.url=' ~ vmagent.remoteWrite.url in compose.services.vmagent.command"
     fail_msg: "compose command is {{ compose.services.vmagent.command }}"
 
-- name: Check the host label became a flag
+- name: Check the node label became a flag
   vars:
     compose: "{{ vmagent_compose_raw.content | b64decode | from_yaml }}"
   ansible.builtin.assert:
     that:
-      - expected_host_label_flag in compose.services.vmagent.command
+      - expected_node_label_flag in compose.services.vmagent.command
     fail_msg: "compose command is {{ compose.services.vmagent.command }}"
 
 # --- config.yml --------------------------------------------------------------
