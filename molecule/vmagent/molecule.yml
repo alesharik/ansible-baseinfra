@@ -79,6 +79,9 @@ provisioner:
         expected_conf_d_dir: /data/ansible/vm/agent/config/conf.d
         # fixed on the container's side of the mount, whatever the host paths are
         expected_conf_d_glob: /etc/vmagent/conf.d/*.yml
+        # literal: the scenario's vmagent dict does NOT set host_label, so this
+        # flag only renders if the template's default(true) fallback works
+        expected_host_label_flag: "-remoteWrite.label=host=vmagent-custom"
         # dropped into conf.d by prepare_tasks.yml, asserted to be scraped
         molecule_extra_job: molecule-extra
         # paths the role must NOT have touched - the defaults it no longer uses

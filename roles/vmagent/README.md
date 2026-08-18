@@ -19,12 +19,15 @@ vmagent:
   image: victoriametrics/vmagent
   version: v1.101.0
   remoteWrite: {} # each key becomes a -remoteWrite.<key>=<value> flag
+  host_label: true # adds -remoteWrite.label=host=<ansible_hostname> to every shipped series
   directories:
     ansible: "{{ dir.ansible }}/vmagent" # compose project on the host
     data: "{{ dir.data }}/vmagent" # mounted at /vmagent
 ```
 `vmagent` is a plain dict override — setting it replaces the defaults wholesale,
-so list every key above, not just the ones you are changing.
+so list every key above, not just the ones you are changing. Omitting
+`host_label` from an override still leaves the label on (the template defaults
+it to `true`); set it to `false` to ship series without the `host` label.
 
 These are the only two roots. `<ansible>/config` is the only path compose
 bind-mounts, at `/etc/vmagent`, so everything vmagent reads hangs off `ansible`
