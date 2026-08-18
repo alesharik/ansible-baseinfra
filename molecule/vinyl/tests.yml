@@ -201,6 +201,9 @@
       - >-
         compose.services.connector.labels['prometheus.io.port'] | string
         == expected_connector_labels['prometheus.io.port']
+      - >-
+        compose.services.connector.labels['prometheus.io.instance']
+        == expected_connector_labels['prometheus.io.instance']
     fail_msg: "rendered compose is {{ compose }}"
   when: inventory_hostname == 'vinyl-connector'
 

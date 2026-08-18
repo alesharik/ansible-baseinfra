@@ -158,6 +158,8 @@ provisioner:
         expected_connector_labels:
           prometheus.io.path: /metrics
           prometheus.io.port: "8405"
+          # basename of directories.ansible on this host
+          prometheus.io.instance: vinyl-moved
         expected_ports:
           - "127.0.0.1:8080:80"
         # container port -> the host address docker is expected to bind

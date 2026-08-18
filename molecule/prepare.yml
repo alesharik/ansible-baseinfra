@@ -22,6 +22,12 @@
 - name: Prepare instance
   hosts: all
   gather_facts: false
+  environment:
+    # docker bind-mounts /etc/hosts, /etc/hostname, /etc/resolv.conf — atomic
+    # rename fails there, let modules fall back to in-place writes. Same guard
+    # converge.yml carries: prepare tasks that pull in a role reach the same
+    # files.
+    ANSIBLE_UNSAFE_WRITES: "1"
   tasks:
     - name: Look for scenario prepare tasks
       ansible.builtin.stat:

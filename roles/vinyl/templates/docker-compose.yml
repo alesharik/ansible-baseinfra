@@ -76,6 +76,7 @@ services:
       # until something scrapes it.
       prometheus.io.path: /metrics
       prometheus.io.port: 8405
+      prometheus.io.instance: "{{ vinyl.directories.ansible | basename }}"
 {% if vinyl.networks is defined and vinyl.networks|length > 0 %}
     networks:
 {% for net in vinyl.networks %}

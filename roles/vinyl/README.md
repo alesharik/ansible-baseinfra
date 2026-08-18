@@ -231,6 +231,9 @@ no flag: haproxy's prometheus endpoint is compiled into the binary, so the
 numbers come from the process actually serving the requests. It answers at
 `/metrics` on port `8405` — the same unpublished listener as the healthcheck —
 and the container carries the same autodiscovery labels as everything else.
+`prometheus.io.instance` is the basename of `directories.ansible`, like etcd and
+zookeeper: a second instance on the same host is a second directory, and the
+basename is what keeps their series apart.
 
 Connector traffic appears under two proxies, `outbound` (the frontend varnish
 talks to) and `origin` (the backend that re-originates over TLS):
