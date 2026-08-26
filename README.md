@@ -22,6 +22,8 @@
 - [`zookeeper`](./roles/zookeeper/README.md) - deploy apache zookeeper, standalone or as an ensemble
 - [`bookkeeper`](./roles/bookkeeper/README.md) - deploy apache bookkeeper, a single bookie or a cluster
 - [`pulsar`](./roles/pulsar/README.md) - deploy an apache pulsar broker, a single one or a cluster
+- [`temporal`](./roles/temporal/README.md) - deploy a temporal server against an external postgres
+- [`temporal_ui`](./roles/temporal_ui/README.md) - deploy the temporal web ui
 
 ## Users and groups
 This role creates and manages users specified in config. It also can create homes for users, and set up their groups.
@@ -71,3 +73,5 @@ prometheus.io.address: 127.0.0.1:9586 # full address to server
 | `zookeeper`              | `3.9.5`                                                                 | 2026-08-18   | 2026-08-18   |
 | `bookkeeper`             | `4.18.0`                                                                | 2026-08-18   | 2026-08-18   |
 | `pulsar`                 | `4.2.1`                                                                 |              |              |
+| `temporal`               | `1.31.2`, admin-tools - `1.31.2`                                        | 2026-08-26   | 2026-08-26   |
+| `temporal_ui`            | `2.53.3`                                                                | 2026-08-26   | 2026-08-26   |

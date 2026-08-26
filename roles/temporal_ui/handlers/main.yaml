@@ -1,0 +1,6 @@
+---
+- name: restart temporal ui
+  tags: temporal_ui
+  community.docker.docker_compose_v2:
+    project_src: "{{ temporal_ui.directories.ansible }}"
+    state: restarted

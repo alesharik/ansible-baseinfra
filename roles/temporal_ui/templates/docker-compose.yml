@@ -1,0 +1,58 @@
+#jinja2: trim_blocks: True, lstrip_blocks: True
+{# No config file is written for this container - see the README. The image
+   ships config/docker.yaml, whose first line turns on its own templating, and
+   every UI default lives in that file rather than in the server's code. It is
+   configured here entirely through the environment it renders from. #}
+{% set ui_networks = temporal_ui.networks | default([]) %}
+{% if ui_networks | length > 0 %}
+{# Joined, not created: every one of these belongs to somebody else. #}
+networks:
+{% for ui_net in ui_networks %}
+  "{{ ui_net }}":
+    name: "{{ ui_net }}"
+    external: true
+{% endfor %}
+{% endif %}
+services:
+  ui:
+    image: "{{ temporal_ui.image }}:{{ temporal_ui.version }}"
+    restart: unless-stopped
+    # The `temporal` user in the image.
+    user: "1000:1000"
+    # Rendered as a list, not a mapping: `env` lines are already KEY=value, and
+    # compose takes one style or the other, not both in one service.
+    environment:
+      - "TEMPORAL_ADDRESS={{ temporal_ui.address }}"
+      - "TEMPORAL_UI_PORT={{ temporal_ui.port }}"
+      - "TEMPORAL_DEFAULT_NAMESPACE={{ temporal_ui.default_namespace }}"
+{% if temporal_ui.cors_origins | length > 0 %}
+      # Comma separated, which is how the image's template splits it. Omitted
+      # entirely when empty, so the image's own default survives rather than
+      # being replaced by an empty allow list.
+      - "TEMPORAL_CORS_ORIGINS={{ temporal_ui.cors_origins | join(',') }}"
+{% endif %}
+{% for ui_env in temporal_ui.env | default([]) %}
+      - "{{ ui_env }}"
+{% endfor %}
+{% if temporal_ui.listen_ips | length > 0 %}
+    ports:
+{% for ui_listen in temporal_ui.listen_ips %}
+      - "{{ ui_listen }}"
+{% endfor %}
+{% endif %}
+{% if ui_networks | length > 0 %}
+    networks:
+{% for ui_net in ui_networks %}
+      - "{{ ui_net }}"
+{% endfor %}
+{% endif %}
+    healthcheck:
+      # The UI serves its own index once it is up. This says nothing about
+      # whether it can reach the frontend - that is what /api/v1/namespaces
+      # answers, and it is a question about the server rather than this
+      # container, so it is not what keeps this one marked healthy.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:{{ temporal_ui.port }}/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s

@@ -1,0 +1,257 @@
+---
+# Every setting below is one the role writes from a var that also decides
+# something else - a published port, a joined network, what the schema tooling
+# connects to. Setting one through `config` would move the server's idea of it
+# without moving the publication or the migration with it, and the only symptom
+# would be a server that does not come up.
+- name: Collect config entries that collide with a setting the role owns
+  tags: temporal
+  ansible.builtin.set_fact:
+    temporal_config_conflicts: >-
+      {{ (temporal_config_conflicts | default([]))
+         + ((item.value | intersect((temporal.config[item.key] | default({})) | list))
+            | map('regex_replace', '^', item.key ~ '.') | list) }}
+  loop: "{{ temporal_managed_sections | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  vars:
+    temporal_managed_sections:
+      persistence: [numHistoryShards, datastores, defaultStore, visibilityStore]
+      global: [membership, metrics]
+      clusterMetadata: [currentClusterName, masterClusterName, clusterInformation]
+      publicClient: [hostPort]
+      dynamicConfigClient: [filepath]
+
+# The four services' rpc blocks, checked one level deeper: the ports are what
+# the compose file publishes and what the health wait dials, and bindOnIP is
+# what makes the frontend reachable off the container at all.
+- name: Collect service rpc entries that collide with a setting the role owns
+  tags: temporal
+  ansible.builtin.set_fact:
+    temporal_config_conflicts: >-
+      {{ (temporal_config_conflicts | default([]))
+         + ((['grpcPort', 'httpPort', 'membershipPort', 'bindOnIP']
+             | intersect(((temporal.config.services | default({}))[item].rpc | default({})) | list))
+            | map('regex_replace', '^', 'services.' ~ item ~ '.rpc.') | list) }}
+  loop: "{{ (temporal.config.services | default({})) | list }}"
+
+- name: Check no extra config entry collides with a setting the role owns
+  tags: temporal
+  ansible.builtin.assert:
+    that:
+      - temporal_config_conflicts | default([]) | length == 0
+    fail_msg: >-
+      temporal.config sets {{ temporal_config_conflicts | default([]) | join(', ') }},
+      which the role writes itself from its own vars. Those vars also decide what
+      is published, which networks are joined and what the schema migration
+      connects to, so overriding the setting alone leaves the two disagreeing.
+      Use the var instead.
+
+# Both of these fail late and unhelpfully. An empty password reaches the server
+# as an authentication error against the database it has already been told is
+# the right one; the same name for both stores puts workflow visibility in the
+# history tables, and the first symptom is a migration that half-applies.
+- name: Check the postgres connection is usable
+  tags: temporal
+  ansible.builtin.assert:
+    that:
+      - temporal.postgres.password | length > 0
+      - temporal.postgres.database != temporal.postgres.visibility_database
+      - temporal.postgres.host | length > 0
+    fail_msg: >-
+      temporal.postgres needs a password, a host, and two different database
+      names - it has host "{{ temporal.postgres.host }}", database
+      "{{ temporal.postgres.database }}" and visibility database
+      "{{ temporal.postgres.visibility_database }}". This role creates neither
+      database nor login role; both databases have to exist already.
+
+- name: Create compose dir
+  tags: temporal
+  ansible.builtin.file:
+    path: "{{ temporal.directories.ansible }}"
+    state: directory
+    mode: "0755"
+
+# 0400 owned by 1000, the uid in the image: this file carries the database
+# password, and compose bind-mounts it, so the host ownership is what the
+# container sees. Root-owned 0400 would be unreadable to the server, which then
+# fails to start with nothing in the message naming this file.
+- name: Move server config
+  tags: temporal
+  ansible.builtin.template:
+    src: temporal.yaml
+    dest: "{{ temporal.directories.ansible }}/temporal.yaml"
+    owner: "1000"
+    group: "1000"
+    mode: "0400"
+  notify:
+    - restart temporal
+
+- name: Move dynamic config
+  tags: temporal
+  ansible.builtin.template:
+    src: dynamicconfig.yaml
+    dest: "{{ temporal.directories.ansible }}/dynamicconfig.yaml"
+    mode: "0444"
+  notify:
+    - restart temporal
+
+- name: Move compose files
+  tags: temporal
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ temporal.directories.ansible }}/docker-compose.yml"
+    mode: "0700"
+  notify:
+    - restart temporal
+
+# Pull separately: on an up that also pulls, compose 5.4.0 labels the container
+# with the local image ID, then recreates it once on the next up.
+- name: Pull temporal image
+  tags: temporal
+  community.docker.docker_compose_v2_pull:
+    project_src: "{{ temporal.directories.ansible }}"
+    policy: missing
+
+# The schema has to be in place before the server starts: it reads the version
+# tables on the way up and exits if they are not there.
+#
+# Through the docker CLI rather than community.docker.docker_container: that
+# module talks to the API through python-requests, a library this collection
+# otherwise never needs on a target. Every other docker task here goes through
+# the compose modules, and those shell out to the CLI as this does.
+#
+# SQL_PASSWORD is passed as a bare `-e SQL_PASSWORD`, which makes docker forward
+# the value from this command's own environment rather than putting it in argv,
+# where it would be visible in `ps` on the target for as long as the container
+# runs.
+- name: Migrate the schema
+  tags: temporal
+  # One host at a time. Both commands are safe to repeat, but two hosts racing
+  # to create the same tables in a fresh database are not.
+  throttle: 1
+  vars:
+    # Both databases, both commands. setup-schema comes first every time:
+    # update-schema needs the version tables it creates, and on a database that
+    # already has them setup-schema is a no-op that says so.
+    temporal_schema_steps:
+      - database: "{{ temporal.postgres.database }}"
+        command: [setup-schema, -v, "0.0"]
+      - database: "{{ temporal.postgres.database }}"
+        command:
+          - update-schema
+          - --schema-dir
+          - /etc/temporal/schema/postgresql/v12/temporal/versioned
+      - database: "{{ temporal.postgres.visibility_database }}"
+        command: [setup-schema, -v, "0.0"]
+      - database: "{{ temporal.postgres.visibility_database }}"
+        command:
+          - update-schema
+          - --schema-dir
+          - /etc/temporal/schema/postgresql/v12/visibility/versioned
+    temporal_sql_env: >-
+      {{ ['-e', 'SQL_PLUGIN=postgres12',
+          '-e', 'SQL_HOST=' ~ temporal.postgres.host,
+          '-e', 'SQL_PORT=' ~ temporal.postgres.port,
+          '-e', 'SQL_USER=' ~ temporal.postgres.user,
+          '-e', 'SQL_PASSWORD',
+          '-e', 'SQL_DATABASE=' ~ item.database] }}
+    # The one-shot reaches the database exactly as the server will.
+    temporal_sql_networks: >-
+      {{ (temporal.postgres.network | length > 0)
+         | ternary(['--network=' ~ temporal.postgres.network], []) }}
+  environment:
+    SQL_PASSWORD: "{{ temporal.postgres.password }}"
+  ansible.builtin.command:
+    argv: >-
+      {{ ['docker', 'run', '--rm']
+         + temporal_sql_networks
+         + temporal_sql_env
+         + [temporal.admin_tools.image ~ ':' ~ temporal.admin_tools.version,
+            'temporal-sql-tool']
+         + item.command }}
+  register: temporal_schema
+  loop: "{{ temporal_schema_steps }}"
+  loop_control:
+    label: "{{ item.database }}/{{ item.command | first }}"
+  # Both commands are idempotent and each has its own way of saying it did
+  # nothing. Both streams, because which one the tool logs to is not this role's
+  # to assume.
+  changed_when: >-
+    'Skip version upgrade'
+      not in ((temporal_schema.stdout | default('')) ~ (temporal_schema.stderr | default('')))
+    and 'found zero updates'
+      not in ((temporal_schema.stdout | default('')) ~ (temporal_schema.stderr | default('')))
+  # postgres may only just have been started by its own role, which returns as
+  # soon as compose does and not when the server is accepting connections.
+  retries: 6
+  delay: 10
+  until: temporal_schema is not failed
+
+- name: Start temporal
+  tags: temporal
+  community.docker.docker_compose_v2:
+    project_src: "{{ temporal.directories.ansible }}"
+    state: present
+    remove_orphans: true
+
+- name: Make sure handlers are flushed immediately
+  tags: temporal
+  ansible.builtin.meta: flush_handlers
+
+# The container healthcheck is a port check, which the frontend passes before it
+# can serve. This is the end-to-end answer, and the namespace bootstrap below
+# needs it: a create against a server still acquiring shards fails outright.
+- name: Wait for temporal to serve
+  tags: temporal
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - "--network={{ temporal.network }}"
+      - "{{ temporal.admin_tools.image }}:{{ temporal.admin_tools.version }}"
+      - temporal
+      - operator
+      - cluster
+      - health
+      - "--address=temporal:{{ temporal.grpc_port }}"
+  register: temporal_health
+  changed_when: false
+  retries: 30
+  delay: 10
+  until: temporal_health is not failed and 'SERVING' in temporal_health.stdout
+
+# Created, not reconciled: `namespace create` against a namespace that is
+# already there exits 1 and says so, and there is nothing in this command that
+# would change a retention period. The README says as much.
+- name: Register namespaces
+  tags: temporal
+  throttle: 1
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - "--network={{ temporal.network }}"
+      - "{{ temporal.admin_tools.image }}:{{ temporal.admin_tools.version }}"
+      - temporal
+      - operator
+      - namespace
+      - create
+      - "--address=temporal:{{ temporal.grpc_port }}"
+      - "--retention={{ item.retention }}"
+      # -n, not the positional form, which is deprecated and warns.
+      - "-n"
+      - "{{ item.name }}"
+  register: temporal_namespace
+  loop: "{{ temporal.namespaces }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: >-
+    'already exists'
+      not in ((temporal_namespace.stdout | default('')) ~ (temporal_namespace.stderr | default('')))
+  failed_when: >-
+    temporal_namespace.rc != 0
+    and 'already exists'
+      not in ((temporal_namespace.stdout | default('')) ~ (temporal_namespace.stderr | default('')))

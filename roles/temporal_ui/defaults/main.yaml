@@ -1,0 +1,18 @@
+---
+temporal_ui: # noqa: var-naming[no-role-prefix]
+  image: temporalio/ui
+  version: "2.53.3"
+  networks:
+    - "{{ temporal.network | default('temporal') }}"
+  address: "temporal:{{ temporal.grpc_port | default(7233) }}"
+  port: 8080
+  listen_ips: []
+  default_namespace: default
+  cors_origins: []
+  # Any other setting, as KEY=value lines - the image renders its config from
+  # TEMPORAL_* environment variables, so this is the whole of the rest of its
+  # surface. `TEMPORAL_UI_PUBLIC_PATH=`, the auth block, the codec endpoint, and
+  # whatever fronts the UI is told about here too.
+  env: []
+  directories:
+    ansible: "{{ dir.ansible }}/temporal-ui"

@@ -1,0 +1,3 @@
+{#- Temporal's file-based dynamic config. Each key maps to a list of constrained
+    values; an empty mapping is valid and is what the server reads by default. -#}
+{{ temporal.dynamic_config | default({}, true) | to_nice_yaml(indent=2) }}

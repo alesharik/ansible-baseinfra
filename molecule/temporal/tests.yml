@@ -1,0 +1,333 @@
+---
+# expected_* comes from host_vars, spelled out per host rather than derived from
+# the `temporal` dict the templates read: an expectation built from the same var
+# the template consumed would let a broken template agree with a broken test.
+
+- name: Read the compose file the role wrote
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/docker-compose.yml"
+  register: temporal_test_compose
+
+- name: Read the server config the role wrote
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/temporal.yaml"
+  register: temporal_test_config
+
+- name: Stat the server config
+  ansible.builtin.stat:
+    path: "{{ expected_compose_dir }}/temporal.yaml"
+  register: temporal_test_config_stat
+
+# It carries the database password and compose bind-mounts it, so the host
+# ownership is what uid 1000 in the container sees. Root-owned 0400 would be
+# unreadable to the server, which then fails to start with nothing in the
+# message naming this file.
+- name: Check the server config is readable only by the uid the image runs as
+  ansible.builtin.assert:
+    that:
+      - temporal_test_config_stat.stat.mode == '0400'
+      - temporal_test_config_stat.stat.uid == 1000
+      - temporal_test_config_stat.stat.gid == 1000
+    fail_msg: >-
+      {{ expected_compose_dir }}/temporal.yaml is mode
+      {{ temporal_test_config_stat.stat.mode }} owned by
+      {{ temporal_test_config_stat.stat.uid }}:{{ temporal_test_config_stat.stat.gid }};
+      it has to be 0400 owned by 1000:1000.
+
+- name: Parse the server config
+  ansible.builtin.set_fact:
+    temporal_test_document: "{{ temporal_test_config.content | b64decode | from_yaml }}"
+
+- name: Check the server config says what the vars asked for
+  ansible.builtin.assert:
+    that:
+      - temporal_test_document.persistence.numHistoryShards == expected_num_history_shards
+      - temporal_test_document.persistence.datastores.default.sql.databaseName == expected_database
+      - >-
+        temporal_test_document.persistence.datastores.visibility.sql.databaseName
+        == expected_visibility_database
+      - temporal_test_document.persistence.datastores.default.sql.pluginName == 'postgres12'
+      - temporal_test_document.global.membership.broadcastAddress == expected_broadcast_address
+      - temporal_test_document.services.frontend.rpc.grpcPort == expected_grpc_port
+      - temporal_test_document.services.frontend.rpc.httpPort == expected_http_port
+      - temporal_test_document.services.frontend.rpc.bindOnIP == '0.0.0.0'
+      - temporal_test_document.clusterMetadata.currentClusterName == expected_cluster_name
+      - expected_cluster_name in temporal_test_document.clusterMetadata.clusterInformation
+      - >-
+        temporal_test_document.dynamicConfigClient.filepath
+        == '/etc/temporal/config/dynamicconfig.yaml'
+
+# The metrics listener is its own, separate from both rpc ports. With metrics
+# off the block must not be there at all - an empty one would still bind.
+- name: Check the metrics block is present exactly when metrics are enabled
+  ansible.builtin.assert:
+    that:
+      - >-
+        (expected_metrics_enabled
+         and temporal_test_document.global.metrics.prometheus.listenAddress
+             == '0.0.0.0:' ~ expected_metrics_port)
+        or (not expected_metrics_enabled and 'metrics' not in temporal_test_document.global)
+
+# Compared as whole top-level sections, so an entry the merge dropped shows up
+# as well as one it mangled.
+- name: Check operator config entries reached the server config
+  ansible.builtin.assert:
+    that:
+      - temporal_test_document[item.key] == item.value
+    fail_msg: >-
+      temporal.config section "{{ item.key }}" came out as
+      {{ temporal_test_document[item.key] | default('(absent)') }}, expected
+      {{ item.value }}.
+  loop: "{{ expected_config_document | default({}) | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Read the dynamic config the role wrote
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/dynamicconfig.yaml"
+  register: temporal_test_dynamic
+
+- name: Check the dynamic config carries the operator's keys
+  ansible.builtin.assert:
+    that:
+      - >-
+        (temporal_test_dynamic.content | b64decode | from_yaml | default({}, true) | list | sort)
+        == (expected_dynamic_config_keys | sort)
+
+# The role's own copy of temporal.yaml is one thing; what the container actually
+# mounted is another. This reads it back out of the running container.
+- name: Read the server config out of the running container
+  ansible.builtin.command: >-
+    timeout 30 docker exec {{ expected_container }}
+    cat /etc/temporal/config/temporal.yaml
+  register: temporal_test_incontainer
+  changed_when: false
+
+- name: Check the container is reading the config the role wrote
+  ansible.builtin.assert:
+    that:
+      - (temporal_test_incontainer.stdout | from_yaml) == temporal_test_document
+
+- name: Inspect the container
+  ansible.builtin.command: >-
+    timeout 30 docker inspect {{ expected_container }}
+  register: temporal_test_inspect
+  changed_when: false
+
+- name: Parse the inspect output
+  ansible.builtin.set_fact:
+    temporal_test_info: "{{ (temporal_test_inspect.stdout | from_json)[0] }}"
+
+- name: Check the container is running the expected image and is healthy
+  ansible.builtin.assert:
+    that:
+      - temporal_test_info.Config.Image == expected_image
+      - temporal_test_info.State.Running
+      - temporal_test_info.State.Health.Status == 'healthy'
+
+# HostConfig.Binds carries the mount mode as a suffix - :ro for these two,
+# :rw for a mount that did not ask for read-only - which the host_vars pairs
+# do not. Strip either.
+- name: Check the mounts are the two config files and nothing else
+  ansible.builtin.assert:
+    that:
+      - >-
+        (temporal_test_info.HostConfig.Binds
+         | map('regex_replace', ':r[ow]$', '') | list | sort)
+        == (expected_mounts | sort)
+
+- name: Collect what the container actually published
+  vars:
+    temporal_test_bindings: >-
+      {{ (temporal_test_info.HostConfig.PortBindings | default({}))
+         | dict2items | map(attribute='value') | flatten }}
+  ansible.builtin.set_fact:
+    temporal_test_published: >-
+      {{ (temporal_test_bindings | map(attribute='HostIp') | list)
+         | zip(temporal_test_bindings | map(attribute='HostPort') | list)
+         | map('join', ':') | list | sort }}
+
+- name: Check the published ports
+  ansible.builtin.assert:
+    that:
+      - temporal_test_published == (expected_ports | sort)
+    fail_msg: >-
+      published {{ temporal_test_published }}, expected {{ expected_ports | sort }}
+
+- name: Check the prometheus labels are present exactly when metrics are enabled
+  ansible.builtin.assert:
+    that:
+      - >-
+        (expected_metrics_enabled
+         and temporal_test_info.Config.Labels['prometheus.io.port'] == expected_metrics_port | string
+         and temporal_test_info.Config.Labels['prometheus.io.path'] == '/metrics'
+         and temporal_test_info.Config.Labels['prometheus.io.network'] == expected_network
+         and temporal_test_info.Config.Labels['prometheus.io.instance'] == expected_instance_label)
+        or (not expected_metrics_enabled
+            and 'prometheus.io.port' not in temporal_test_info.Config.Labels)
+
+- name: Check the container joined the network the role created
+  ansible.builtin.assert:
+    that:
+      - expected_network in temporal_test_info.NetworkSettings.Networks
+
+# The end-to-end answer, and the one the container healthcheck cannot give: that
+# check is a port probe the frontend passes before it can serve.
+- name: Check the cluster reports itself serving
+  ansible.builtin.command: >-
+    timeout 60 docker run --rm --network {{ expected_network }}
+    {{ temporal.admin_tools.image }}:{{ temporal.admin_tools.version }}
+    temporal operator cluster health --address temporal:{{ expected_grpc_port }}
+  register: temporal_test_health
+  changed_when: false
+  failed_when: "'SERVING' not in temporal_test_health.stdout"
+
+- name: List the registered namespaces
+  ansible.builtin.command: >-
+    timeout 60 docker run --rm --network {{ expected_network }}
+    {{ temporal.admin_tools.image }}:{{ temporal.admin_tools.version }}
+    temporal operator namespace list --address temporal:{{ expected_grpc_port }} -o json
+  register: temporal_test_nslist
+  changed_when: false
+
+- name: Check every expected namespace was registered
+  ansible.builtin.assert:
+    that:
+      - item in temporal_test_nslist.stdout
+  loop: "{{ expected_namespaces }}"
+
+- name: Check the metrics endpoint answers when metrics are enabled
+  ansible.builtin.command: >-
+    timeout 30 docker exec {{ expected_container }}
+    wget -q -O - http://127.0.0.1:{{ expected_metrics_port }}/metrics
+  register: temporal_test_metrics
+  changed_when: false
+  failed_when: temporal_test_metrics.rc != 0 or '# HELP' not in temporal_test_metrics.stdout
+  when: expected_metrics_enabled
+
+- name: Check nothing is listening on the metrics port when metrics are disabled
+  ansible.builtin.command: >-
+    timeout 30 docker exec {{ expected_container }}
+    nc -z 127.0.0.1 {{ expected_metrics_port }}
+  register: temporal_test_nometrics
+  changed_when: false
+  failed_when: temporal_test_nometrics.rc == 0
+  when: not expected_metrics_enabled
+
+# The round trip. Starting a workflow writes through the history store and
+# listing it reads back through the visibility store, so this fails if either
+# database was migrated into the wrong place - which nothing above would catch.
+# No worker ever picks it up, which is fine: execution is not what is under test.
+- name: Start a workflow
+  ansible.builtin.command: >-
+    timeout 60 docker run --rm --network {{ expected_network }}
+    {{ temporal.admin_tools.image }}:{{ temporal.admin_tools.version }}
+    temporal workflow start --address temporal:{{ expected_grpc_port }}
+    -n default --type {{ molecule_workflow_type }}
+    --task-queue {{ molecule_workflow_queue }}
+    --workflow-id molecule-{{ inventory_hostname }}
+  register: temporal_test_start
+  changed_when: true
+
+- name: Wait for the workflow to reach the visibility store
+  ansible.builtin.command: >-
+    timeout 60 docker run --rm --network {{ expected_network }}
+    {{ temporal.admin_tools.image }}:{{ temporal.admin_tools.version }}
+    temporal workflow list --address temporal:{{ expected_grpc_port }} -n default -o json
+  register: temporal_test_list
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: "'molecule-' ~ inventory_hostname in temporal_test_list.stdout"
+
+# The schema tooling wrote these. Read straight out of the database rather than
+# inferred from the migration's own output.
+- name: Check both databases carry a schema version
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - "30"
+      - docker
+      - exec
+      - "{{ molecule_pg_container }}"
+      - psql
+      - -U
+      - "{{ molecule_pg_user }}"
+      - -d
+      - "{{ item }}"
+      - -tAc
+      - select count(*) from schema_version
+  register: temporal_test_schema
+  changed_when: false
+  failed_when: temporal_test_schema.rc != 0 or (temporal_test_schema.stdout | trim | int) < 1
+  loop:
+    - "{{ expected_database }}"
+    - "{{ expected_visibility_database }}"
+
+- name: Stat the paths a relocated instance must not have touched
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: temporal_test_unexpected
+  loop: "{{ unexpected_paths | default([]) }}"
+
+- name: Check the relocated instance left the default paths alone
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists
+    fail_msg: "{{ item.item }} exists, but this host's directories are relocated"
+  loop: "{{ temporal_test_unexpected.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# A host pinning "the role defaults" re-reads them from the controller, so its
+# copy in host_vars cannot drift from the published defaults unnoticed. Only the
+# keys that carry no Jinja: slurped YAML is never re-templated, so the ones that
+# do would compare a literal "{{ dir.ansible }}/temporal" against a real path.
+- name: Read the role defaults from the controller
+  ansible.builtin.slurp:
+    src: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}/roles/temporal/defaults/main.yaml"
+  delegate_to: localhost
+  become: false
+  register: temporal_test_defaults
+  when: expected_matches_defaults
+
+- name: Check this host's dict still matches the published defaults
+  vars:
+    temporal_published: "{{ (temporal_test_defaults.content | b64decode | from_yaml).temporal }}"
+  ansible.builtin.assert:
+    that:
+      - temporal.image == temporal_published.image
+      - temporal.version == temporal_published.version
+      - temporal.admin_tools == temporal_published.admin_tools
+      - temporal.network == temporal_published.network
+      - temporal.advertised_ip == temporal_published.advertised_ip
+      - temporal.grpc_port == temporal_published.grpc_port
+      - temporal.http_port == temporal_published.http_port
+      - temporal.membership == temporal_published.membership
+      - temporal.num_history_shards == temporal_published.num_history_shards
+      - temporal.cluster_name == temporal_published.cluster_name
+      - temporal.log_level == temporal_published.log_level
+      - temporal.namespaces == temporal_published.namespaces
+      - temporal.metrics == temporal_published.metrics
+      - temporal.dynamic_config == temporal_published.dynamic_config
+      - temporal.config == temporal_published.config
+      - temporal.postgres.port == temporal_published.postgres.port
+      - temporal.postgres.network == temporal_published.postgres.network
+      - temporal.postgres.user == temporal_published.postgres.user
+      - temporal.postgres.database == temporal_published.postgres.database
+      - temporal.postgres.visibility_database == temporal_published.postgres.visibility_database
+      - temporal.postgres.max_conns == temporal_published.postgres.max_conns
+      - temporal.postgres.max_idle_conns == temporal_published.postgres.max_idle_conns
+      - temporal.postgres.max_conn_lifetime == temporal_published.postgres.max_conn_lifetime
+      - temporal.postgres.visibility_max_conns == temporal_published.postgres.visibility_max_conns
+      - >-
+        temporal.postgres.visibility_max_idle_conns
+        == temporal_published.postgres.visibility_max_idle_conns
+      - >-
+        temporal.postgres.visibility_max_conn_lifetime
+        == temporal_published.postgres.visibility_max_conn_lifetime
+    fail_msg: >-
+      This host pins the role defaults, but its `temporal` dict no longer
+      matches roles/temporal/defaults/main.yaml. Update the copy in
+      molecule/temporal/molecule.yml.
+  when: expected_matches_defaults

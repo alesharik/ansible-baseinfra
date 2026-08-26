@@ -1,0 +1,75 @@
+#jinja2: trim_blocks: True, lstrip_blocks: True
+{# One container, running frontend, history, matching and worker in one process.
+   The four find each other over ringpop membership on the loopback address in
+   temporal.yaml, which is why this is a single-container role: see the README
+   before reaching for a second host. #}
+{% set temporal_pg_attached = temporal.postgres.network | length > 0 %}
+{% set temporal_published = temporal.advertised_ip | length > 0 %}
+networks:
+  temporal:
+    name: "{{ temporal.network }}"
+{% if temporal_pg_attached %}
+  postgres:
+    name: "{{ temporal.postgres.network }}"
+    external: true
+{% endif %}
+services:
+  temporal:
+    image: "{{ temporal.image }}:{{ temporal.version }}"
+    restart: unless-stopped
+    # Same string as this service's network alias, so anything resolving the
+    # container's own name inside it gets an address its clients can resolve
+    # too. Left to docker it would be the container id, which resolves to one
+    # address per network the container is on - and this one can be on two.
+    hostname: temporal
+    # The `temporal` user in the image. Named here because the config file this
+    # mounts is written 0400 owned by the same uid: it carries the database
+    # password, and compose bind-mounts keep the host ownership.
+    user: "1000:1000"
+    environment:
+      # The image ships no config and templates nothing, so this is the whole of
+      # how the server is configured. Note `start` honours this variable while
+      # `render-config` does not - it reads only the config *directory*.
+      TEMPORAL_SERVER_CONFIG_FILE_PATH: /etc/temporal/config/temporal.yaml
+    volumes:
+      - "{{ temporal.directories.ansible }}/temporal.yaml:/etc/temporal/config/temporal.yaml:ro"
+      - "{{ temporal.directories.ansible }}/dynamicconfig.yaml:/etc/temporal/config/dynamicconfig.yaml:ro"
+    networks:
+      - temporal
+{% if temporal_pg_attached %}
+      # Only to reach the database. Nothing is published on it.
+      - postgres
+{% endif %}
+{% if temporal_published %}
+    # Both ports: a client needs the frontend's gRPC to open workflows and its
+    # HTTP API for anything that speaks that instead.
+    ports:
+      - "{{ temporal.advertised_ip }}:{{ temporal.grpc_port }}:{{ temporal.grpc_port }}"
+      - "{{ temporal.advertised_ip }}:{{ temporal.http_port }}:{{ temporal.http_port }}"
+{% endif %}
+    healthcheck:
+      # A liveness check and not an end-to-end one: the frontend holds this port
+      # open before it can serve, so a server whose database is unreachable
+      # still passes it. `temporal operator cluster health` is the real answer,
+      # and the role waits on that once, after the up. busybox nc, from the
+      # image itself - there is no grpc health probe in it.
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 {{ temporal.grpc_port }}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # The server migrates nothing but does acquire every history shard before
+      # it answers, which takes appreciably longer than the process start.
+      start_period: 60s
+{% if temporal.metrics.enabled %}
+    labels:
+      # Its own listener, not http_port and not grpc_port - the server serves no
+      # metrics on either. Not published either: the scrape comes from vmagent,
+      # which runs on the host network and reaches the container over the bridge.
+      prometheus.io.path: /metrics
+      prometheus.io.port: {{ temporal.metrics.port }}
+      # The network this role creates, never a joined `postgres.network`: a
+      # scraper has to be on the network it reaches the container through, and
+      # that is the one vmagent is on.
+      prometheus.io.network: "{{ temporal.network }}"
+      prometheus.io.instance: "{{ ansible_hostname }}-{{ temporal.directories.ansible | basename }}"
+{% endif %}

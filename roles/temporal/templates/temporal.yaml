@@ -1,0 +1,122 @@
+{#- The whole of the server's configuration.
+
+    temporalio/server ships *no* config file - the image contains one file under
+    /etc/temporal, its entrypoint - and its loader applies no templating of its
+    own, so none of the DB=/POSTGRES_SEEDS=/BIND_ON_IP= environment variables
+    that the reference compose file sets reach it. That indirection lived in the
+    archived temporalio/docker-builds image. This file is what the server reads,
+    through TEMPORAL_SERVER_CONFIG_FILE_PATH.
+
+    Built as a mapping and emitted with to_nice_yaml rather than written out
+    longhand, so that `temporal.config` has exactly one place to merge into. -#}
+{% set temporal_pg = temporal.postgres %}
+{% set temporal_addr = temporal_pg.host ~ ':' ~ temporal_pg.port %}
+{% set temporal_default_store = {
+     'sql': {
+       'pluginName': 'postgres12',
+       'databaseName': temporal_pg.database,
+       'connectAddr': temporal_addr,
+       'connectProtocol': 'tcp',
+       'user': temporal_pg.user,
+       'password': temporal_pg.password,
+       'maxConns': temporal_pg.max_conns,
+       'maxIdleConns': temporal_pg.max_idle_conns,
+       'maxConnLifetime': temporal_pg.max_conn_lifetime,
+     },
+   } %}
+{% set temporal_visibility_store = {
+     'sql': {
+       'pluginName': 'postgres12',
+       'databaseName': temporal_pg.visibility_database,
+       'connectAddr': temporal_addr,
+       'connectProtocol': 'tcp',
+       'user': temporal_pg.user,
+       'password': temporal_pg.password,
+       'maxConns': temporal_pg.visibility_max_conns,
+       'maxIdleConns': temporal_pg.visibility_max_idle_conns,
+       'maxConnLifetime': temporal_pg.visibility_max_conn_lifetime,
+     },
+   } %}
+{#- Membership is ringpop gossip between the four services, and it is not how a
+    client reaches the frontend. broadcastAddress has to be a literal IP: a name
+    is rejected as a malformed config, and an empty value under the wildcard
+    bind below stops the server starting at all. -#}
+{% set temporal_global = {
+     'membership': {
+       'maxJoinDuration': '30s',
+       'broadcastAddress': temporal.membership.broadcast_address,
+     },
+     'pprof': {'port': 0},
+   } %}
+{% if temporal.metrics.enabled %}
+{%   set temporal_global = temporal_global | combine({
+       'metrics': {
+         'prometheus': {
+           'timerType': 'histogram',
+           'listenAddress': '0.0.0.0:' ~ temporal.metrics.port,
+         },
+       },
+     }, recursive=True) %}
+{% endif %}
+{#- 0.0.0.0 so the frontend is reachable from the docker network. The other
+    three services are addressed through membership above and bind wide only
+    because they share this container's network namespace. -#}
+{% set temporal_services = {
+     'frontend': {'rpc': {
+       'grpcPort': temporal.grpc_port,
+       'httpPort': temporal.http_port,
+       'membershipPort': temporal.membership.frontend_port,
+       'bindOnIP': '0.0.0.0',
+     }},
+     'history': {'rpc': {
+       'grpcPort': 7234,
+       'membershipPort': temporal.membership.history_port,
+       'bindOnIP': '0.0.0.0',
+     }},
+     'matching': {'rpc': {
+       'grpcPort': 7235,
+       'membershipPort': temporal.membership.matching_port,
+       'bindOnIP': '0.0.0.0',
+     }},
+     'worker': {'rpc': {
+       'grpcPort': 7239,
+       'membershipPort': temporal.membership.worker_port,
+       'bindOnIP': '0.0.0.0',
+     }},
+   } %}
+{% set temporal_document = {
+     'log': {'stdout': true, 'level': temporal.log_level},
+     'persistence': {
+       'numHistoryShards': temporal.num_history_shards,
+       'defaultStore': 'default',
+       'visibilityStore': 'visibility',
+       'datastores': {
+         'default': temporal_default_store,
+         'visibility': temporal_visibility_store,
+       },
+     },
+     'global': temporal_global,
+     'services': temporal_services,
+     'clusterMetadata': {
+       'enableGlobalNamespace': false,
+       'failoverVersionIncrement': 10,
+       'masterClusterName': temporal.cluster_name,
+       'currentClusterName': temporal.cluster_name,
+       'clusterInformation': {
+         temporal.cluster_name: {
+           'enabled': true,
+           'initialFailoverVersion': 1,
+           'rpcName': 'frontend',
+           'rpcAddress': '127.0.0.1:' ~ temporal.grpc_port,
+           'httpAddress': '127.0.0.1:' ~ temporal.http_port,
+         },
+       },
+     },
+     'dcRedirectionPolicy': {'policy': 'noop'},
+     'publicClient': {'hostPort': '127.0.0.1:' ~ temporal.grpc_port},
+     'dynamicConfigClient': {
+       'filepath': '/etc/temporal/config/dynamicconfig.yaml',
+       'pollInterval': '60s',
+     },
+   } %}
+{{ temporal_document | combine(temporal.config | default({}, true), recursive=True) | to_nice_yaml(indent=2) }}

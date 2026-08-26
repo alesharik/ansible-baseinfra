@@ -1,0 +1,177 @@
+---
+# expected_* comes from host_vars, spelled out per host rather than derived from
+# the `temporal_ui` dict the template reads.
+
+- name: Inspect the container
+  ansible.builtin.command: >-
+    timeout 30 docker inspect {{ expected_container }}
+  register: temporal_ui_test_inspect
+  changed_when: false
+
+- name: Parse the inspect output
+  ansible.builtin.set_fact:
+    temporal_ui_test_info: "{{ (temporal_ui_test_inspect.stdout | from_json)[0] }}"
+
+- name: Check the container is running the expected image and is healthy
+  ansible.builtin.assert:
+    that:
+      - temporal_ui_test_info.Config.Image == expected_image
+      - temporal_ui_test_info.State.Running
+      - temporal_ui_test_info.State.Health.Status == 'healthy'
+
+- name: Check the container joined the network it was told to
+  ansible.builtin.assert:
+    that:
+      - expected_network in temporal_ui_test_info.NetworkSettings.Networks
+
+# This role writes no config file at all - the image renders its own from the
+# environment, and every UI default lives in that file. So the environment is
+# the whole of what there is to assert on.
+- name: Check the role owns exactly the variables it says it does
+  vars:
+    temporal_ui_env: "{{ temporal_ui_test_info.Config.Env }}"
+  ansible.builtin.assert:
+    that:
+      - "'TEMPORAL_ADDRESS=' ~ expected_address in temporal_ui_env"
+      - "'TEMPORAL_UI_PORT=' ~ expected_port in temporal_ui_env"
+      - "'TEMPORAL_DEFAULT_NAMESPACE=' ~ expected_default_namespace in temporal_ui_env"
+    fail_msg: "container env is {{ temporal_ui_env }}"
+
+# Empty cors_origins must leave the variable unset, so the image's own default
+# allow list survives rather than being replaced by an empty one.
+- name: Check the CORS variable is set exactly when origins were given
+  vars:
+    temporal_ui_cors: >-
+      {{ temporal_ui_test_info.Config.Env
+         | select('match', '^TEMPORAL_CORS_ORIGINS=') | list }}
+  ansible.builtin.assert:
+    that:
+      - >-
+        (expected_cors_set
+         and temporal_ui_cors == ['TEMPORAL_CORS_ORIGINS=' ~ expected_cors_value])
+        or (not expected_cors_set and temporal_ui_cors | length == 0)
+    fail_msg: "TEMPORAL_CORS_ORIGINS is {{ temporal_ui_cors }}"
+
+- name: Check operator env lines reached the container
+  ansible.builtin.assert:
+    that:
+      - item in temporal_ui_test_info.Config.Env
+  loop: "{{ expected_env_present }}"
+
+- name: Check env lines nobody set are absent
+  ansible.builtin.assert:
+    that:
+      - temporal_ui_test_info.Config.Env | select('match', '^' ~ item ~ '=') | list | length == 0
+  loop: "{{ expected_env_absent }}"
+
+- name: Collect what the container actually published
+  vars:
+    temporal_ui_bindings: >-
+      {{ (temporal_ui_test_info.HostConfig.PortBindings | default({}))
+         | dict2items | map(attribute='value') | flatten }}
+  ansible.builtin.set_fact:
+    temporal_ui_published: >-
+      {{ (temporal_ui_bindings | map(attribute='HostIp') | list)
+         | zip(temporal_ui_bindings | map(attribute='HostPort') | list)
+         | map('join', ':') | list | sort }}
+
+- name: Check the published ports
+  ansible.builtin.assert:
+    that:
+      - temporal_ui_published == (expected_ports | sort)
+    fail_msg: >-
+      published {{ temporal_ui_published }}, expected {{ expected_ports | sort }}
+
+# The role writes no config file, so nothing but the compose file should be in
+# the project directory. A stray config here would mean the image's own defaults
+# had been replaced.
+- name: List the compose project directory
+  ansible.builtin.find:
+    paths: "{{ expected_compose_dir }}"
+    file_type: file
+  register: temporal_ui_test_files
+
+- name: Check the role wrote only a compose file
+  ansible.builtin.assert:
+    that:
+      - (temporal_ui_test_files.files | map(attribute='path') | map('basename') | list | sort)
+        == ['docker-compose.yml']
+    fail_msg: >-
+      {{ expected_compose_dir }} holds
+      {{ temporal_ui_test_files.files | map(attribute='path') | map('basename') | list }};
+      this role writes no config file - the image renders its own.
+
+- name: Check the image's shipped config was left in place
+  ansible.builtin.command: >-
+    timeout 30 docker exec {{ expected_container }}
+    head -n 1 /home/ui-server/config/docker.yaml
+  register: temporal_ui_test_shipped
+  changed_when: false
+  failed_when: "'enable-template' not in temporal_ui_test_shipped.stdout"
+
+# The end-to-end answer, and the one the container healthcheck cannot give: the
+# UI serves its own index whether or not it ever reached the frontend. This only
+# answers once it has.
+- name: Read the namespace list back through the UI's own API
+  ansible.builtin.command: >-
+    timeout 60 docker exec {{ expected_container }}
+    wget -q -O - http://127.0.0.1:{{ expected_port }}/api/v1/namespaces
+  register: temporal_ui_test_api
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: temporal_ui_test_api.rc == 0
+
+- name: Check the UI reached the frontend and can see its namespaces
+  vars:
+    temporal_ui_names: >-
+      {{ (temporal_ui_test_api.stdout | from_json).namespaces
+         | map(attribute='namespaceInfo.name') | list }}
+  ansible.builtin.assert:
+    that:
+      - "'default' in temporal_ui_names"
+      - expected_default_namespace in temporal_ui_names
+    fail_msg: "the UI reported namespaces {{ temporal_ui_names }}"
+
+- name: Stat the paths a relocated instance must not have touched
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: temporal_ui_test_unexpected
+  loop: "{{ unexpected_paths | default([]) }}"
+
+- name: Check the relocated instance left the default paths alone
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists
+    fail_msg: "{{ item.item }} exists, but this host's directories are relocated"
+  loop: "{{ temporal_ui_test_unexpected.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# The host that sets no `temporal_ui` dict is running the published defaults, so
+# what it actually produced is the check that those defaults still say what the
+# README says. Only the keys carrying no Jinja: slurped YAML is never
+# re-templated.
+- name: Read the role defaults from the controller
+  ansible.builtin.slurp:
+    src: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}/roles/temporal_ui/defaults/main.yaml"
+  delegate_to: localhost
+  become: false
+  register: temporal_ui_test_defaults
+  when: expected_matches_defaults
+
+- name: Check the published defaults still say what this host ran on
+  vars:
+    temporal_ui_role_defaults: "{{ (temporal_ui_test_defaults.content | b64decode | from_yaml).temporal_ui }}"
+  ansible.builtin.assert:
+    that:
+      - temporal_ui_role_defaults.image ~ ':' ~ temporal_ui_role_defaults.version == expected_image
+      - temporal_ui_role_defaults.port == expected_port
+      - temporal_ui_role_defaults.default_namespace == expected_default_namespace
+      - temporal_ui_role_defaults.listen_ips == []
+      - temporal_ui_role_defaults.cors_origins == []
+      - temporal_ui_role_defaults.env == []
+    fail_msg: >-
+      roles/temporal_ui/defaults/main.yaml no longer matches what tu-default
+      asserts. Update molecule/temporal_ui/molecule.yml.
+  when: expected_matches_defaults

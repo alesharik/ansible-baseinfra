@@ -1,0 +1,182 @@
+---
+# Two platforms, because the role's whole surface is which environment the
+# container gets and only one arrangement can be seen per host:
+#
+#   tu-default  sets no `temporal_ui` dict at all, so the published role
+#               defaults are what runs: nothing published, no CORS origins, no
+#               extra env. tests.yml asserts the absent form of each of those.
+#   tu-custom   published on this host's address, CORS origins set, extra env
+#               lines, a relocated compose dir and a non-default namespace.
+#
+# Both need a Temporal to point at, which prepare_tasks.yml deploys with the
+# `temporal` role - not a meta dependency, because a running frontend is a
+# *service* and an external one is the ordinary case. Deploying it there also
+# means the role under test runs with temporal's defaults out of scope, exactly
+# as it does in any play that does not list both roles.
+platforms:
+  - name: tu-default
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+    # docker runs inside the instance; overlayfs will not stack on overlayfs.
+    volumes:
+      - /var/lib/docker
+      - /var/lib/containerd
+    keep_volumes: false
+  - name: tu-custom
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+    volumes:
+      - /var/lib/docker
+      - /var/lib/containerd
+    keep_volumes: false
+
+provisioner:
+  inventory:
+    group_vars:
+      all:
+        bootstrap:
+          disable_algif_aead: false
+          disable_transparent_huge_pages: false
+          setup_users: false
+          setup_sudo: false
+          set_hostname: true
+          limits:
+            enabled: true
+            nofile:
+              soft: 8192
+              hard: 1048576
+          swap:
+            enabled: false
+            file: /molecule_swapfile
+            size_mb: 4096
+        dir:
+          data: /data
+          ansible: /data/ansible
+
+        # The fixture database the temporal role in prepare_tasks.yml migrates
+        # into. On the host network, so temporal reaches it the way its own
+        # defaults describe.
+        molecule_pg_image: postgres
+        molecule_pg_version: "18.4"
+        molecule_pg_user: temporal
+        molecule_pg_password: molecule-temporal-pw
+        molecule_pg_dir: /data/ansible/molecule-postgres
+        molecule_pg_container: molecule-postgres-postgres-1
+
+        # The server the UI points at. Deployed in prepare, so this is a
+        # fixture rather than the thing under test - kept at the temporal role's
+        # own defaults apart from the database credentials and the extra
+        # namespace tu-custom opens on.
+        temporal:
+          image: temporalio/server
+          version: "1.31.2"
+          admin_tools:
+            image: temporalio/admin-tools
+            version: "1.31.2"
+          network: temporal
+          advertised_ip: ""
+          grpc_port: 7233
+          http_port: 7243
+          membership:
+            broadcast_address: "127.0.0.1"
+            frontend_port: 6933
+            history_port: 6934
+            matching_port: 6935
+            worker_port: 6939
+          postgres:
+            network: ""
+            host: "{{ ansible_default_ipv4.address }}"
+            port: 5432
+            user: temporal
+            password: molecule-temporal-pw
+            database: temporal
+            visibility_database: temporal_visibility
+            max_conns: 20
+            max_idle_conns: 20
+            max_conn_lifetime: 1h
+            visibility_max_conns: 10
+            visibility_max_idle_conns: 10
+            visibility_max_conn_lifetime: 1h
+          num_history_shards: 4
+          cluster_name: active
+          log_level: info
+          namespaces:
+            - name: default
+              retention: 72h
+            - name: molecule-second
+              retention: 48h
+          metrics:
+            enabled: true
+            port: 8000
+          dynamic_config: {}
+          config: {}
+          directories:
+            ansible: "{{ dir.ansible }}/temporal"
+
+    host_vars:
+      tu-default:
+        # No `temporal_ui` dict at all: the published role defaults are what
+        # this host runs, including the networks and address that read off the
+        # `temporal` dict above.
+        expected_compose_dir: /data/ansible/temporal-ui
+        expected_container: temporal-ui-ui-1
+        expected_image: temporalio/ui:2.53.3
+        expected_network: temporal
+        expected_port: 8080
+        expected_address: "temporal:7233"
+        expected_default_namespace: default
+        # HostIp:HostPort, as `docker inspect` reports it; nothing published
+        expected_ports: []
+        # the image's own default stands when cors_origins is empty, so the
+        # variable must not be set at all
+        expected_cors_set: false
+        expected_env_absent:
+          - TEMPORAL_HIDE_LOGS
+        expected_env_present: []
+        expected_matches_defaults: true
+
+      tu-custom:
+        temporal_ui:
+          image: temporalio/ui
+          version: "2.53.3"
+          networks:
+            - temporal
+          address: "temporal:7233"
+          port: 8080
+          listen_ips:
+            - "{{ ansible_default_ipv4.address }}:8080:8080"
+          default_namespace: molecule-second
+          cors_origins:
+            - "https://temporal.example.com"
+            - "https://other.example.com"
+          env:
+            - "TEMPORAL_HIDE_LOGS=true"
+          directories:
+            ansible: "{{ dir.ansible }}/temporal-ui-moved"
+
+        expected_compose_dir: /data/ansible/temporal-ui-moved
+        # directories.ansible is relocated, and compose names the project after
+        # it - so this name also proves the move took effect
+        expected_container: temporal-ui-moved-ui-1
+        expected_image: temporalio/ui:2.53.3
+        expected_network: temporal
+        expected_port: 8080
+        expected_address: "temporal:7233"
+        expected_default_namespace: molecule-second
+        # HostIp:HostPort, as `docker inspect` reports it
+        expected_ports:
+          - "{{ ansible_default_ipv4.address }}:8080"
+        expected_cors_set: true
+        expected_cors_value: "https://temporal.example.com,https://other.example.com"
+        expected_env_absent: []
+        expected_env_present:
+          - TEMPORAL_HIDE_LOGS=true
+        expected_matches_defaults: false
+        unexpected_paths:
+          - /data/ansible/temporal-ui

@@ -1,0 +1,62 @@
+---
+temporal: # noqa: var-naming[no-role-prefix]
+  image: temporalio/server
+  version: "1.31.2"
+  admin_tools:
+    image: temporalio/admin-tools
+    version: "1.31.2"
+  network: temporal
+  advertised_ip: ""
+  grpc_port: 7233
+  http_port: 7243
+  membership:
+    # A literal IP, and the role cannot check that for you. ringpop rejects a
+    # resolvable name outright ("ringpop config malformed") and refuses to start
+    # at all when this is empty and the services bind on a wildcard. 127.0.0.1
+    # is the single-container shape - all four services are in one process, so
+    # the gossip never leaves the container, while clients still reach the
+    # frontend on its wildcard bind. See the README before changing it.
+    broadcast_address: "127.0.0.1"
+    frontend_port: 6933
+    history_port: 6934
+    matching_port: 6935
+    worker_port: 6939
+  postgres:
+    network: ""
+    host: "{{ ansible_default_ipv4.address }}"
+    port: 5432
+    user: temporal
+    password: ""
+    database: temporal
+    visibility_database: temporal_visibility
+    max_conns: 20
+    max_idle_conns: 20
+    max_conn_lifetime: 1h
+    visibility_max_conns: 10
+    visibility_max_idle_conns: 10
+    visibility_max_conn_lifetime: 1h
+  # Fixed on the first start and kept in the database from then on
+  num_history_shards: 4
+  # The cluster's name in its own metadata. Same situation as the shard count -
+  # written once, and afterwards only the database knows.
+  cluster_name: active
+  log_level: info
+  namespaces:
+    - name: default
+      retention: 72h
+  metrics:
+    enabled: true
+    port: 8000
+  # Extra dynamic config, in temporal's own file format - each key maps to a
+  # list of constrained values:
+  #
+  #   dynamic_config:
+  #     limit.maxIDLength:
+  #       - value: 255
+  dynamic_config: {}
+  # Extra temporal.yaml settings, deep-merged into the rendered config. Settings
+  # the role owns are rejected rather than silently fighting the vars they came
+  # from - see the README.
+  config: {}
+  directories:
+    ansible: "{{ dir.ansible }}/temporal"

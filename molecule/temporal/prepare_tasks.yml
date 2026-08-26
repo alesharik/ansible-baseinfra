@@ -1,0 +1,133 @@
+---
+# temporal depends on bootstrap and docker, not on postgres: an external
+# database is the ordinary case, and a role that deployed one would take that
+# choice away. So the scenario brings its own here, before converge.
+#
+# A plain compose project rather than the `postgres` role, because what is under
+# test is that this role migrates into an external PostgreSQL and talks to it -
+# not how that PostgreSQL came to exist. Deployed with docker_compose_v2, which
+# shells out to the CLI; community.docker's API modules would need
+# python3-requests on the instance, which nothing else in this collection does.
+- name: Gather facts
+  ansible.builtin.setup:
+
+# The fixture below needs docker, and prepare runs before converge - so the
+# role that installs it has to be pulled in here. In scenarios whose prepare
+# starts by including another role this happens through that role's meta; this
+# one deploys a plain compose project, so it is explicit.
+- name: Install docker
+  ansible.builtin.include_role:
+    name: alesharik.baseinfra.docker
+
+- name: Create the fixture database compose dir
+  ansible.builtin.file:
+    path: "{{ molecule_pg_dir }}"
+    state: directory
+    mode: "0755"
+
+# On tm-default the database is on the host network, so the role reaches it at
+# this instance's own address - the shape `postgres.network: ""` describes. On
+# tm-moved it gets a bridge network of its own, which the role joins.
+- name: Write the fixture database compose file
+  ansible.builtin.copy:
+    dest: "{{ molecule_pg_dir }}/docker-compose.yml"
+    mode: "0644"
+    content: |
+      {% if not molecule_pg_host_network %}
+      networks:
+        pg:
+          name: "{{ molecule_pg_network }}"
+      {% endif %}
+      services:
+        postgres:
+          image: "{{ molecule_pg_image }}:{{ molecule_pg_version }}"
+          restart: unless-stopped
+          hostname: postgres
+          environment:
+            POSTGRES_USER: "{{ molecule_pg_user }}"
+            POSTGRES_PASSWORD: "{{ molecule_pg_password }}"
+      {% if molecule_pg_host_network %}
+          network_mode: host
+      {% else %}
+          networks:
+            - pg
+      {% endif %}
+          healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U {{ molecule_pg_user }}"]
+            interval: 5s
+            timeout: 5s
+            retries: 30
+
+- name: Pull the fixture database image
+  community.docker.docker_compose_v2_pull:
+    project_src: "{{ molecule_pg_dir }}"
+    policy: missing
+
+- name: Start the fixture database
+  community.docker.docker_compose_v2:
+    project_src: "{{ molecule_pg_dir }}"
+    state: present
+
+# The precondition every assertion after converge rests on. Without it a
+# database that never came up would show as a schema migration failing on
+# connect, which says nothing about the role under test.
+- name: Wait for the fixture database to accept connections
+  ansible.builtin.command: >-
+    timeout 30 docker exec {{ molecule_pg_container }}
+    pg_isready -U {{ molecule_pg_user }}
+  register: temporal_prepare_ready
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: temporal_prepare_ready.rc == 0
+
+# This role creates neither database - it migrates into ones that exist - so the
+# fixture has to. Both, including the visibility store: a missing one would
+# surface as a half-applied migration rather than as a missing fixture.
+- name: Create the databases the role migrates into
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - "30"
+      - docker
+      - exec
+      - "{{ molecule_pg_container }}"
+      - psql
+      - -U
+      - "{{ molecule_pg_user }}"
+      - -c
+      - "CREATE DATABASE {{ item }};"
+  register: temporal_prepare_createdb
+  changed_when: "'CREATE DATABASE' in temporal_prepare_createdb.stdout"
+  # The image creates a database named after POSTGRES_USER on first start, so on
+  # tm-default the history database is already there.
+  failed_when: >-
+    temporal_prepare_createdb.rc != 0
+    and 'already exists' not in ((temporal_prepare_createdb.stdout | default(''))
+                                 ~ (temporal_prepare_createdb.stderr | default('')))
+  loop:
+    - "{{ temporal.postgres.database }}"
+    - "{{ temporal.postgres.visibility_database }}"
+
+# Fails loudly if the fixture is not actually there. Otherwise a converge
+# against a missing database would fail somewhere less obvious, and an assertion
+# about "nothing was written" later could pass for the wrong reason.
+- name: Check both databases exist before converge
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - "30"
+      - docker
+      - exec
+      - "{{ molecule_pg_container }}"
+      - psql
+      - -U
+      - "{{ molecule_pg_user }}"
+      - -tAc
+      - >-
+        select count(*) from pg_database
+        where datname in ('{{ temporal.postgres.database }}',
+                          '{{ temporal.postgres.visibility_database }}')
+  register: temporal_prepare_dbs
+  changed_when: false
+  failed_when: temporal_prepare_dbs.stdout | trim != '2'

@@ -1,0 +1,38 @@
+---
+- name: Create compose dir
+  tags: temporal_ui
+  ansible.builtin.file:
+    path: "{{ temporal_ui.directories.ansible }}"
+    state: directory
+    mode: "0755"
+
+# No config file is written. The image ships config/docker.yaml and renders it
+# from the environment, and every UI default lives in that file - a replacement
+# written here would keep only the keys it names and silently drop the rest.
+- name: Move compose files
+  tags: temporal_ui
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ temporal_ui.directories.ansible }}/docker-compose.yml"
+    mode: "0700"
+  notify:
+    - restart temporal ui
+
+# Pull separately: on an up that also pulls, compose 5.4.0 labels the container
+# with the local image ID, then recreates it once on the next up.
+- name: Pull temporal ui image
+  tags: temporal_ui
+  community.docker.docker_compose_v2_pull:
+    project_src: "{{ temporal_ui.directories.ansible }}"
+    policy: missing
+
+- name: Start temporal ui
+  tags: temporal_ui
+  community.docker.docker_compose_v2:
+    project_src: "{{ temporal_ui.directories.ansible }}"
+    state: present
+    remove_orphans: true
+
+- name: Make sure handlers are flushed immediately
+  tags: temporal_ui
+  ansible.builtin.meta: flush_handlers
