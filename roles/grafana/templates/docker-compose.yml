@@ -24,6 +24,7 @@ services:
     restart: always
     environment:
       - "GF_SECURITY_ADMIN_PASSWORD__FILE=/run/secrets/admin_password"
+      - "GF_PANELS_ENABLE_ALPHA=true"
 {% for item in grafana.env | default([]) %}
       - "{{ item }}"
 {% endfor %}
