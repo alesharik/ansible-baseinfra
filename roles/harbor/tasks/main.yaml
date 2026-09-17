@@ -1,186 +1,258 @@
 ---
+# `harbor` is a wholesale override, so a partial one silently drops keys that
+# have no working default. goharbor/prepare fails on each of these with a python
+# traceback four frames deep, which says nothing about the playbook.
+- name: Check the vars that have no usable default are set
+  tags: harbor
+  ansible.builtin.assert:
+    that:
+      - harbor.hostname | length > 0
+      - harbor.admin_password | length > 0
+      - harbor.db.host | length > 0
+      - harbor.db.password | length > 0
+      - harbor.redis.host | length > 0
+    fail_msg: >-
+      harbor needs hostname, admin_password, db.host, db.password and
+      redis.host. See roles/harbor/README.md.
+
 - name: Create compose dir
-  ansible.builtin.file:
-    path: "{{ dir.ansible }}/harbor"
-    state: directory
-    mode: 0755
   tags: harbor
-
-- name: Create tls dir
   ansible.builtin.file:
-    path: "{{ dir.ansible }}/harbor/tls"
+    path: "{{ harbor.directories.ansible }}"
     state: directory
-    mode: 0755
-  tags: harbor
+    mode: "0755"
 
+# Only the root. Everything under it - registry, job_logs, ca_download, secret,
+# trivy-adapter - is created and chowned by goharbor/prepare below, to uid 10000
+# or to 999 for the two postgres-owned entries, so the role would only get that
+# wrong.
 - name: Create data dir
+  tags: harbor
   ansible.builtin.file:
-    path: "{{ dir.data }}/harbor"
+    path: "{{ harbor.directories.data }}"
     state: directory
-    mode: 0755
-    owner: '473'
+    mode: "0755"
+
+# The bundled rsyslog container writes here. With syslog off nothing does, so
+# the role does not make the directory either.
+- name: Create log dir
   tags: harbor
+  ansible.builtin.file:
+    path: "{{ harbor.directories.logs }}"
+    state: directory
+    mode: "0755"
+  when: harbor.syslog.enabled
 
+- name: Create tls staging dir
+  tags: harbor
+  ansible.builtin.file:
+    path: "{{ harbor.directories.ansible }}/tls"
+    state: directory
+    mode: "0700"
 
+# Internal TLS. goharbor/prepare generates a CA and a leaf certificate per
+# component into the staging dir above, then copies the lot into
+# <data>/secret/tls with the ownership and modes each container needs - so the
+# staging copy is a source, and the containers never read it.
+#
+# The certificates are good for a year, and nothing renews them on their own: a
+# harbor whose CA has expired fails every call between its own components. So
+# the role looks at what is there and regenerates when the set is short or is
+# about to lapse, rather than only when the directory is empty.
 - name: Find TLS files
-  ansible.builtin.find:
-    paths: "{{ dir.ansible }}/harbor/tls"
-  register: tls_files
   tags: harbor
+  ansible.builtin.find:
+    paths: "{{ harbor.directories.ansible }}/tls"
+  register: harbor_tls_files
 
-- name: Check if root cert exists
+- name: Check for the internal CA
   tags: harbor
   ansible.builtin.stat:
-    path: "{{ dir.ansible }}/harbor/tls/core.crt"
-  register: core_crt_stat
+    path: "{{ harbor.directories.ansible }}/tls/harbor_internal_ca.crt"
+  register: harbor_ca_stat
 
-- name: Get certificate information
+# openssl out of the prepare image, not community.crypto.x509_certificate_info:
+# that module needs python3-cryptography on the target and fails without it. The
+# failure only shows on the second run, when there is finally a CA to read, so
+# the module would have looked fine until the day it mattered. The image is
+# already on the host - the gencert below runs from it.
+#
+# -checkend gives rc 0 while the certificate outlives the window and rc 1 once
+# it does not, so both are answers and only anything else is an error.
+- name: Check whether the internal CA outlives the next 30 days
   tags: harbor
-  community.crypto.x509_certificate_info:
-    path: "{{ dir.ansible }}/harbor/tls/core.crt"
-    valid_at:
-      future: "+7d"
-  when: core_crt_stat.stat.exists
-  register: core_crt
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --volume
+      - "{{ harbor.directories.ansible }}/tls:/cert:ro"
+      - --entrypoint
+      - openssl
+      - "goharbor/prepare:v{{ harbor.version }}"
+      - x509
+      - -checkend
+      - "2592000"
+      - -noout
+      - -in
+      - /cert/harbor_internal_ca.crt
+  when: harbor_ca_stat.stat.exists
+  register: harbor_ca_checkend
+  changed_when: false
+  failed_when: harbor_ca_checkend.rc not in [0, 1]
 
-- name: Get CA certificate information
+# gencert writes into the directory it is given and leaves what is already
+# there, so a half-expired set has to be cleared first. Both branches key off
+# one fact, so the decision is made once and read three times.
+- name: Decide whether the TLS set has to be regenerated
   tags: harbor
-  community.crypto.x509_certificate_info:
-    path: "{{ dir.ansible }}/harbor/tls/harbor_internal_ca.crt"
-    valid_at:
-      future: "+7d"
-  when: core_crt_stat.stat.exists
-  register: ca_crt
+  ansible.builtin.set_fact:
+    harbor_tls_regenerate: >-
+      {{ (harbor_tls_files.matched | int) < 28
+         or not harbor_ca_stat.stat.exists
+         or harbor_ca_checkend.rc != 0 }}
 
-- name: Remove expired TLS certs dir
+- name: Drop the expiring TLS set
   tags: harbor
-  when: core_crt_stat.stat.exists and not ca_crt.valid_at.future
   ansible.builtin.file:
+    path: "{{ harbor.directories.ansible }}/tls"
     state: absent
-    path: "{{ dir.ansible }}/harbor/tls"
+  when: harbor_tls_regenerate | bool and harbor_ca_stat.stat.exists
 
-- name: Create tls certs dir again
-  when: core_crt_stat.stat.exists and not ca_crt.valid_at.future
+- name: Create the tls staging dir again
+  tags: harbor
   ansible.builtin.file:
-    path: "{{ dir.ansible }}/harbor/tls"
+    path: "{{ harbor.directories.ansible }}/tls"
     state: directory
-    mode: 0755
+    mode: "0700"
+  when: harbor_tls_regenerate | bool and harbor_ca_stat.stat.exists
+
+# community.docker.docker_container would need python3-requests on the target;
+# the docker CLI is already there because the docker role put it there.
+- name: Generate the internal TLS certs
   tags: harbor
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --volume
+      - "{{ harbor.directories.ansible }}/tls:/cert"
+      - "goharbor/prepare:v{{ harbor.version }}"
+      - gencert
+      - --path
+      - /cert
+  when: harbor_tls_regenerate | bool
+  changed_when: true
+  notify:
+    - restart harbor
 
-- name: Setup TLS certs
-  community.docker.docker_container:
-    name: harbor-tls
-    image: goharbor/prepare:v{{ harbor.version }}
-    command: gencert -p /cert
-    auto_remove: true
-    mounts:
-      - source: "{{ dir.ansible }}/harbor/tls"
-        target: /cert
-        type: bind
+- name: Move harbor.yml
   tags: harbor
-  when: (tls_files.matched|int < 28) or (core_crt_stat.stat.exists and not core_crt.valid_at.future) or not ca_crt.valid_at.future
-
-- name: Set TLS files permissions
-  tags: harbor
-  file:
-    dest: "{{ dir.ansible }}/harbor/tls"
-    owner: 10000
-    group: 10000
-    mode: 0600
-    recurse: true
-
-
-- name: Move files
   ansible.builtin.template:
-    src: "{{ item }}"
-    dest: "{{ dir.ansible }}/harbor/{{ item }}"
-    mode: 0755
-  tags: harbor
-  register: harbor_files
-  notify:
-    - restart harbor
-  loop:
-    - 'common.sh'
-    - 'harbor.yml'
-    - 'install.sh'
-    - 'prepare'
+    src: harbor.yml
+    dest: "{{ harbor.directories.ansible }}/harbor.yml"
+    owner: root
+    group: root
+    # carries the admin password and the database password
+    mode: "0600"
+  register: harbor_config
 
-- name: Install harbor
-  ansible.builtin.shell:
-    cmd: ./install.sh --with-trivy
-    chdir: "{{ dir.ansible }}/harbor"
-    creates: "{{ dir.ansible }}/harbor/docker-compose.yml"
-  register: harbor_install
+- name: Check whether harbor was ever configured
   tags: harbor
-  notify:
-    - restart harbor
+  ansible.builtin.stat:
+    path: "{{ harbor.directories.ansible }}/common/config/core/env"
+  register: harbor_generated_config
 
+# What upstream's `prepare` wrapper does, minus the wrapper: it reads
+# /input/harbor.yml, writes the component configs under /config, copies the
+# internal TLS certs into the data volume, and generates a docker-compose.yml
+# the next task overwrites. Certificates are regenerated on every call, so the
+# containers restart when it runs.
 - name: Configure harbor
-  ansible.builtin.shell:
-    cmd: ./prepare --with-trivy
-    chdir: "{{ dir.ansible }}/harbor"
-  when: (harbor_install.skipped is not defined or harbor_install.skipped) and harbor_files.changed
   tags: harbor
+  when: harbor_config is changed or harbor_tls_regenerate | bool or not harbor_generated_config.stat.exists
+  block:
+    - name: Create the prepare input dir
+      ansible.builtin.file:
+        path: "{{ harbor.directories.ansible }}/input"
+        state: directory
+        mode: "0700"
+
+    - name: Stage harbor.yml for prepare
+      ansible.builtin.copy:
+        src: "{{ harbor.directories.ansible }}/harbor.yml"
+        dest: "{{ harbor.directories.ansible }}/input/harbor.yml"
+        remote_src: true
+        mode: "0600"
+
+    - name: Run prepare
+      ansible.builtin.command:
+        argv: >-
+          {{ ['docker', 'run', '--rm', '--privileged',
+              '--volume', harbor.directories.ansible ~ '/input:/input',
+              '--volume', harbor.directories.data ~ ':/data',
+              '--volume', harbor.directories.ansible ~ ':/compose_location',
+              '--volume', harbor.directories.ansible ~ '/common/config:/config',
+              '--volume', '/:/hostfs',
+              'goharbor/prepare:v' ~ harbor.version,
+              'prepare']
+             + (['--with-trivy'] if harbor.trivy.enabled else []) }}
+      changed_when: true
+      notify:
+        - restart harbor
+  always:
+    - name: Remove the prepare input dir
+      ansible.builtin.file:
+        path: "{{ harbor.directories.ansible }}/input"
+        state: absent
+
+# prepare copies the CA into common/config/shared/trust-certificates itself, but
+# it builds the source path as /hostfs + the *container* path of the data volume
+# (/data/secret/tls), so it only finds the file when dir.data happens to be
+# /data. Everywhere else it logs "ca file ... is not exist" and carries on, and
+# every component then rejects its neighbours' certificates. This is that copy,
+# done from the path the certificates are really at.
+- name: Trust the internal CA
+  tags: harbor
+  ansible.builtin.copy:
+    src: "{{ harbor.directories.ansible }}/tls/harbor_internal_ca.crt"
+    dest: "{{ harbor.directories.ansible }}/common/config/shared/trust-certificates/harbor_internal_ca.crt"
+    remote_src: true
+    owner: "10000"
+    group: "10000"
+    mode: "0644"
   notify:
     - restart harbor
 
-- name: Configure docker-compose
+- name: Move compose files
+  tags: harbor
   ansible.builtin.template:
     src: docker-compose.yml
-    dest: "{{ dir.ansible }}/harbor/docker-compose.yml"
-    mode: 0755
-  tags: harbor
-  notify:
-    - restart harbor
-
-- name: Copy CA
-  ansible.builtin.copy:
-    src: "{{ dir.ansible }}/harbor/tls/harbor_internal_ca.crt"
-    dest: "{{ dir.ansible }}/harbor/common/config/shared/trust-certificates/harbor_internal_ca.crt"
-    owner: 10000
-    group: 10000
-    mode: 0611
-    remote_src: true
-  tags: harbor
-  notify:
-    - restart harbor
-
-- name: Copy Core
-  ansible.builtin.copy:
-    src: "{{ dir.ansible }}/harbor/tls/core.crt"
-    dest: "{{ dir.ansible }}/harbor/common/config/shared/trust-certificates/core.crt"
-    owner: 10000
-    group: 10000
-    mode: 0611
-    remote_src: true
-  tags: harbor
+    dest: "{{ harbor.directories.ansible }}/docker-compose.yml"
+    mode: "0644"
   notify:
     - restart harbor
 
 # Pull separately: on an up that also pulls, compose 5.4.0 labels the container
 # with the local image ID, then recreates it once on the next up.
 - name: Pull harbor images
-  community.docker.docker_compose_v2_pull:
-    project_src: "{{ dir.ansible }}/harbor"
-    policy: missing
   tags: harbor
+  community.docker.docker_compose_v2_pull:
+    project_src: "{{ harbor.directories.ansible }}"
+    policy: missing
 
 - name: Start harbor
+  tags: harbor
   community.docker.docker_compose_v2:
-    project_src: "{{ dir.ansible }}/harbor"
+    project_src: "{{ harbor.directories.ansible }}"
     state: present
-  tags: harbor
-
-- name: Configure vhost
-  tags: harbor
-  when: "'alesharik.baseinfra.nginx_proxy_base' in ansible_role_names"
-  ansible.builtin.copy:
-    dest: "{{ dir.ansible }}/nginx-proxy/vhost.d/{{ item }}"
-    content: "client_max_body_size 10000M;"
-    mode: 0755
-  notify:
-    - restart nginx-proxy
-  loop: "{{ harbor.hosts }}"
+    # Turning trivy, the exporter or syslog off takes a service out of the
+    # compose file, and compose leaves a container it no longer knows about
+    # running. The log container is the loud case: it restarts for ever against
+    # a port nothing publishes any more.
+    remove_orphans: true
 
 - name: Make sure handlers are flushed immediately
   ansible.builtin.meta: flush_handlers

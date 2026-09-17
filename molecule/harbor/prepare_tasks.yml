@@ -1,0 +1,109 @@
+---
+# harbor depends on bootstrap and docker, not on a database role: it keeps no
+# postgres and no redis of its own, and a role that deployed one would take that
+# choice away. So the scenario brings both here, before converge - which also
+# means the role under test runs with their defaults out of scope, exactly as it
+# does in any play that does not list them.
+- name: Gather facts
+  ansible.builtin.setup:
+
+# Pulls in bootstrap and docker through its meta, so the docker CLI and daemon
+# this file needs below are there afterwards.
+- name: Deploy the redis harbor caches in
+  ansible.builtin.include_role:
+    name: alesharik.baseinfra.redis
+
+# Both the database network and everything in harbor.networks are external: true
+# on the harbor side, so they have to exist before converge or compose refuses
+# the project outright. The redis role already made its own, which is why this
+# list is de-duplicated and each entry is checked first.
+#
+# The docker CLI rather than community.docker.docker_network: that module needs
+# python3-requests on the target and fails without it. Only the
+# docker_compose_v2 modules shell out to the CLI.
+- name: List the docker networks that already exist
+  ansible.builtin.command: docker network ls --format '{% raw %}{{.Name}}{% endraw %}'
+  register: harbor_prepare_networks
+  changed_when: false
+
+- name: Create the networks harbor expects to find
+  ansible.builtin.command: docker network create {{ item }}
+  loop: "{{ ([molecule_db_network] + harbor.networks) | unique | list }}"
+  when: item not in harbor_prepare_networks.stdout_lines
+  changed_when: true
+
+- name: Create the postgres compose dir
+  ansible.builtin.file:
+    path: /data/ansible/molecule-postgres
+    state: directory
+    mode: "0755"
+
+# A plain container rather than the postgres role: harbor needs one database
+# that exists, and the image's own POSTGRES_DB does that on first start. The
+# role would bring replication, an exporter and a privileges model none of which
+# harbor reads.
+- name: Write the postgres compose project
+  ansible.builtin.copy:
+    dest: /data/ansible/molecule-postgres/docker-compose.yml
+    mode: "0644"
+    content: |
+      networks:
+        db:
+          name: "{{ molecule_db_network }}"
+          external: true
+      services:
+        postgres:
+          image: postgres:18.4
+          restart: unless-stopped
+          environment:
+            POSTGRES_DB: "{{ harbor.db.name }}"
+            POSTGRES_USER: "{{ harbor.db.username }}"
+            POSTGRES_PASSWORD: "{{ harbor.db.password }}"
+          networks:
+            - db
+          healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U {{ harbor.db.username }} -d {{ harbor.db.name }}"]
+            interval: 5s
+            timeout: 5s
+            retries: 20
+
+- name: Pull the postgres image
+  community.docker.docker_compose_v2_pull:
+    project_src: /data/ansible/molecule-postgres
+    policy: missing
+
+- name: Start postgres
+  community.docker.docker_compose_v2:
+    project_src: /data/ansible/molecule-postgres
+    state: present
+
+# The precondition every assertion after converge rests on. Without it a
+# database that never came up would show as harbor-core restarting in a loop,
+# which says nothing about the role under test. `timeout` because
+# ansible.builtin.command has none of its own and a client whose server is
+# unreachable can block for a long time.
+- name: Check postgres accepts connections and holds harbor's database
+  ansible.builtin.command: >-
+    timeout 30 docker exec molecule-postgres-postgres-1
+    psql -U {{ harbor.db.username }} -d {{ harbor.db.name }} -tAc 'select 1'
+  register: harbor_prepare_psql
+  changed_when: false
+  retries: 30
+  delay: 5
+  until:
+    - harbor_prepare_psql.rc == 0
+    - harbor_prepare_psql.stdout is search('^1$', multiline=True)
+
+- name: Check redis answers on the network harbor is pointed at
+  ansible.builtin.command: >-
+    timeout 30 docker run --rm --network {{ harbor.redis.network }}
+    {{ redis.image }}:{{ redis.version }}
+    redis-cli -h {{ harbor.redis.host }} -p {{ harbor.redis.port }}
+    -a {{ harbor.redis.password }} ping
+  register: harbor_prepare_redis
+  changed_when: false
+  retries: 20
+  delay: 5
+  until:
+    - harbor_prepare_redis.rc == 0
+    - harbor_prepare_redis.stdout is search('PONG')

@@ -1,3 +1,87 @@
 ---
-harbor:
-  version: 2.11.0
+harbor: # noqa: var-naming[no-role-prefix]
+  version: "2.15.2"
+  # The name harbor knows itself by. It goes into harbor.yml `hostname`, which
+  # is the name docker clients push to and the audience of the token service, so
+  # it has to be the name the reverse proxy serves - not an address of this host.
+  hostname: ""
+  # What a browser types. Harbor writes it into the UI and into every URL the
+  # API hands back. Empty means `https://<hostname>`.
+  external_url: ""
+  admin_password: ""
+  # The docker network the role creates and puts every harbor container on. It
+  # is also what tells two instances on one host apart, so give the second one
+  # its own.
+  network: harbor
+  # Host publications for the `proxy` container, in compose `ports:` syntax.
+  # The proxy listens on 8080 inside, so an entry looks like
+  # "127.0.0.1:8080:8080". Empty publishes nothing: harbor is then reachable
+  # only on the networks below, which is what a reverse proxy on this host wants.
+  listen_ips: []
+  # Extra external docker networks the `proxy` container joins. This is where a
+  # traefik network goes. The role writes no proxy labels and no proxy
+  # environment of its own - attach the network here and route to `<harbor.network>:8080`
+  # from your own proxy config.
+  networks: []
+  # Harbor's bundled rsyslog container. Every other container logs into it
+  # through docker's syslog driver, and it writes <directories.logs>/*.log with
+  # logrotate, which is what harbor's own documentation describes.
+  #
+  # Off drops the container and leaves every other one on the daemon's own
+  # logging driver - `docker logs`, journald, or whatever the host is set to -
+  # which is where the rest of this collection puts container output. Off also
+  # makes `directories.logs` unused.
+  syslog:
+    enabled: true
+    # Published on 127.0.0.1, so it is a host-level port two instances would
+    # fight over.
+    port: 1514
+  # Harbor keeps no database of its own. `network` is the docker network the
+  # server answers on, and `host` is its name on that network.
+  db:
+    host: ""
+    port: 5432
+    name: harbor
+    username: harbor
+    password: ""
+    network: ""
+  # Same shape as `db`. May name the same network as `db`; the role attaches
+  # each network once.
+  redis:
+    host: ""
+    port: 6379
+    password: ""
+    network: ""
+  trivy:
+    # Off drops the trivy-adapter container and the --with-trivy flag, which is
+    # one image and about 400 MB of vulnerability database less on the host.
+    enabled: true
+    skip_update: false
+    security_check: "vuln,config,secret"
+    # Anonymous trivy DB downloads from GitHub allow 60 requests an hour. Set a
+    # token when that is not enough.
+    github_token: ""
+  metrics:
+    # Adds the harbor-exporter container, labelled for the collection's
+    # prometheus autodiscovery. It aggregates core, jobservice and registry
+    # metrics, so it is the only target worth scraping.
+    enabled: true
+  # Extra harbor.yml keys, merged over the ones the role writes, so anything
+  # not named above is set here in harbor's own syntax:
+  #
+  #   config:
+  #     log: {level: debug}
+  #     jobservice: {max_job_workers: 4}
+  #
+  # A key here wins over the role's value for it.
+  config: {}
+  directories:
+    ansible: "{{ dir.ansible }}/harbor"
+    # harbor.yml `data_volume`. Everything harbor keeps hangs off it: the
+    # registry blobs, the secrets, and the internal TLS certs prepare copies
+    # into `secret/tls`, which is where the containers read them from.
+    data: "{{ dir.data }}/harbor"
+    # Bind-mounted into the `log` container, which is what writes it. Harbor's
+    # own default, kept separate from `data` because it is a log root and
+    # belongs wherever the host keeps those.
+    logs: /var/log/harbor

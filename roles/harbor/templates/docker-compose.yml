@@ -1,7 +1,50 @@
+#jinja2: trim_blocks: True, lstrip_blocks: True
+{#
+  goharbor/prepare writes a docker-compose.yml of its own next to this one, and
+  the role overwrites it with this file. Harbor's version puts every container on
+  one internal network and publishes the proxy on the host; this one attaches the
+  external database and redis networks the containers have to reach, leaves
+  publication to `listen_ips`, and joins whatever `networks` names so a reverse
+  proxy elsewhere on the host can route to `<harbor.network>:8080`.
+
+  It tracks harbor's generated file, so regenerate that one and diff on a version
+  bump - the container names, the config paths and the internal ports are
+  harbor's, not ours.
+
+  Certificates come from `<data>/secret/tls`, which is where prepare copies them
+  with the ownership and modes each container needs.
+#}
+{% set harbor_data = harbor.directories.data %}
+{% set harbor_tls = harbor_data ~ '/secret/tls' %}
+{#- db and redis may name one network, and compose rejects a duplicate key -#}
+{% set harbor_backends = [harbor.db.network, harbor.redis.network] | select | unique | list %}
+{#
+  Both backends go on every component that does backend work, rather than only
+  the one its generated config names. jobservice is why: its env file names
+  neither, because it reads the database settings from core over HTTP at
+  startup - and then connects to postgres itself. Harbor's own compose puts
+  every container on one network with the database and redis on it, so nothing
+  upstream records which component needs which. portal, proxy and log are the
+  three that provably need neither.
+#}
+networks:
+  harbor:
+    name: "{{ harbor.network }}"
+    external: false
+{% for net in harbor_backends %}
+  "{{ net }}":
+    name: "{{ net }}"
+    external: true
+{% endfor %}
+{% for net in harbor.networks %}
+  "{{ net }}":
+    name: "{{ net }}"
+    external: true
+{% endfor %}
 services:
+{% if harbor.syslog.enabled %}
   log:
-    image: goharbor/harbor-log:v2.11.0
-    container_name: harbor-log
+    image: "goharbor/harbor-log:v{{ harbor.version }}"
     restart: always
     cap_drop:
       - ALL
@@ -11,22 +54,35 @@ services:
       - SETGID
       - SETUID
     volumes:
-      - /var/log/harbor/:/var/log/docker/:z
+      - "{{ harbor.directories.logs }}/:/var/log/docker/:z"
       - type: bind
         source: ./common/config/log/logrotate.conf
         target: /etc/logrotate.d/logrotate.conf
       - type: bind
         source: ./common/config/log/rsyslog_docker.conf
         target: /etc/rsyslog.d/rsyslog_docker.conf
+    # Every other container logs through the syslog driver, which the docker
+    # daemon opens on the host - not on a docker network - so this publication
+    # is what makes their logging work at all. 127.0.0.1 and not localhost:
+    # the daemon resolves localhost to ::1 first on a host with IPv6, and this
+    # is an IPv4 publication, so every other container fails to be created with
+    # "dial tcp [::1]:1514: connect: connection refused".
     ports:
-      - "127.0.0.1:1514:10514"
+      - "127.0.0.1:{{ harbor.syslog.port }}:10514"
+    # The image ships this test with a 30 second interval, which every other
+    # container would then wait out. rsyslog binds in about a second, and
+    # nothing may be created before it does.
+    healthcheck:
+      test: ["CMD-SHELL", "netstat -ltun | grep -q 10514"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
     networks:
       - harbor
-      - db
-      - redis
+
+{% endif %}
   registry:
-    image: goharbor/registry-photon:v2.11.0
-    container_name: registry
+    image: "goharbor/registry-photon:v{{ harbor.version }}"
     restart: always
     cap_drop:
       - ALL
@@ -35,37 +91,43 @@ services:
       - SETGID
       - SETUID
     volumes:
-      - "{{ dir.data }}/harbor/registry:/storage:z"
+      - "{{ harbor_data }}/registry:/storage:z"
       - ./common/config/registry/:/etc/registry/:z
       - type: bind
-        source: "{{ dir.data }}/harbor/secret/registry/root.crt"
+        source: "{{ harbor_data }}/secret/registry/root.crt"
         target: /etc/registry/root.crt
       - type: bind
         source: ./common/config/shared/trust-certificates
         target: /harbor_cust_cert
       - type: bind
-        source: "{{ dir.ansible }}/harbor/tls/core.crt"
+        source: "{{ harbor_tls }}/core.crt"
         target: /harbor_cust_cert/core.crt
       - type: bind
-        source: "{{ dir.ansible }}/harbor/tls/registry.crt"
+        source: "{{ harbor_tls }}/registry.crt"
         target: /etc/harbor/tls/registry.crt
       - type: bind
-        source: "{{ dir.ansible }}/harbor/tls/registry.key"
+        source: "{{ harbor_tls }}/registry.key"
         target: /etc/harbor/tls/registry.key
     networks:
       - harbor
-      - db
-      - redis
+{% for net in harbor_backends %}
+      - "{{ net }}"
+{% endfor %}
+{% if harbor.syslog.enabled %}
     depends_on:
-      - log
+      log:
+        condition: service_healthy
+{% endif %}
+{% if harbor.syslog.enabled %}
     logging:
       driver: "syslog"
       options:
-        syslog-address: "tcp://localhost:1514"
+        syslog-address: "tcp://127.0.0.1:{{ harbor.syslog.port }}"
         tag: "registry"
+{% endif %}
+
   registryctl:
-    image: goharbor/harbor-registryctl:v2.11.0
-    container_name: registryctl
+    image: "goharbor/harbor-registryctl:v{{ harbor.version }}"
     env_file:
       - ./common/config/registryctl/env
     restart: always
@@ -76,7 +138,7 @@ services:
       - SETGID
       - SETUID
     volumes:
-      - "{{ dir.data }}/harbor/registry:/storage:z"
+      - "{{ harbor_data }}/registry:/storage:z"
       - ./common/config/registry/:/etc/registry/:z
       - type: bind
         source: ./common/config/registryctl/config.yml
@@ -85,25 +147,31 @@ services:
         source: ./common/config/shared/trust-certificates
         target: /harbor_cust_cert
       - type: bind
-        source: "{{ dir.ansible }}/harbor/tls/registryctl.crt"
+        source: "{{ harbor_tls }}/registryctl.crt"
         target: /etc/harbor/ssl/registryctl.crt
       - type: bind
-        source: "{{ dir.ansible }}/harbor/tls/registryctl.key"
+        source: "{{ harbor_tls }}/registryctl.key"
         target: /etc/harbor/ssl/registryctl.key
     networks:
       - harbor
-      - db
-      - redis
+{% for net in harbor_backends %}
+      - "{{ net }}"
+{% endfor %}
+{% if harbor.syslog.enabled %}
     depends_on:
-      - log
+      log:
+        condition: service_healthy
+{% endif %}
+{% if harbor.syslog.enabled %}
     logging:
       driver: "syslog"
       options:
-        syslog-address: "tcp://localhost:1514"
+        syslog-address: "tcp://127.0.0.1:{{ harbor.syslog.port }}"
         tag: "registryctl"
+{% endif %}
+
   core:
-    image: goharbor/harbor-core:v2.11.0
-    container_name: harbor-core
+    image: "goharbor/harbor-core:v{{ harbor.version }}"
     env_file:
       - ./common/config/core/env
     restart: always
@@ -113,42 +181,49 @@ services:
       - SETGID
       - SETUID
     volumes:
-      - "{{ dir.data }}/harbor/ca_download/:/etc/core/ca/:z"
-      - "{{ dir.data }}/harbor/:/data/:z"
+      - "{{ harbor_data }}/ca_download/:/etc/core/ca/:z"
+      - "{{ harbor_data }}/:/data/:z"
       - ./common/config/core/certificates/:/etc/core/certificates/:z
       - type: bind
         source: ./common/config/core/app.conf
         target: /etc/core/app.conf
       - type: bind
-        source: "{{ dir.data }}/harbor/secret/core/private_key.pem"
+        source: "{{ harbor_data }}/secret/core/private_key.pem"
         target: /etc/core/private_key.pem
       - type: bind
-        source: {{ dir.data }}/harbor/secret/keys/secretkey
+        source: "{{ harbor_data }}/secret/keys/secretkey"
         target: /etc/core/key
       - type: bind
         source: ./common/config/shared/trust-certificates
         target: /harbor_cust_cert
       - type: bind
-        source: "{{ dir.ansible }}/harbor/tls/core.crt"
+        source: "{{ harbor_tls }}/core.crt"
         target: /etc/harbor/ssl/core.crt
       - type: bind
-        source: "{{ dir.ansible }}/harbor/tls/core.key"
+        source: "{{ harbor_tls }}/core.key"
         target: /etc/harbor/ssl/core.key
     networks:
       - harbor
-      - db
-      - redis
+{% for net in harbor_backends %}
+      - "{{ net }}"
+{% endfor %}
     depends_on:
-      - log
-      - registry
+{% if harbor.syslog.enabled %}
+      log:
+        condition: service_healthy
+{% endif %}
+      registry:
+        condition: service_started
+{% if harbor.syslog.enabled %}
     logging:
       driver: "syslog"
       options:
-        syslog-address: "tcp://localhost:1514"
+        syslog-address: "tcp://127.0.0.1:{{ harbor.syslog.port }}"
         tag: "core"
+{% endif %}
+
   portal:
-    image: goharbor/harbor-portal:v2.11.0
-    container_name: harbor-portal
+    image: "goharbor/harbor-portal:v{{ harbor.version }}"
     restart: always
     cap_drop:
       - ALL
@@ -162,26 +237,28 @@ services:
         source: ./common/config/portal/nginx.conf
         target: /etc/nginx/nginx.conf
       - type: bind
-        source: "{{ dir.ansible }}/harbor/tls/portal.crt"
+        source: "{{ harbor_tls }}/portal.crt"
         target: /etc/harbor/tls/portal.crt
       - type: bind
-        source: "{{ dir.ansible }}/harbor/tls/portal.key"
+        source: "{{ harbor_tls }}/portal.key"
         target: /etc/harbor/tls/portal.key
     networks:
       - harbor
-      - db
-      - redis
+{% if harbor.syslog.enabled %}
     depends_on:
-      - log
+      log:
+        condition: service_healthy
+{% endif %}
+{% if harbor.syslog.enabled %}
     logging:
       driver: "syslog"
       options:
-        syslog-address: "tcp://localhost:1514"
+        syslog-address: "tcp://127.0.0.1:{{ harbor.syslog.port }}"
         tag: "portal"
+{% endif %}
 
   jobservice:
-    image: goharbor/harbor-jobservice:v2.11.0
-    container_name: harbor-jobservice
+    image: "goharbor/harbor-jobservice:v{{ harbor.version }}"
     env_file:
       - ./common/config/jobservice/env
     restart: always
@@ -192,7 +269,7 @@ services:
       - SETGID
       - SETUID
     volumes:
-      - "{{ dir.data }}/harbor/job_logs:/var/log/jobs:z"
+      - "{{ harbor_data }}/job_logs:/var/log/jobs:z"
       - type: bind
         source: ./common/config/jobservice/config.yml
         target: /etc/jobservice/config.yml
@@ -200,25 +277,33 @@ services:
         source: ./common/config/shared/trust-certificates
         target: /harbor_cust_cert
       - type: bind
-        source: "{{ dir.ansible }}/harbor/tls/job_service.crt"
+        source: "{{ harbor_tls }}/job_service.crt"
         target: /etc/harbor/ssl/job_service.crt
       - type: bind
-        source: "{{ dir.ansible }}/harbor/tls/job_service.key"
+        source: "{{ harbor_tls }}/job_service.key"
         target: /etc/harbor/ssl/job_service.key
     networks:
       - harbor
-      - db
-      - redis
+{% for net in harbor_backends %}
+      - "{{ net }}"
+{% endfor %}
     depends_on:
-      - core
+{% if harbor.syslog.enabled %}
+      log:
+        condition: service_healthy
+{% endif %}
+      core:
+        condition: service_started
+{% if harbor.syslog.enabled %}
     logging:
       driver: "syslog"
       options:
-        syslog-address: "tcp://localhost:1514"
+        syslog-address: "tcp://127.0.0.1:{{ harbor.syslog.port }}"
         tag: "jobservice"
+{% endif %}
+
   proxy:
-    image: goharbor/nginx-photon:v2.11.0
-    container_name: nginx
+    image: "goharbor/nginx-photon:v{{ harbor.version }}"
     restart: always
     cap_drop:
       - ALL
@@ -233,95 +318,125 @@ services:
         source: ./common/config/shared/trust-certificates
         target: /harbor_cust_cert
       - type: bind
-        source: "{{ dir.ansible }}/harbor/tls/proxy.crt"
+        source: "{{ harbor_tls }}/proxy.crt"
         target: /etc/harbor/tls/proxy.crt
       - type: bind
-        source: "{{ dir.ansible }}/harbor/tls/proxy.key"
+        source: "{{ harbor_tls }}/proxy.key"
         target: /etc/harbor/tls/proxy.key
+    # The service is called `proxy`, so that is its name on every network it
+    # joins - too generic for a network shared with a reverse proxy and whatever
+    # else is on it. The alias gives it the same name as the internal network,
+    # which is already the name that tells two harbors on one host apart, so
+    # `{{ harbor.network }}:8080` is what to route to.
     networks:
-      - harbor
-      - db
-      - proxy
-      - redis
+      harbor: {}
+{% for net in harbor.networks %}
+      "{{ net }}":
+        aliases:
+          - "{{ harbor.network }}"
+{% endfor %}
+{% if harbor.listen_ips | length > 0 %}
+    ports:
+{% for item in harbor.listen_ips %}
+      - "{{ item }}"
+{% endfor %}
+{% endif %}
     depends_on:
-      - registry
-      - core
-      - portal
-      - log
-    environment:
-      VIRTUAL_HOST: "{{ harbor.hosts | join(',') }}"
-      VIRTUAL_PORT: 8080
-      LETSENCRYPT_HOST: "{{ harbor.hosts | join(',') }}"
+{% if harbor.syslog.enabled %}
+      log:
+        condition: service_healthy
+{% endif %}
+      registry:
+        condition: service_started
+      core:
+        condition: service_started
+      portal:
+        condition: service_started
+{% if harbor.syslog.enabled %}
     logging:
       driver: "syslog"
       options:
-        syslog-address: "tcp://localhost:1514"
+        syslog-address: "tcp://127.0.0.1:{{ harbor.syslog.port }}"
         tag: "proxy"
+{% endif %}
+
+{% if harbor.trivy.enabled %}
   trivy-adapter:
-    container_name: trivy-adapter
-    image: goharbor/trivy-adapter-photon:v2.11.0
+    image: "goharbor/trivy-adapter-photon:v{{ harbor.version }}"
     restart: always
     cap_drop:
       - ALL
-    depends_on:
-      - log
-    networks:
-      - harbor
-      - db
-      - redis
+    env_file:
+      - ./common/config/trivy-adapter/env
     volumes:
       - type: bind
-        source: "{{ dir.data }}/harbor/trivy-adapter/trivy"
+        source: "{{ harbor_data }}/trivy-adapter/trivy"
         target: /home/scanner/.cache/trivy
       - type: bind
-        source: "{{ dir.data }}/harbor/trivy-adapter/reports"
+        source: "{{ harbor_data }}/trivy-adapter/reports"
         target: /home/scanner/.cache/reports
       - type: bind
         source: ./common/config/shared/trust-certificates
         target: /harbor_cust_cert
       - type: bind
-        source: "{{ dir.ansible }}/harbor/tls/trivy_adapter.crt"
+        source: "{{ harbor_tls }}/trivy_adapter.crt"
         target: /etc/harbor/ssl/trivy_adapter.crt
       - type: bind
-        source: "{{ dir.ansible }}/harbor/tls/trivy_adapter.key"
+        source: "{{ harbor_tls }}/trivy_adapter.key"
         target: /etc/harbor/ssl/trivy_adapter.key
+    networks:
+      - harbor
+{% for net in harbor_backends %}
+      - "{{ net }}"
+{% endfor %}
+{% if harbor.syslog.enabled %}
+    depends_on:
+      log:
+        condition: service_healthy
+{% endif %}
+{% if harbor.syslog.enabled %}
     logging:
       driver: "syslog"
       options:
-        syslog-address: "tcp://localhost:1514"
+        syslog-address: "tcp://127.0.0.1:{{ harbor.syslog.port }}"
         tag: "trivy-adapter"
-    env_file:
-      ./common/config/trivy-adapter/env
+{% endif %}
+{% endif %}
+{% if harbor.metrics.enabled %}
   exporter:
-    image: goharbor/harbor-exporter:v2.11.0
-    container_name: harbor-exporter
+    image: "goharbor/harbor-exporter:v{{ harbor.version }}"
     env_file:
       - ./common/config/exporter/env
     restart: always
-    networks:
-      - harbor
-      - db
-    depends_on:
-      - core
     volumes:
       - type: bind
         source: ./common/config/shared/trust-certificates
         target: /harbor_cust_cert
+    networks:
+      - harbor
+{% for net in harbor_backends %}
+      - "{{ net }}"
+{% endfor %}
+    depends_on:
+{% if harbor.syslog.enabled %}
+      log:
+        condition: service_healthy
+{% endif %}
+      core:
+        condition: service_started
+    # Harbor's own nginx proxies /metrics on 9090 to this container, so the
+    # exporter is the one target worth scraping: it already aggregates core,
+    # jobservice and registry. Scraped on the bridge, so the port stays
+    # unpublished.
+    labels:
+      prometheus.io.path: /metrics
+      prometheus.io.port: 8080
+      prometheus.io.instance: "{{ inventory_hostname }}-{{ harbor.network }}"
+{% if harbor.syslog.enabled %}
     logging:
       driver: "syslog"
       options:
-        syslog-address: "tcp://localhost:1514"
+        syslog-address: "tcp://127.0.0.1:{{ harbor.syslog.port }}"
         tag: "exporter"
-networks:
-  harbor:
-    name: harbor
-    external: false
-  proxy:
-    name: nginx-proxy
-    external: true
-  db:
-    name: "{{ harbor.db.network }}"
-    external: true
-  redis:
-    name: "{{ harbor.redis.network }}"
-    external: true
+{% endif %}
+{% endif %}

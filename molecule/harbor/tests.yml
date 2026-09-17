@@ -1,0 +1,503 @@
+---
+# --- defaults have not drifted from what this scenario pins ------------------
+# harbor-default pins a copy of the published role defaults, with only the five
+# values that cannot have one changed: the hostname, the admin password, and
+# where the database and redis are. The verify play does not include the role,
+# so its defaults are not in scope here - this re-reads the file to prove the
+# copy still matches it.
+- name: Read the role defaults from the controller
+  ansible.builtin.slurp:
+    src: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}/roles/harbor/defaults/main.yaml"
+  delegate_to: localhost
+  become: false
+  register: harbor_role_defaults_raw
+  when: inventory_hostname == 'harbor-default'
+
+- name: Check the pinned expectations still equal the role defaults
+  vars:
+    role_defaults: "{{ harbor_role_defaults_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - role_defaults.harbor.version == harbor.version
+      - role_defaults.harbor.network == harbor.network
+      # the one key this host deliberately differs on, so it is checked
+      # against the published default rather than against the host copy
+      - role_defaults.harbor.syslog.enabled
+      - role_defaults.harbor.syslog.port == harbor.syslog.port
+      - role_defaults.harbor.listen_ips == []
+      - role_defaults.harbor.networks == []
+      - role_defaults.harbor.config == {}
+      - role_defaults.harbor.external_url == ""
+      - role_defaults.harbor.db.port == harbor.db.port
+      - role_defaults.harbor.db.name == harbor.db.name
+      - role_defaults.harbor.db.username == harbor.db.username
+      - role_defaults.harbor.redis.port == harbor.redis.port
+      - role_defaults.harbor.trivy.enabled
+      - role_defaults.harbor.trivy.skip_update == harbor.trivy.skip_update
+      - role_defaults.harbor.trivy.security_check == harbor.trivy.security_check
+      - role_defaults.harbor.metrics.enabled
+      - role_defaults.harbor.directories.logs == expected_logs_dir
+    fail_msg: >-
+      roles/harbor/defaults/main.yaml has changed - the "default" host is
+      running something else now
+  when: inventory_hostname == 'harbor-default'
+
+# --- the directories landed where harbor.directories points ------------------
+- name: Stat the directories the role owns
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: harbor_dirs
+  loop: "{{ [expected_compose_dir, expected_data_dir] +
+            ([expected_logs_dir] if expected_syslog else []) }}"
+
+- name: Check every directory the role owns exists
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isdir
+    fail_msg: "{{ item.item }} is not a directory"
+  loop: "{{ harbor_dirs.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Stat the default paths the role must no longer use
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: harbor_default_paths
+  loop: "{{ unexpected_paths | default([]) }}"
+
+- name: Check the role wrote nothing outside harbor.directories
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists
+    fail_msg: >-
+      {{ item.item }} exists - something in the role still derives its path from
+      dir.ansible or dir.data instead of harbor.directories
+  loop: "{{ harbor_default_paths.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# --- harbor.yml --------------------------------------------------------------
+- name: Stat harbor.yml
+  ansible.builtin.stat:
+    path: "{{ expected_compose_dir }}/harbor.yml"
+  register: harbor_yml_stat
+
+- name: Read harbor.yml
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/harbor.yml"
+  register: harbor_yml_raw
+  no_log: true
+
+- name: Check harbor.yml is readable by root alone
+  ansible.builtin.assert:
+    that:
+      # it carries the admin password and the database password
+      - harbor_yml_stat.stat.mode == '0600'
+      - harbor_yml_stat.stat.pw_name == 'root'
+    fail_msg: >-
+      harbor.yml is {{ harbor_yml_stat.stat.mode }} owned by
+      {{ harbor_yml_stat.stat.pw_name }} - expected 0600 root
+
+- name: Check harbor.yml says what the role vars asked for
+  vars:
+    harbor_yml: "{{ harbor_yml_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - harbor_yml.hostname == harbor.hostname
+      - harbor_yml.external_url == expected_external_url
+      - harbor_yml.data_volume == expected_data_dir
+      - harbor_yml.internal_tls.enabled
+      - harbor_yml.internal_tls.dir == expected_compose_dir ~ '/tls'
+      - harbor_yml.log.local.location == expected_logs_dir
+      - harbor_yml._version == '2.15.0'
+      - harbor_yml.external_database.harbor.host == expected_db_host
+      - harbor_yml.external_database.harbor.db_name == 'harbor'
+      - harbor_yml.external_redis.host == expected_redis_host
+      - harbor_yml.metric.enabled == expected_metrics
+      # `config` is merged over the role's own values, so these two are where
+      # the override either won or did not
+      - harbor_yml.log.level == expected_log_level
+      - harbor_yml.jobservice.max_job_workers == expected_job_workers
+    fail_msg: harbor.yml does not match the role vars
+
+- name: Check trivy is in harbor.yml only when it is enabled
+  vars:
+    harbor_yml: "{{ harbor_yml_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - ('trivy' in harbor_yml) == expected_trivy
+    fail_msg: >-
+      harbor.yml {{ 'has no' if expected_trivy else 'still has a' }} trivy block
+      with trivy.enabled {{ expected_trivy }}
+
+- name: Check the prepare input dir was cleaned up
+  ansible.builtin.stat:
+    path: "{{ expected_compose_dir }}/input"
+  register: harbor_input_dir
+
+- name: Check no staged copy of harbor.yml was left behind
+  ansible.builtin.assert:
+    that:
+      - not harbor_input_dir.stat.exists
+    fail_msg: >-
+      {{ expected_compose_dir }}/input still exists - it holds a 0600 copy of
+      harbor.yml and the role is meant to remove it
+
+# --- internal TLS ------------------------------------------------------------
+- name: Count the generated TLS files
+  ansible.builtin.find:
+    paths: "{{ expected_compose_dir }}/tls"
+  register: harbor_tls_files
+
+- name: Check the full TLS set was generated
+  ansible.builtin.assert:
+    that:
+      - harbor_tls_files.matched | int >= 28
+    fail_msg: >-
+      {{ harbor_tls_files.matched }} files in {{ expected_compose_dir }}/tls -
+      gencert produces 28, so the set is incomplete
+
+- name: Stat the certs prepare copied into the data volume
+  ansible.builtin.stat:
+    path: "{{ expected_data_dir }}/secret/tls/{{ item }}"
+  register: harbor_data_certs
+  loop:
+    - core.crt
+    - core.key
+    - harbor_internal_ca.crt
+
+- name: Check the containers' copy of the certs is owned by harbor
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      # prepare chowns them to uid 10000, which every harbor image runs as
+      - item.stat.uid == 10000
+    fail_msg: >-
+      {{ item.item }} is missing from {{ expected_data_dir }}/secret/tls or is
+      owned by uid {{ item.stat.uid | default('?') }} - prepare did not copy it
+  loop: "{{ harbor_data_certs.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Stat the CA in the shared trust store
+  ansible.builtin.stat:
+    path: "{{ expected_compose_dir }}/common/config/shared/trust-certificates/harbor_internal_ca.crt"
+  register: harbor_trusted_ca
+
+- name: Check the role copied the internal CA into the shared trust store
+  ansible.builtin.assert:
+    that:
+      - harbor_trusted_ca.stat.exists
+      - harbor_trusted_ca.stat.uid == 10000
+      - harbor_trusted_ca.stat.mode == '0644'
+    fail_msg: >-
+      harbor_internal_ca.crt is not in the shared trust store - prepare looks
+      for it under /hostfs/data and cannot find it unless dir.data is /data,
+      so the role has to put it there itself
+
+# --- the compose project -----------------------------------------------------
+- name: Read the rendered docker-compose.yml
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/docker-compose.yml"
+  register: harbor_compose_raw
+
+- name: Check the compose project holds exactly the expected services
+  vars:
+    compose: "{{ harbor_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - compose.services.keys() | list | sort == expected_services
+    fail_msg: >-
+      compose services are {{ compose.services.keys() | list | sort }},
+      expected {{ expected_services }}
+
+- name: Check the internal network and the backends are declared once each
+  vars:
+    compose: "{{ harbor_compose_raw.content | b64decode | from_yaml }}"
+    declared: "{{ compose.networks.values() | map(attribute='name') | list }}"
+  ansible.builtin.assert:
+    that:
+      - expected_network in declared
+      # db and redis may name one network, and compose rejects a duplicate key
+      - declared | length == declared | unique | length
+      - (declared | reject('eq', expected_network) | list | sort) ==
+        ((expected_backend_networks + harbor.networks) | unique | list | sort)
+    fail_msg: "compose declares networks {{ declared }}"
+
+- name: Check every image carries the configured version
+  vars:
+    compose: "{{ harbor_compose_raw.content | b64decode | from_yaml }}"
+    images: "{{ compose.services.values() | map(attribute='image') | list }}"
+  ansible.builtin.assert:
+    that:
+      - images | select('search', ':v' ~ harbor.version ~ '$') | list | length == images | length
+    fail_msg: >-
+      some images are not pinned to v{{ harbor.version }}: {{ images }}
+
+# --- what actually runs ------------------------------------------------------
+- name: List the running containers
+  ansible.builtin.command: docker ps --format '{% raw %}{{.Names}}{% endraw %}'
+  register: harbor_running
+  changed_when: false
+
+- name: Check every expected container is up
+  ansible.builtin.assert:
+    that:
+      - expected_project ~ '-' ~ item ~ '-1' in harbor_running.stdout_lines
+    fail_msg: >-
+      {{ expected_project }}-{{ item }}-1 is not running. Up:
+      {{ harbor_running.stdout_lines }}
+  loop: "{{ expected_services }}"
+
+- name: Check the disabled containers are absent
+  ansible.builtin.assert:
+    that:
+      - expected_project ~ '-trivy-adapter-1' not in harbor_running.stdout_lines
+      - expected_project ~ '-exporter-1' not in harbor_running.stdout_lines
+    fail_msg: >-
+      trivy or the exporter is running with its flag off:
+      {{ harbor_running.stdout_lines }}
+  when: not expected_trivy and not expected_metrics
+
+- name: Read the proxy container
+  ansible.builtin.command: >-
+    docker inspect {{ expected_project }}-proxy-1
+    --format '{% raw %}{{json .}}{% endraw %}'
+  register: harbor_proxy_raw
+  changed_when: false
+
+- name: Check the proxy joined the internal network and every named one
+  vars:
+    proxy: "{{ harbor_proxy_raw.stdout | from_json }}"
+  ansible.builtin.assert:
+    that:
+      - proxy.NetworkSettings.Networks.keys() | list | sort == expected_proxy_networks | sort
+      # the database and redis are reached by the components, never by nginx
+      - proxy.NetworkSettings.Networks.keys() | reject('in', expected_backend_networks) | list | length ==
+        proxy.NetworkSettings.Networks | length
+    fail_msg: >-
+      proxy is on {{ proxy.NetworkSettings.Networks.keys() | list }},
+      expected {{ expected_proxy_networks }}
+
+- name: Check the proxy publishes exactly what listen_ips names
+  vars:
+    proxy: "{{ harbor_proxy_raw.stdout | from_json }}"
+  ansible.builtin.assert:
+    that:
+      - (proxy.HostConfig.PortBindings | default({})) == expected_proxy_ports
+    fail_msg: >-
+      proxy publishes {{ proxy.HostConfig.PortBindings }},
+      expected {{ expected_proxy_ports }}
+
+- name: Read the core container
+  ansible.builtin.command: >-
+    docker inspect {{ expected_project }}-core-1
+    --format '{% raw %}{{json .}}{% endraw %}'
+  register: harbor_core_raw
+  changed_when: false
+
+- name: Check core reaches both the database and redis
+  vars:
+    core: "{{ harbor_core_raw.stdout | from_json }}"
+  ansible.builtin.assert:
+    that:
+      - core.NetworkSettings.Networks.keys() | list | sort == expected_core_networks | sort
+    fail_msg: >-
+      core is on {{ core.NetworkSettings.Networks.keys() | list }},
+      expected {{ expected_core_networks }}
+
+# jobservice is the one that catches a backend attached by guesswork: its own
+# config file names neither the database nor redis, because it reads the
+# database settings from core over HTTP and then connects to postgres itself.
+# On a host where db and redis share a network this passes either way, which is
+# what the second platform is for.
+- name: Read the jobservice container
+  ansible.builtin.command: >-
+    docker inspect {{ expected_project }}-jobservice-1
+    --format '{% raw %}{{json .NetworkSettings.Networks}}{% endraw %}'
+  register: harbor_jobservice_nets
+  changed_when: false
+
+- name: Check jobservice reaches both the database and redis
+  vars:
+    nets: "{{ harbor_jobservice_nets.stdout | from_json }}"
+  ansible.builtin.assert:
+    that:
+      - nets.keys() | list | sort == expected_jobservice_networks | sort
+    fail_msg: >-
+      jobservice is on {{ nets.keys() | list }},
+      expected {{ expected_jobservice_networks }}
+
+- name: Check core reads its certificates from the data volume
+  vars:
+    core: "{{ harbor_core_raw.stdout | from_json }}"
+    sources: "{{ core.Mounts | map(attribute='Source') | list }}"
+  ansible.builtin.assert:
+    that:
+      - expected_data_dir ~ '/secret/tls/core.crt' in sources
+      - expected_data_dir ~ '/secret/tls/core.key' in sources
+      # the staging copy is a source for prepare, never a mount
+      - sources | select('search', '^' ~ expected_compose_dir ~ '/tls/') | list | length == 0
+    fail_msg: "core mounts {{ sources }}"
+
+# syslog.enabled: false on both hosts - see the note in molecule.yml. What is
+# asserted here is the absent branch: no log container, and no container left
+# pointing at a syslog endpoint that nothing serves.
+- name: Check the log container is absent with syslog off
+  ansible.builtin.assert:
+    that:
+      - expected_project ~ '-log-1' not in harbor_running.stdout_lines
+    fail_msg: >-
+      {{ expected_project }}-log-1 is running with syslog.enabled false
+  when: not expected_syslog
+
+- name: Check no service was left on the syslog driver
+  vars:
+    compose: "{{ harbor_compose_raw.content | b64decode | from_yaml }}"
+    drivers: "{{ compose.services.values() | map(attribute='logging', default={}) |
+                 map(attribute='driver', default='') | reject('eq', '') | list }}"
+  ansible.builtin.assert:
+    that:
+      - drivers | length == 0
+    fail_msg: >-
+      {{ drivers | length }} services still log through the syslog driver with
+      syslog.enabled false, and nothing serves that endpoint
+  when: not expected_syslog
+
+- name: Check the containers keep the daemon's own logging driver
+  ansible.builtin.command: >-
+    docker inspect {{ expected_project }}-core-1
+    --format '{% raw %}{{.HostConfig.LogConfig.Type}}{% endraw %}'
+  register: harbor_core_log_driver
+  changed_when: false
+  when: not expected_syslog
+
+- name: Check core logs are readable with docker logs
+  ansible.builtin.assert:
+    that:
+      - harbor_core_log_driver.stdout != 'syslog'
+    fail_msg: >-
+      core still logs through {{ harbor_core_log_driver.stdout }}
+  when: not expected_syslog
+
+# --- the generated component config ------------------------------------------
+# harbor.yml is the role's input; these files are what goharbor/prepare made of
+# it, and they are what the containers actually read.
+- name: Read the generated core env
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/common/config/core/env"
+  register: harbor_core_env_raw
+  no_log: true
+
+- name: Check the database and redis reached the core config
+  vars:
+    core_env: "{{ harbor_core_env_raw.content | b64decode }}"
+  ansible.builtin.assert:
+    that:
+      - core_env is search('POSTGRESQL_HOST=' ~ expected_db_host ~ '$', multiline=True)
+      - core_env is search('POSTGRESQL_DATABASE=harbor$', multiline=True)
+      - core_env is search('_REDIS_URL_CORE=redis://.*@' ~ expected_redis_host)
+      - core_env is search('LOG_LEVEL=' ~ expected_log_level ~ '$', multiline=True)
+    fail_msg: >-
+      common/config/core/env does not name {{ expected_db_host }} and
+      {{ expected_redis_host }} at log level {{ expected_log_level }}
+
+- name: Read the generated jobservice config
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/common/config/jobservice/config.yml"
+  register: harbor_js_config_raw
+  no_log: true
+
+- name: Check the worker count reached the jobservice config
+  vars:
+    js_config: "{{ harbor_js_config_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - js_config.worker_pool.workers == expected_job_workers
+    fail_msg: >-
+      jobservice runs {{ js_config.worker_pool.workers }} workers,
+      expected {{ expected_job_workers }}
+
+# --- harbor answers ----------------------------------------------------------
+# The one assertion that cannot pass by accident: harbor's own health endpoint
+# reports every component, and each of them is reachable only over the internal
+# TLS this role generated and the CA it copied into the trust store.
+- name: Ask harbor for its health
+  ansible.builtin.command: >-
+    timeout 30 docker run --rm --network {{ expected_network }}
+    --entrypoint curl goharbor/harbor-core:v{{ harbor.version }}
+    -sS --max-time 20 http://proxy:8080/api/v2.0/health
+  register: harbor_health
+  changed_when: false
+  retries: 40
+  delay: 10
+  until:
+    - harbor_health.rc == 0
+    - (harbor_health.stdout | from_json).status | default('') == 'healthy'
+
+- name: Check every harbor component reports healthy
+  vars:
+    health: "{{ harbor_health.stdout | from_json }}"
+    unhealthy: "{{ health.components | rejectattr('status', 'eq', 'healthy') | list }}"
+  ansible.builtin.assert:
+    that:
+      - health.status == 'healthy'
+      - unhealthy | length == 0
+      - health.components | map(attribute='name') | select('in', ['database', 'redis', 'registry']) | list | length == 3
+      - (health.components | map(attribute='name') | select('eq', 'trivy') | list | length == 1) == expected_trivy
+    fail_msg: "harbor reports {{ health }}"
+
+- name: Log in to the harbor API as the configured admin
+  ansible.builtin.command: >-
+    timeout 30 docker run --rm --network {{ expected_network }}
+    --entrypoint curl goharbor/harbor-core:v{{ harbor.version }}
+    -sS -Create: Computationally Expensive-max-time 20 -u admin:{{ harbor.admin_password }}
+    http://proxy:8080/api/v2.0/users/current
+  register: harbor_whoami
+  changed_when: false
+  no_log: true
+
+- name: Check the admin password from harbor.yml is the one harbor took
+  vars:
+    whoami: "{{ harbor_whoami.stdout | from_json }}"
+  ansible.builtin.assert:
+    that:
+      - whoami.username | default('') == 'admin'
+      - whoami.sysadmin_flag | default(false)
+    fail_msg: harbor did not accept the admin password the role templated
+
+# --- metrics -----------------------------------------------------------------
+- name: Scrape the exporter the way vmagent would
+  ansible.builtin.command: >-
+    timeout 30 docker run --rm --network {{ expected_network }}
+    --entrypoint curl goharbor/harbor-core:v{{ harbor.version }}
+    -sS --max-time 20 http://exporter:8080/metrics
+  register: harbor_metrics
+  changed_when: false
+  retries: 10
+  delay: 10
+  until:
+    - harbor_metrics.rc == 0
+    - harbor_metrics.stdout is search('^harbor_health ', multiline=True)
+  when: expected_metrics
+
+- name: Read the exporter container
+  ansible.builtin.command: >-
+    docker inspect {{ expected_project }}-exporter-1
+    --format '{% raw %}{{json .Config.Labels}}{% endraw %}'
+  register: harbor_exporter_labels_raw
+  changed_when: false
+  when: expected_metrics
+
+- name: Check the exporter carries the autodiscovery labels
+  vars:
+    labels: "{{ harbor_exporter_labels_raw.stdout | from_json }}"
+  ansible.builtin.assert:
+    that:
+      - labels['prometheus.io.path'] == expected_exporter_labels['prometheus.io.path']
+      - labels['prometheus.io.port'] == expected_exporter_labels['prometheus.io.port']
+      - labels['prometheus.io.instance'] == expected_exporter_labels['prometheus.io.instance']
+    fail_msg: >-
+      exporter labels are {{ labels }}, expected {{ expected_exporter_labels }}
+  when: expected_metrics

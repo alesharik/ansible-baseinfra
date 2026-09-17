@@ -54,7 +54,7 @@ prometheus.io.address: 127.0.0.1:9586 # full address to server
 | `clickhouse`             | `24.6.2.17-alpine`                                                      |              |              |
 | `docker_registry_server` | `2`                                                                     | 2026-08-02   |              |
 | `grafana`                | `13.0.2`                                                                | 2026-08-01   | 2026-06-14   |
-| `harbor`                 | `2.11.0`                                                                |              |              |
+| `harbor`                 | `2.15.2`                                                                | 2026-09-17   | 2026-09-17   |
 | `loki`                   | `3.5`                                                                   | 2026-08-01   | 2025-06-22   |
 | `mimir`                  | `2.16.0`                                                                | 2026-08-01   | 2025-06-22   |
 | `minio`                  | `RELEASE.2024-07-04T14-25-45Z`                                          |              |              |
