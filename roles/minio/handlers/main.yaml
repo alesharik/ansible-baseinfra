@@ -1,6 +1,0 @@
----
-- name: restart minio
-  community.docker.docker_compose_v2:
-    project_src: "{{ dir.ansible }}/minio"
-    state: restarted
-  tags: minio

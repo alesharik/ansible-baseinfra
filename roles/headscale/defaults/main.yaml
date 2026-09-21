@@ -1,4 +1,0 @@
----
-headscale:
-  image: "headscale/headscale"
-  version: v0.25.1
