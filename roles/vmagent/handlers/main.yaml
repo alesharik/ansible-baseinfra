@@ -1,5 +1,5 @@
 ---
-- name: restart vmagent
+- name: restart vmagent  # noqa: name[casing]
   community.docker.docker_compose_v2:
     project_src: "{{ vmagent.directories.ansible }}"
     state: restarted

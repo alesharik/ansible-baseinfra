@@ -1,5 +1,5 @@
 ---
-- name: restart watchtower
+- name: restart watchtower  # noqa: name[casing]
   community.docker.docker_compose_v2:
     project_src: "{{ watchtower.directories.ansible }}"
     state: restarted

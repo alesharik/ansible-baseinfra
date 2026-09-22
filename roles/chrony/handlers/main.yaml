@@ -1,5 +1,5 @@
 ---
-- name: restart chrony
+- name: restart chrony  # noqa: name[casing]
   ansible.builtin.systemd:
     name: chronyd
     state: restarted

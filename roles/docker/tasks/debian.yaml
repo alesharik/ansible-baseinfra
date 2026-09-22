@@ -3,7 +3,7 @@
 # deb822_repository) wrote /etc/apt/sources.list.d/download_docker_com_*.list,
 # and such a leftover both makes apt read the docker repo twice and breaks
 # every apt run if the keyring it points at is gone.
-- name: find legacy repo files
+- name: Find legacy repo files
   ansible.builtin.find:
     paths: /etc/apt/sources.list.d
     patterns: "*.list"
@@ -14,7 +14,7 @@
   register: docker_legacy_repos
   tags: docker
 
-- name: remove legacy repo files
+- name: Remove legacy repo files
   ansible.builtin.file:
     path: "{{ item.path }}"
     state: absent
@@ -27,7 +27,7 @@
 # deb822_repository parses sources with the python debian library and fails
 # without it. Its own install_python_debian option is core >= 2.20 only, and
 # skips the cache refresh a fresh host needs.
-- name: install repo module dependency
+- name: Install repo module dependency
   ansible.builtin.apt:
     name: python3-debian
     state: present
@@ -35,7 +35,7 @@
     cache_valid_time: 3600
   tags: docker
 
-- name: detect dpkg architecture
+- name: Detect dpkg architecture
   ansible.builtin.command: dpkg --print-architecture
   register: docker_dpkg_arch
   changed_when: false
@@ -43,7 +43,7 @@
 
 # deb822_repository fetches the key named by signed_by and stores it itself, so
 # no separate keyring task is needed
-- name: add repo
+- name: Add repo
   ansible.builtin.deb822_repository:
     name: docker
     types: deb
@@ -57,13 +57,13 @@
   register: docker_repo
   tags: docker
 
-- name: update apt cache
+- name: Update apt cache
   ansible.builtin.apt:
     update_cache: true
   when: docker_repo is changed or docker_legacy_removed is changed
   tags: docker
 
-- name: install packages
+- name: Install packages
   ansible.builtin.apt:
     name:
       - docker-ce
@@ -73,7 +73,7 @@
     state: present
   tags: docker
 
-- name: enable and start docker service
+- name: Enable and start docker service
   ansible.builtin.systemd:
     daemon_reload: true
     enabled: true

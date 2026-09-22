@@ -148,7 +148,7 @@
   when: expected_chrony.extra | length > 0
   ansible.builtin.set_fact:
     chrony_extra_lines: >-
-      {{ chrony_file_lines[chrony_file_lines.index('# chrony.extra_config') + 1:] }}
+      {{ chrony_file_lines[chrony_file_lines.index('# chrony.extra_config') + 1 :] }}
 
 - name: Check the extra_config marker sits below the managed directives
   when: expected_chrony.extra | length > 0
@@ -237,7 +237,7 @@
 # to be read off the canonical unit - and the alias checked separately, since
 # that is the name the role passes to systemd.
 - name: Resolve the unit name the role manages
-  ansible.builtin.command: systemctl show chronyd --property=Id --value
+  ansible.builtin.command: systemctl show chronyd --property=Id --value  # noqa: command-instead-of-module
   register: chronyd_id
   changed_when: false
 
@@ -250,7 +250,7 @@
       enables a unit that is not the one chrony ships
 
 - name: Get the state of the chrony service
-  ansible.builtin.command: "systemctl {{ item }} chrony.service"
+  ansible.builtin.command: "systemctl {{ item }} chrony.service"  # noqa: command-instead-of-module
   register: chronyd_service
   changed_when: false
   failed_when: false
@@ -350,7 +350,7 @@
 # "Could not find the requested service" branch. Asserting on the end state
 # rather than the branch keeps this honest on images that do ship it.
 - name: Get the state of systemd-timesyncd
-  ansible.builtin.command: "systemctl {{ item }} systemd-timesyncd"
+  ansible.builtin.command: "systemctl {{ item }} systemd-timesyncd"  # noqa: command-instead-of-module
   register: timesyncd_service
   changed_when: false
   failed_when: false

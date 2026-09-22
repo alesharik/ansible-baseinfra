@@ -452,7 +452,7 @@
   ansible.builtin.command: >-
     timeout 30 docker run --rm --network {{ expected_network }}
     --entrypoint curl goharbor/harbor-core:v{{ harbor.version }}
-    -sS -Create: Computationally Expensive-max-time 20 -u admin:{{ harbor.admin_password }}
+    -sS --max-time 20 -u admin:{{ harbor.admin_password }}
     http://proxy:8080/api/v2.0/users/current
   register: harbor_whoami
   changed_when: false

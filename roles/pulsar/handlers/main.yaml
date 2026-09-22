@@ -1,5 +1,5 @@
 ---
-- name: restart pulsar
+- name: restart pulsar  # noqa: name[casing]
   tags: pulsar
   community.docker.docker_compose_v2:
     project_src: "{{ pulsar.directories.ansible }}"

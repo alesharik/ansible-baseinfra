@@ -1,41 +1,51 @@
 ---
-- include_tasks: debian.yaml
+- name: Install Debian packages
+  ansible.builtin.include_tasks: debian.yaml
   when: ansible_facts['os_family'] == "Debian"
   tags: bootstrap
 
-- include_tasks: disable-algif-aead.yaml
+- name: Disable the algif_aead module
+  ansible.builtin.include_tasks: disable-algif-aead.yaml
   when: bootstrap.disable_algif_aead
   tags: bootstrap
 
-- include_tasks: set-hostname.yaml
+- name: Set the hostname
+  ansible.builtin.include_tasks: set-hostname.yaml
   when: bootstrap.set_hostname
   tags: bootstrap
 
-- include_tasks: set-pam-limits.yaml
+- name: Set PAM limits
+  ansible.builtin.include_tasks: set-pam-limits.yaml
   when: bootstrap.limits.enabled
   tags: bootstrap
 
-- include_tasks: disable-thb.yaml
+- name: Disable transparent huge pages
+  ansible.builtin.include_tasks: disable-thb.yaml
   when: bootstrap.disable_transparent_huge_pages
   tags: bootstrap
 
-- include_tasks: teardown-thb.yaml
+- name: Stop disabling transparent huge pages
+  ansible.builtin.include_tasks: teardown-thb.yaml
   when: not bootstrap.disable_transparent_huge_pages
   tags: bootstrap
 
-- include_tasks: setup-users.yaml
+- name: Set up users
+  ansible.builtin.include_tasks: setup-users.yaml
   when: bootstrap.setup_users
   tags: bootstrap
 
-- include_tasks: setup-sudo.yaml
+- name: Set up sudo
+  ansible.builtin.include_tasks: setup-sudo.yaml
   when: bootstrap.setup_sudo
   tags: bootstrap
 
-- include_tasks: setup-swap.yaml
+- name: Set up the swap file
+  ansible.builtin.include_tasks: setup-swap.yaml
   when: bootstrap.swap.enabled
   tags: bootstrap
 
-- include_tasks: teardown-swap.yaml
+- name: Remove the swap file
+  ansible.builtin.include_tasks: teardown-swap.yaml
   when: not bootstrap.swap.enabled
   tags: bootstrap
 
@@ -43,12 +53,12 @@
   ansible.builtin.file:
     path: "{{ dir.data }}"
     state: directory
-    mode: 0755
+    mode: "0755"
   tags: bootstrap
 
 - name: Create ansible folder
   ansible.builtin.file:
     path: "{{ dir.ansible }}"
     state: directory
-    mode: 0755
+    mode: "0755"
   tags: bootstrap

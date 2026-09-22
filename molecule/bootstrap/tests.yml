@@ -157,7 +157,7 @@
   register: thp_unit
 
 - name: Get the state of the disable-thp service
-  ansible.builtin.command: "systemctl {{ item }} disable-transparent-huge-pages"
+  ansible.builtin.command: "systemctl {{ item }} disable-transparent-huge-pages"  # noqa: command-instead-of-module
   register: thp_state
   changed_when: false
   failed_when: false

@@ -1,5 +1,5 @@
 ---
-chrony:
+chrony: # noqa: var-naming[no-role-prefix]
   # each entry becomes one `pool` line. For individual servers rather than a
   # pool, put `server ...` lines in extra_config
   pools:

@@ -1,8 +1,8 @@
 ---
-dir:
+dir: # noqa: var-naming[no-role-prefix]
   data: /data
   ansible: /data/ansible
-bootstrap:
+bootstrap: # noqa: var-naming[no-role-prefix]
   disable_algif_aead: true
   set_hostname: true
   setup_users: true
@@ -17,4 +17,4 @@ bootstrap:
     enabled: true
     file: /swapfile
     size_mb: 4096
-users: {}
+users: {} # noqa: var-naming[no-role-prefix]

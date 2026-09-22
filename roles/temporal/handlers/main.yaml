@@ -1,5 +1,5 @@
 ---
-- name: restart temporal
+- name: restart temporal  # noqa: name[casing]
   tags: temporal
   community.docker.docker_compose_v2:
     project_src: "{{ temporal.directories.ansible }}"

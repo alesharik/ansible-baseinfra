@@ -3,14 +3,14 @@
   ansible.builtin.file:
     path: "{{ dir.ansible }}/clickhouse"
     state: directory
-    mode: 0700
+    mode: "0700"
   tags: clickhouse
 
 - name: Create users dir
   ansible.builtin.file:
     path: "{{ dir.ansible }}/clickhouse/users"
     state: directory
-    mode: 0700
+    mode: "0700"
     owner: 1002
   tags: clickhouse
 
@@ -18,7 +18,7 @@
   ansible.builtin.template:
     src: docker-compose.yml
     dest: "{{ dir.ansible }}/clickhouse/docker-compose.yml"
-    mode: 0700
+    mode: "0700"
   tags: clickhouse
   notify:
     - restart clickhouse
@@ -26,7 +26,7 @@
   ansible.builtin.template:
     src: .env
     dest: "{{ dir.ansible }}/clickhouse/.env"
-    mode: 0700
+    mode: "0700"
   tags: clickhouse
   notify:
     - restart clickhouse
@@ -34,7 +34,7 @@
   ansible.builtin.template:
     src: init-defaults.sh
     dest: "{{ dir.ansible }}/clickhouse/init-defaults.sh"
-    mode: 0700
+    mode: "0700"
     owner: 1002
   tags: clickhouse
   notify:
@@ -44,7 +44,7 @@
   ansible.builtin.template:
     src: users.xml
     dest: "{{ dir.ansible }}/clickhouse/users/users.xml"
-    mode: 0700
+    mode: "0700"
     owner: 1002
   tags: clickhouse
   notify:
@@ -56,7 +56,7 @@
     state: directory
     owner: 1002
     group: 1002
-    mode: 0700
+    mode: "0700"
   tags: clickhouse
 
 # Pull separately: on an up that also pulls, compose 5.4.0 labels the container

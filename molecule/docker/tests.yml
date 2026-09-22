@@ -88,7 +88,7 @@
     label: "{{ item.item }}"
 
 - name: Get the state of the docker service
-  ansible.builtin.command: "systemctl {{ item }} docker"
+  ansible.builtin.command: "systemctl {{ item }} docker"  # noqa: command-instead-of-module
   register: docker_service
   changed_when: false
   failed_when: false
@@ -137,7 +137,7 @@
     fail_msg: "docker CLI got no usable Server section: {{ docker_version_raw.stdout }}"
 
 # the engine's own health endpoint, hit directly rather than through the CLI
-- name: Ping the docker engine API over the unix socket
+- name: Ping the docker engine API over the unix socket  # noqa: command-instead-of-module
   ansible.builtin.command: >-
     curl --silent --show-error --fail
     --unix-socket /var/run/docker.sock http://localhost/_ping

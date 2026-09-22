@@ -1,5 +1,5 @@
 ---
-- name: restart vinyl
+- name: restart vinyl  # noqa: name[casing]
   tags: vinyl
   community.docker.docker_compose_v2:
     project_src: "{{ vinyl.directories.ansible }}"
@@ -13,7 +13,7 @@
 # container is still on its way back up. docker refuses an exec against a
 # container in the restarting state, which failed the whole run. A genuinely
 # broken varnish still fails here, just a minute later.
-- name: reload vinyl
+- name: reload vinyl  # noqa: name[casing]
   tags: vinyl
   community.docker.docker_compose_v2_exec:
     project_src: "{{ vinyl.directories.ansible }}"

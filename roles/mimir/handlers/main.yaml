@@ -1,5 +1,5 @@
 ---
-- name: restart mimir
+- name: restart mimir  # noqa: name[casing]
   community.docker.docker_compose_v2:
     project_src: "{{ mimir.directories.ansible }}"
     state: restarted

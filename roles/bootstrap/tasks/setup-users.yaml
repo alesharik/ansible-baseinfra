@@ -16,7 +16,7 @@
     label: "{{ item.key }}"
   tags: bootstrap
 - name: Add authorized keys
-  ansible.builtin.authorized_key:
+  ansible.posix.authorized_key:
     user: "{{ item.key }}"
     state: present
     key: "{{ lookup('file', playbook_dir ~ '/ssh_keys/' ~ item.key ~ '.pub') }}"
@@ -31,15 +31,15 @@
   args:
     executable: /bin/bash
   changed_when: false
-  register: existing_users
+  register: bootstrap_existing_users
   tags: bootstrap
 - name: Determine removed users
   ansible.builtin.set_fact:
-    removed_users: "{{ existing_users.stdout_lines | difference(users.keys()) }}"
+    bootstrap_removed_users: "{{ bootstrap_existing_users.stdout_lines | difference(users.keys()) }}"
   tags: bootstrap
 - name: Delete removed user accounts
   ansible.builtin.user:
     name: "{{ item }}"
     state: absent
-  with_items: "{{ removed_users }}"
+  with_items: "{{ bootstrap_removed_users }}"
   tags: users

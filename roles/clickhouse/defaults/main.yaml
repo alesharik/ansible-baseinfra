@@ -1,5 +1,5 @@
 ---
-clickhouse:
+clickhouse: # noqa: var-naming[no-role-prefix]
   image: clickhouse/clickhouse-server
   version: 24.6.2.17-alpine
   databases: []

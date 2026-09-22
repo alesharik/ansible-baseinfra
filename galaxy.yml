@@ -8,7 +8,11 @@ authors:
 description: Collection with basic roles for my infrastructure. Not intended for public use
 license:
   - Apache-2.0
-tags: []
+tags:
+  - infrastructure
+  - linux
+  - database
+  - monitoring
 dependencies:
   community.docker: "*"
   # redis and valkey set vm.overcommit_memory through ansible.posix.sysctl

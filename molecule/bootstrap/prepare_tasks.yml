@@ -59,7 +59,9 @@
       WantedBy=basic.target
 
 - name: Create leftover swap file
-  ansible.builtin.command: "dd if=/dev/zero of={{ bootstrap.swap.file }} bs=1M count=1 creates='{{ bootstrap.swap.file }}'"
+  ansible.builtin.command:
+    cmd: "dd if=/dev/zero of={{ bootstrap.swap.file }} bs=1M count=1"
+    creates: "{{ bootstrap.swap.file }}"
 
 - name: Enable the leftover units without starting them
   ansible.builtin.systemd:

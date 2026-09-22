@@ -1,5 +1,5 @@
 ---
-- name: restart harbor
+- name: restart harbor  # noqa: name[casing]
   community.docker.docker_compose_v2:
     project_src: "{{ harbor.directories.ansible }}"
     state: restarted

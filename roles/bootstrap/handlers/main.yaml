@@ -1,9 +1,9 @@
 ---
-- name: restart machine
+- name: restart machine  # noqa: name[casing]
   ansible.builtin.reboot:
   tags: bootstrap
 
-- name: restart disable-thp
+- name: restart disable-thp  # noqa: name[casing]
   ansible.builtin.systemd:
     daemon_reload: true
     name: disable-transparent-huge-pages

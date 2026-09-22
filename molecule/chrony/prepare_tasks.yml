@@ -28,7 +28,7 @@
     update_cache: true
 
 - name: Get the state of chronyd straight after install
-  ansible.builtin.command: systemctl is-active chronyd
+  ansible.builtin.command: systemctl is-active chronyd  # noqa: command-instead-of-module
   register: chronyd_after_install
   changed_when: false
   failed_when: false

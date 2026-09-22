@@ -1,5 +1,5 @@
 ---
-- name: restart wg exporter
+- name: restart wg exporter  # noqa: name[casing]
   community.docker.docker_compose_v2:
     project_src: "{{ wg_exporter.directories.ansible }}"
     state: restarted

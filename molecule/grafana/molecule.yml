@@ -98,9 +98,11 @@ provisioner:
             data: "{{ dir.data }}/grafana"
         expected_compose_dir: /data/ansible/grafana
         expected_data_dir: /data/grafana
-        # `env` defaults to [], so only the secret pointer is in the environment
+        # `env` defaults to [], so only the two lines the template always
+        # writes are in the environment
         expected_env:
           - "GF_SECURITY_ADMIN_PASSWORD__FILE=/run/secrets/admin_password"
+          - "GF_PANELS_ENABLE_ALPHA=true"
         # anonymous auth is off here, which is what makes the login assertions
         # mean anything - with it on, every request answers 200 regardless
         expect_anonymous: false
@@ -134,6 +136,7 @@ provisioner:
         expected_data_dir: /data/grafana-storage
         expected_env:
           - "GF_SECURITY_ADMIN_PASSWORD__FILE=/run/secrets/admin_password"
+          - "GF_PANELS_ENABLE_ALPHA=true"
           - "GF_AUTH_ANONYMOUS_ENABLED=true"
           - "GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer"
         expect_anonymous: true

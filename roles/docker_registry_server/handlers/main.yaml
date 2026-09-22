@@ -1,5 +1,5 @@
 ---
-- name: restart docker registry server
+- name: restart docker registry server  # noqa: name[casing]
   community.docker.docker_compose_v2:
     project_src: "{{ docker.registry.server.directories.ansible }}"
     state: restarted

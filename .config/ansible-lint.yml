@@ -1,0 +1,14 @@
+---
+# Scenario files that hold a task list, not a playbook. ansible-lint treats
+# every molecule/*/*.yml as a playbook by default and reports each of these
+# as syntax-check[specific].
+kinds:
+  - tasks: "**/molecule/*/tests.yml"
+  - tasks: "**/molecule/*/prepare_tasks.yml"
+  # included once per refusal from postgres/side_effect.yml
+  - tasks: "**/molecule/postgres/refusal.yml"
+
+skip_list:
+  # The collection is not published to Galaxy. The conventional commit
+  # messages in git history serve as the changelog.
+  - galaxy[no-changelog]

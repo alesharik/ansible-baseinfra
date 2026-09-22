@@ -18,7 +18,7 @@ jobs:
       scenarios: ${{ steps.set-scenarios.outputs.scenarios }}
     steps:
       - name: Check out codebase
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Discover scenarios
         id: set-scenarios
@@ -38,7 +38,7 @@ jobs:
         scenario: ${{ fromJson(needs.discover-scenarios.outputs.scenarios) }}
     steps:
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: molecule
         uses: gofrolist/molecule-action@v2
         with:

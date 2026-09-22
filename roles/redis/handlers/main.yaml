@@ -1,5 +1,5 @@
 ---
-- name: restart redis
+- name: restart redis  # noqa: name[casing]
   tags: redis
   community.docker.docker_compose_v2:
     project_src: "{{ redis.directories.ansible }}"

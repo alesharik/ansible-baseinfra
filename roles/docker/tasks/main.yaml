@@ -1,8 +1,10 @@
 ---
-- include_tasks: ubuntu.yaml
+- name: Install docker on Ubuntu
+  ansible.builtin.include_tasks: ubuntu.yaml
   when: ansible_facts['distribution'] == 'Ubuntu'
   tags: docker
-- include_tasks: debian.yaml
+- name: Install docker on Debian
+  ansible.builtin.include_tasks: debian.yaml
   when: ansible_facts['distribution'] == 'Debian'
   tags: docker
 - name: Login into registries

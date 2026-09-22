@@ -13,7 +13,7 @@
   tags: bootstrap
 
 - name: Create procusers group
-  group:
+  ansible.builtin.group:
     name: procusers
     state: present
   tags: bootstrap

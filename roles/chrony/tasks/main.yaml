@@ -26,7 +26,7 @@
     # NOT /etc/chrony.conf: the Debian package builds chrony with sysconfdir
     # /etc/chrony, so that is the only path chronyd reads by default
     dest: /etc/chrony/chrony.conf
-    mode: 0500
+    mode: "0500"
     owner: root
     group: root
     # extra_config is written verbatim, so reject a broken file here rather
@@ -59,10 +59,10 @@
     name: systemd-timesyncd
     state: stopped
     enabled: false
-  register: stop_service
+  register: chrony_stop_service
   failed_when:
-    - stop_service.failed == true
-    - '"Could not find the requested service" not in stop_service.msg'
+    - chrony_stop_service.failed == true
+    - '"Could not find the requested service" not in chrony_stop_service.msg'
 # started, not restarted: an unconditional restart reports changed on every
 # run. Config changes come back through the handler instead.
 - name: Start chrony

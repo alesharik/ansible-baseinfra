@@ -1,5 +1,5 @@
 ---
-- name: restart node exporter
+- name: restart node exporter  # noqa: name[casing]
   community.docker.docker_compose_v2:
     project_src: "{{ node_exporter.directories.ansible }}"
     state: restarted

@@ -1,5 +1,5 @@
 ---
-- name: restart postgres
+- name: restart postgres  # noqa: name[casing]
   tags: postgres
   community.docker.docker_compose_v2:
     project_src: "{{ postgres.directories.ansible }}"

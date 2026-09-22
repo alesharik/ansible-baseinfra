@@ -1,0 +1,4 @@
+---
+# The floor set by community.docker 5 and community.crypto 3. CI runs
+# ansible-core 2.21 only.
+requires_ansible: ">=2.17.0"

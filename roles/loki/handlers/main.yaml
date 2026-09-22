@@ -1,5 +1,5 @@
 ---
-- name: restart loki
+- name: restart loki  # noqa: name[casing]
   community.docker.docker_compose_v2:
     project_src: "{{ loki.directories.ansible }}"
     state: restarted
