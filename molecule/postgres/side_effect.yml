@@ -1,0 +1,207 @@
+---
+# Transitions tests.yml cannot see: each one is asserted here, and the last play
+# puts pg-primary back into its converge state, so verify checks one state per
+# host.
+- name: Add a user without a restart, and turn the exporter off
+  hosts: pg-primary
+  environment:
+    ANSIBLE_UNSAFE_WRITES: "1"
+  tasks:
+    - name: Read when the server container started
+      ansible.builtin.command:
+        argv:
+          - docker
+          - inspect
+          - --format
+          - "{% raw %}{{ .State.StartedAt }}{% endraw %}"
+          - "{{ expected_container }}"
+      register: molecule_started_before
+      changed_when: false
+
+    # combine rather than a second literal dict: the point of the re-run is that
+    # only these keys differ from what converge used
+    - name: Build the vars with one more user and no exporter
+      ansible.builtin.set_fact:
+        molecule_pg_changed: >-
+          {{ postgres | combine({
+               'users': postgres.users + [{
+                 'name': 'late',
+                 'password': 'molecule-late',
+                 'ip': 'samenet',
+                 'privs': [{'db': 'appdb', 'type': 'database', 'privs': 'CONNECT', 'objs': 'appdb'}]}],
+               'exporter': postgres.exporter | combine({'enabled': false})}) }}
+
+    - name: Re-run the role with the new user and without the exporter
+      ansible.builtin.include_role:
+        name: alesharik.baseinfra.postgres
+      vars:
+        postgres: "{{ molecule_pg_changed }}"
+
+    - name: Read when the server container started, after the re-run
+      ansible.builtin.command:
+        argv:
+          - docker
+          - inspect
+          - --format
+          - "{% raw %}{{ .State.StartedAt }}{% endraw %}"
+          - "{{ expected_container }}"
+      register: molecule_started_after
+      changed_when: false
+
+    # The new pg_hba.conf line only works if the server re-read the file - and
+    # the file is replaced by rename, which a single-file bind mount would never
+    # show. The same StartedAt proves it was a reload, not a restart.
+    - name: Connect as the new user
+      ansible.builtin.command:
+        argv:
+          - timeout
+          - "60"
+          - docker
+          - run
+          - --rm
+          - --network
+          - "{{ expected_network }}"
+          - --env
+          - PGPASSWORD=molecule-late
+          - "{{ expected_client_image }}"
+          - psql
+          - --no-psqlrc
+          - -tA
+          - --host
+          - postgres
+          - --username
+          - late
+          - --dbname
+          - appdb
+          - -c
+          - SELECT current_user
+      register: molecule_late_login
+      changed_when: false
+      failed_when: false
+      # the postmaster applies a SIGHUP on its own time, a moment after the role
+      retries: 5
+      delay: 2
+      until: molecule_late_login.rc == 0
+
+    - name: List every container, stopped ones included
+      ansible.builtin.command: docker ps -a --format '{% raw %}{{.Names}}{% endraw %}'
+      register: molecule_ps_all
+      changed_when: false
+
+    - name: Check the user got in with no restart, and the exporter is gone
+      ansible.builtin.assert:
+        that:
+          - molecule_late_login.rc == 0
+          - molecule_late_login.stdout == 'late'
+          - molecule_started_after.stdout == molecule_started_before.stdout
+          - expected_exporter_container not in molecule_ps_all.stdout_lines
+          - expected_container in molecule_ps_all.stdout_lines
+        fail_msg: >-
+          login {{ molecule_late_login.stdout }}{{ molecule_late_login.stderr }},
+          started {{ molecule_started_before.stdout }} -> {{ molecule_started_after.stdout }},
+          containers {{ molecule_ps_all.stdout_lines }}
+
+# Each refusal runs the whole role against a throwaway directory holding the
+# state it must not touch, and expects the role's own message. The flag set in
+# `rescue` is what fails the check when the role does NOT stop.
+- name: Check the states the role refuses to touch
+  hosts: pg-single,pg-standby
+  environment:
+    ANSIBLE_UNSAFE_WRITES: "1"
+  vars:
+    molecule_refusals:
+      pg-single:
+        # the old role put the cluster at the top of the data dir
+        - name: old-layout
+          fixture: PG_VERSION
+          message: old role layout
+        # an interrupted pg_upgrade leaves its target behind
+        - name: leftover
+          fixture: 18/upgrading/PG_VERSION
+          message: did not finish
+        # a cluster cannot go to an older major
+        - name: newer
+          fixture: 19/docker/PG_VERSION
+          message: cannot move to an older major
+      pg-standby:
+        # pg_upgrade cannot upgrade a standby
+        - name: standby
+          fixture: 16/docker/PG_VERSION
+          message: cannot upgrade a standby
+  tasks:
+    - name: Run each refusal
+      ansible.builtin.include_tasks: refusal.yml
+      loop: "{{ molecule_refusals[inventory_hostname] }}"
+      loop_control:
+        loop_var: molecule_refusal
+        label: "{{ molecule_refusal.name }}"
+
+# The reload goes by the file time against pg_conf_load_time(), not by a change
+# in this run - so a pg_hba.conf written by an earlier run that failed before
+# its SIGHUP still gets one. Touching the file makes exactly that state: newer
+# than the last load, same content, nothing for the template to change.
+- name: Reload a pg_hba.conf that an earlier run did not signal
+  hosts: pg-standby
+  environment:
+    ANSIBLE_UNSAFE_WRITES: "1"
+  vars:
+    molecule_load_time:
+      - docker
+      - compose
+      - --project-directory
+      - "{{ expected_compose_dir }}"
+      - exec
+      - -T
+      - --env
+      - "PGPASSWORD={{ expected_superuser_password }}"
+      - postgres
+      - psql
+      - --no-psqlrc
+      - -tA
+      - --username
+      - "{{ expected_superuser }}"
+      - --dbname
+      - postgres
+      - -c
+      - SELECT extract(epoch FROM pg_conf_load_time())
+  tasks:
+    - name: Read when the server last loaded its config
+      ansible.builtin.command:
+        argv: "{{ molecule_load_time }}"
+      register: molecule_loaded_before
+      changed_when: false
+
+    - name: Make pg_hba.conf newer than that load
+      ansible.builtin.file:
+        path: "{{ expected_compose_dir }}/config/pg_hba.conf"
+        state: touch
+        # the mode the role gives it, so only the time changes
+        mode: "0444"
+
+    - name: Re-run the role with the host vars
+      ansible.builtin.include_role:
+        name: alesharik.baseinfra.postgres
+
+    - name: Read when the server last loaded its config, after the re-run
+      ansible.builtin.command:
+        argv: "{{ molecule_load_time }}"
+      register: molecule_loaded_after
+      changed_when: false
+      retries: 5
+      delay: 2
+      until: molecule_loaded_after.stdout | float > molecule_loaded_before.stdout | float
+
+- name: Restore the converge state
+  hosts: pg-primary
+  environment:
+    ANSIBLE_UNSAFE_WRITES: "1"
+  tasks:
+    - name: Re-run the role with the host vars
+      ansible.builtin.include_role:
+        name: alesharik.baseinfra.postgres
+
+    - name: Check the exporter is back
+      ansible.builtin.command: docker ps --format '{% raw %}{{.Names}}{% endraw %}'
+      register: molecule_ps_restored
+      changed_when: false
+      failed_when: expected_exporter_container not in molecule_ps_restored.stdout_lines

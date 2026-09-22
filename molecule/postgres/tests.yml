@@ -1,0 +1,521 @@
+---
+# Every query goes through the server's own psql, over its local socket, as the
+# superuser. `--env` hands the password to psql inside the container only.
+- name: Build the psql command the queries below go through
+  ansible.builtin.set_fact:
+    molecule_psql:
+      - docker
+      - compose
+      - --project-directory
+      - "{{ expected_compose_dir }}"
+      - exec
+      - -T
+      - --env
+      - "PGPASSWORD={{ expected_superuser_password }}"
+      - postgres
+      - psql
+      - --no-psqlrc
+      - -tA
+      - -v
+      - ON_ERROR_STOP=1
+      - --username
+      - "{{ expected_superuser }}"
+      - --dbname
+      - postgres
+
+# ==========================================================================
+# All hosts - what the role wrote to disk
+# ==========================================================================
+- name: Stat the paths the role manages
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: molecule_paths
+  loop:
+    - "{{ expected_compose_dir }}"
+    - "{{ expected_compose_dir }}/config"
+    - "{{ expected_compose_dir }}/config/pg_hba.conf"
+    - "{{ expected_compose_dir }}/docker-compose.yml"
+    - "{{ expected_data_dir }}"
+    - "{{ expected_compose_dir }}/run"
+
+# The data dir is 999:999 because the standby's base backup runs as that uid and
+# creates <major>/docker in it. The compose file is 0700: it carries passwords.
+# The socket dir is where the role reaches the server as the superuser.
+- name: Check the paths, their modes and their owners
+  vars:
+    compose_dir: "{{ molecule_paths.results[0].stat }}"
+    config_dir: "{{ molecule_paths.results[1].stat }}"
+    hba: "{{ molecule_paths.results[2].stat }}"
+    compose_file: "{{ molecule_paths.results[3].stat }}"
+    data_dir: "{{ molecule_paths.results[4].stat }}"
+    run_dir: "{{ molecule_paths.results[5].stat }}"
+  ansible.builtin.assert:
+    that:
+      - compose_dir.isdir
+      - compose_dir.mode == '0755'
+      - config_dir.isdir
+      - config_dir.mode == '0755'
+      - hba.isreg
+      - hba.mode == '0444'
+      - compose_file.isreg
+      - compose_file.mode == '0700'
+      - data_dir.isdir
+      - data_dir.mode == '0700'
+      - data_dir.uid == 999
+      - data_dir.gid == 999
+      # what the entrypoint sets at every start, so the role must match it or
+      # the second converge would report a change
+      - run_dir.isdir
+      - run_dir.mode == '3775'
+      - run_dir.uid == 999
+      - run_dir.gid == 999
+    # text around the template: a message that is only a list fails the task
+    # before the assertion is even evaluated
+    fail_msg: "paths are {{ molecule_paths.results | map(attribute='stat') | list }}"
+
+- name: Read pg_hba.conf
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/config/pg_hba.conf"
+  register: molecule_hba_raw
+
+# Compared line by line with the whitespace squeezed: the column alignment is
+# cosmetic, the rules are not.
+- name: Check pg_hba.conf holds exactly the rules for this host
+  vars:
+    hba_lines: >-
+      {{ (molecule_hba_raw.content | b64decode).splitlines()
+         | map('trim') | reject('equalto', '') | reject('match', '#')
+         | map('regex_replace', '\s+', ' ') | list }}
+  ansible.builtin.assert:
+    that:
+      - hba_lines == expected_hba
+    fail_msg: "pg_hba.conf rules are {{ hba_lines }}"
+
+- name: Read the rendered compose file
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/docker-compose.yml"
+  register: molecule_compose_raw
+
+- name: Check the compose file
+  vars:
+    compose: "{{ molecule_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - compose.services | list | sort == expected_compose_services
+      - compose.networks.postgres.name == expected_network
+      - compose.services.postgres.command == expected_command
+      - compose.services.postgres.environment.PGDATA == expected_pgdata
+      - compose.services.postgres.ports | default([]) == expected_ports
+      - compose.services.postgres.healthcheck.test[1] == 'pg_isready'
+      # over TCP, so the socket-only server of the init phase is not "ready"
+      - "'127.0.0.1' in compose.services.postgres.healthcheck.test"
+      - compose.services.postgres.networks == ['postgres']
+      # key by key, and the port through `string`: compose YAML parses it as an
+      # integer, while the label docker ends up carrying is text
+      - compose.services.exporter.labels['prometheus.io.path'] == '/metrics'
+      - compose.services.exporter.labels['prometheus.io.port'] | string == '9187'
+      - compose.services.exporter.labels['prometheus.io.instance'] == expected_exporter_instance
+      - compose.services.exporter.environment.DATA_SOURCE_USER == 'prom-exporter'
+    fail_msg: "rendered compose is {{ compose }}"
+
+# ==========================================================================
+# All hosts - what is running
+# ==========================================================================
+- name: Inspect the server container
+  ansible.builtin.command:
+    argv:
+      - docker
+      - inspect
+      - "{{ expected_container }}"
+  register: molecule_inspect
+  changed_when: false
+
+# HostConfig.Binds carries a :rw or :ro suffix that a host:container pair does
+# not, so strip it before comparing. POSTGRES_PASSWORD is read from the
+# container, not the file: the file holds `$$`, and only the container shows
+# whether compose turned that back into one `$`.
+- name: Check the container is healthy, mounted and given the real password
+  vars:
+    container: "{{ (molecule_inspect.stdout | from_json)[0] }}"
+    binds: "{{ container.HostConfig.Binds | map('regex_replace', ':(rw|ro)$', '') | list }}"
+  ansible.builtin.assert:
+    that:
+      - container.State.Health.Status == 'healthy'
+      - binds | sort == expected_mounts | sort
+      - ('POSTGRES_PASSWORD=' ~ expected_superuser_password) in container.Config.Env
+      - ('PGDATA=' ~ expected_pgdata) in container.Config.Env
+    fail_msg: >-
+      health {{ container.State.Health.Status }}, binds {{ binds }}
+
+- name: List the docker networks
+  ansible.builtin.command: docker network ls --format '{% raw %}{{.Name}}{% endraw %}'
+  register: molecule_networks
+  changed_when: false
+
+- name: Check the role created the network under the name consumers use
+  ansible.builtin.assert:
+    that:
+      - expected_network in molecule_networks.stdout_lines
+    fail_msg: "networks present: {{ molecule_networks.stdout_lines }}"
+
+# pg_hba.conf gives the superuser the socket only. From a container on the
+# server's network - the same source the exporter uses - the right password
+# must still be refused.
+- name: Try the superuser over TCP
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - "60"
+      - docker
+      - run
+      - --rm
+      - --network
+      - "{{ expected_network }}"
+      - --env
+      - "PGPASSWORD={{ expected_superuser_password }}"
+      - "{{ expected_client_image }}"
+      - psql
+      - --no-psqlrc
+      - -tA
+      - --host
+      - postgres
+      - --username
+      - "{{ expected_superuser }}"
+      - --dbname
+      - postgres
+      - -c
+      - SELECT 1
+  register: molecule_superuser_tcp
+  changed_when: false
+  failed_when: false
+
+- name: Check the superuser has no TCP rule
+  ansible.builtin.assert:
+    that:
+      - molecule_superuser_tcp.rc != 0
+      - molecule_superuser_tcp.stderr is search('no pg_hba.conf entry')
+    fail_msg: "superuser over TCP: rc {{ molecule_superuser_tcp.rc }}, {{ molecule_superuser_tcp.stdout }}{{ molecule_superuser_tcp.stderr }}"
+
+- name: Ask docker which host ports the server has
+  ansible.builtin.command:
+    argv:
+      - docker
+      - port
+      - "{{ expected_container }}"
+  register: molecule_docker_port
+  changed_when: false
+
+- name: Check the server is published only where publish says
+  ansible.builtin.assert:
+    that:
+      - (molecule_docker_port.stdout_lines | length > 0) == (expected_ports | length > 0)
+    fail_msg: "docker port says {{ molecule_docker_port.stdout_lines }}"
+
+- name: Ask the server for its version and the settings the role passes
+  ansible.builtin.command:
+    argv: >-
+      {{ molecule_psql + ['-c',
+         "SELECT current_setting('server_version_num')
+          || '|' || current_setting('session_preload_libraries')
+          || '|' || current_setting('auto_explain.log_min_duration')
+          || '|' || current_setting('hba_file')
+          || '|' || pg_has_role('prom-exporter', 'pg_monitor', 'MEMBER')"] }}
+  register: molecule_settings
+  changed_when: false
+
+# The `config` defaults reach the server as flags, and the image's own
+# postgresql.conf is left alone - so auto_explain is live, and hba_file points
+# at the mounted file rather than the one initdb wrote.
+- name: Check the server runs the new major with the role's settings
+  vars:
+    fields: "{{ molecule_settings.stdout.split('|') }}"
+  ansible.builtin.assert:
+    that:
+      - fields[0] | int >= expected_server_version_min
+      - fields[1] == 'auto_explain'
+      - fields[2] == '2s'
+      - fields[3] == '/etc/postgresql/pg_hba.conf'
+      # the exporter login and its grant, replicated on the standby
+      - fields[4] in ['t', 'true']
+    fail_msg: "server reports {{ fields }}"
+
+- name: Find the exporter address
+  ansible.builtin.command:
+    argv:
+      - docker
+      - inspect
+      - --format
+      - "{{ '{{' }} (index .NetworkSettings.Networks {{ expected_network | to_json }}).IPAddress {{ '}}' }}"
+      - "{{ expected_exporter_container }}"
+  register: molecule_exporter_ip
+  changed_when: false
+
+# pg_up 1 means the exporter reached the server by service name and logged in as
+# prom-exporter. On the standby that login and its password came over
+# replication, which is the case the old role could not render at all.
+- name: Scrape the exporter
+  ansible.builtin.uri:
+    url: "http://{{ molecule_exporter_ip.stdout }}:9187/metrics"
+    return_content: true
+  register: molecule_metrics
+  retries: 12
+  delay: 5
+  until:
+    - molecule_metrics.status == 200
+    - molecule_metrics.content is search('(?m)^pg_up 1$')
+
+# ==========================================================================
+# pg-single - the published defaults, upgraded from 16 by converge
+# ==========================================================================
+- name: Read the row written on 16
+  ansible.builtin.command:
+    argv: "{{ molecule_psql + ['-c', 'SELECT v FROM upgrade_marker', '-c', 'SHOW data_checksums'] }}"
+  register: molecule_marker
+  changed_when: false
+  when: inventory_hostname == 'pg-single'
+
+# data_checksums off proves the new cluster was initialised to match the old
+# one: 18 turns checksums on by default, and pg_upgrade refuses a mismatch.
+- name: Check the upgrade carried the data over
+  ansible.builtin.assert:
+    that:
+      - molecule_marker.stdout_lines == ['from-16', 'off']
+    fail_msg: "server returned {{ molecule_marker.stdout_lines }}"
+  when: inventory_hostname == 'pg-single'
+
+- name: Stat the cluster directories around the upgrade
+  ansible.builtin.stat:
+    path: "{{ expected_data_dir }}/{{ item }}"
+  register: molecule_upgrade_paths
+  loop:
+    - 18/docker/PG_VERSION
+    - 16/docker/global/pg_control.old
+    - 16/docker/global/pg_control
+    - 18/upgrading
+  when: inventory_hostname == 'pg-single'
+
+# pg_upgrade --link renames the old pg_control so the old cluster cannot start
+# again by accident; the old directory itself stays for the operator to remove.
+- name: Check the new cluster is in place and the old one is fenced off
+  vars:
+    found: "{{ molecule_upgrade_paths.results | map(attribute='stat.exists') | list }}"
+  ansible.builtin.assert:
+    that:
+      - found == [true, true, false, false]
+    fail_msg: "exists for {{ molecule_upgrade_paths.results | map(attribute='item') | list }}: {{ found }}"
+  when: inventory_hostname == 'pg-single'
+
+# This host pins a copy of the published defaults, so the copy has to be checked
+# against the defaults themselves or it could drift and quietly stop testing
+# them. `directories` is compared by shape: slurp + from_yaml never renders it,
+# so its paths are still the literal "{{ dir.data }}/postgres" of the file.
+- name: Read the role defaults from the controller
+  ansible.builtin.slurp:
+    src: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}/roles/postgres/defaults/main.yaml"
+  delegate_to: localhost
+  become: false
+  register: molecule_defaults_raw
+  when: inventory_hostname == 'pg-single'
+
+- name: Check this host still pins what the role actually ships
+  vars:
+    role_defaults: "{{ (molecule_defaults_raw.content | b64decode | from_yaml).postgres }}"
+  ansible.builtin.assert:
+    that:
+      - role_defaults.image == 'postgres'
+      - role_defaults.image == postgres.image
+      - role_defaults.version == postgres.version
+      - role_defaults.username == postgres.username
+      - role_defaults.mode == postgres.mode
+      - role_defaults.network == postgres.network
+      - role_defaults.publish == postgres.publish
+      - role_defaults.config == postgres.config
+      - role_defaults.users == postgres.users
+      - role_defaults.databases == postgres.databases
+      - role_defaults.replication == postgres.replication
+      - role_defaults.upgrade_image == postgres.upgrade_image
+      - >-
+        role_defaults.exporter | combine({'password': ''})
+        == postgres.exporter | combine({'password': ''})
+      # the two keys this host deliberately differs on - the role refuses to
+      # run with them empty, and the defaults ship them empty
+      - role_defaults.password == ''
+      - role_defaults.exporter.password == ''
+      - "'dir.ansible' in role_defaults.directories.ansible"
+      - role_defaults.directories.ansible.endswith('/postgres')
+      - "'dir.data' in role_defaults.directories.data"
+      - role_defaults.directories.data.endswith('/postgres')
+    fail_msg: "role ships {{ role_defaults }}, this host pins {{ postgres }}"
+  when: inventory_hostname == 'pg-single'
+
+# ==========================================================================
+# pg-primary - users, grants, config, replication source
+# ==========================================================================
+# From a container on the server's network, which is where a consumer connects
+# from. `timeout`: a psql that cannot reach its server can hang past any test.
+- name: Connect as the app user to its database
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - "60"
+      - docker
+      - run
+      - --rm
+      - --network
+      - "{{ expected_network }}"
+      - --env
+      - "PGPASSWORD={{ expected_app_password }}"
+      - "{{ expected_client_image }}"
+      - psql
+      - --no-psqlrc
+      - -tA
+      - --host
+      - postgres
+      - --username
+      - app
+      - --dbname
+      - "{{ item }}"
+      - -c
+      - SELECT current_user
+  register: molecule_app_login
+  changed_when: false
+  failed_when: false
+  loop:
+    - appdb
+    - otherdb
+  when: inventory_hostname == 'pg-primary'
+
+# pg_hba.conf gets a line per database in the user's privs and no other, so the
+# same password is refused on a database the user has no grant on.
+- name: Check pg_hba.conf lets the app user into appdb only
+  ansible.builtin.assert:
+    that:
+      - molecule_app_login.results[0].rc == 0
+      - molecule_app_login.results[0].stdout == 'app'
+      - molecule_app_login.results[1].rc != 0
+      - molecule_app_login.results[1].stderr is search('no pg_hba.conf entry')
+    fail_msg: >-
+      appdb: {{ molecule_app_login.results[0].stdout }}{{ molecule_app_login.results[0].stderr }},
+      otherdb: {{ molecule_app_login.results[1].stdout }}{{ molecule_app_login.results[1].stderr }}
+  when: inventory_hostname == 'pg-primary'
+
+- name: Ask the primary about its roles, databases and settings
+  ansible.builtin.command:
+    argv: >-
+      {{ molecule_psql + ['-c',
+         "SELECT (SELECT string_agg(datname, ',' ORDER BY datname) FROM pg_database
+                  WHERE datname IN ('appdb', 'otherdb'))
+          || '|' || has_database_privilege('app', 'appdb', 'CREATE')
+          || '|' || (SELECT rolreplication AND rolcanlogin FROM pg_roles WHERE rolname = 'replication')
+          || '|' || current_setting('work_mem')
+          || '|' || current_setting('wal_keep_size')
+          || '|' || current_setting('data_checksums')"] }}
+  register: molecule_primary_state
+  changed_when: false
+  when: inventory_hostname == 'pg-primary'
+
+- name: Check the primary's roles, databases and settings
+  vars:
+    fields: "{{ molecule_primary_state.stdout.split('|') }}"
+  ansible.builtin.assert:
+    that:
+      - fields[0] == 'appdb,otherdb'
+      - fields[1] in ['t', 'true']
+      - fields[2] in ['t', 'true']
+      # `config` is applied after the role's own flags, and reaches the server
+      - fields[3] == expected_work_mem
+      - fields[4] == expected_wal_keep_size
+      # a fresh 18 cluster keeps the new default
+      - fields[5] == 'on'
+    fail_msg: "primary reports {{ fields }}"
+  when: inventory_hostname == 'pg-primary'
+
+- name: Wait for the standby to stream from the primary
+  ansible.builtin.command:
+    argv: "{{ molecule_psql + ['-c', \"SELECT count(*) FROM pg_stat_replication WHERE state = 'streaming'\"] }}"
+  register: molecule_senders
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: molecule_senders.stdout | int >= 1
+  when: inventory_hostname == 'pg-primary'
+
+- name: Stat the paths this host relocated away from
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: molecule_unexpected
+  # default([]) because a loop is expanded before `when` is consulted, and this
+  # var only exists on the host that relocated anything
+  loop: "{{ unexpected_paths | default([]) }}"
+  when: inventory_hostname == 'pg-primary'
+
+- name: Check the default paths were left alone
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists
+    fail_msg: "{{ item.item }} exists, so directories did not move"
+  loop: "{{ molecule_unexpected.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: inventory_hostname == 'pg-primary'
+
+# ==========================================================================
+# pg-standby - seeded from the primary, streaming, read-only
+# ==========================================================================
+- name: Stat standby.signal
+  ansible.builtin.stat:
+    path: "{{ expected_data_dir }}/18/docker/standby.signal"
+  register: molecule_standby_signal
+  when: inventory_hostname == 'pg-standby'
+
+- name: Ask the standby about its recovery state
+  ansible.builtin.command:
+    argv: "{{ molecule_psql + ['-c', \"SELECT pg_is_in_recovery() || '|' || current_setting('primary_conninfo')\"] }}"
+  register: molecule_recovery
+  changed_when: false
+  when: inventory_hostname == 'pg-standby'
+
+- name: Check the base backup made this a standby of the primary
+  vars:
+    fields: "{{ molecule_recovery.stdout.split('|') }}"
+  ansible.builtin.assert:
+    that:
+      - molecule_standby_signal.stat.exists
+      - fields[0] in ['t', 'true']
+      - fields[1] is search('host=' ~ hostvars['pg-primary'].ansible_default_ipv4.address ~ '( |$)')
+      - fields[1] is search('user=replication')
+    fail_msg: "standby.signal {{ molecule_standby_signal.stat.exists }}, server reports {{ fields }}"
+  when: inventory_hostname == 'pg-standby'
+
+- name: Pick a value only this run writes
+  ansible.builtin.set_fact:
+    molecule_probe: "probe-{{ now(utc=true).strftime('%Y%m%d%H%M%S%f') }}"
+  when: inventory_hostname == 'pg-standby'
+
+- name: Write the value on the primary
+  ansible.builtin.command:
+    argv: >-
+      {{ hostvars['pg-primary'].molecule_psql + [
+         '-c', 'CREATE TABLE IF NOT EXISTS replication_probe (v text)',
+         '-c', "INSERT INTO replication_probe VALUES ('" ~ molecule_probe ~ "')"] }}
+  delegate_to: pg-primary
+  changed_when: true
+  when: inventory_hostname == 'pg-standby'
+
+- name: Read the value back on the standby
+  ansible.builtin.command:
+    argv: "{{ molecule_psql + ['-c', \"SELECT count(*) FROM replication_probe WHERE v = '\" ~ molecule_probe ~ \"'\"] }}"
+  register: molecule_replicated
+  changed_when: false
+  failed_when: false
+  retries: 12
+  delay: 5
+  until: molecule_replicated.stdout == '1'
+  when: inventory_hostname == 'pg-standby'
+
+- name: Check the write reached the standby
+  ansible.builtin.assert:
+    that:
+      - molecule_replicated.stdout == '1'
+    fail_msg: "standby returned {{ molecule_replicated.stdout }}{{ molecule_replicated.stderr }}"
+  when: inventory_hostname == 'pg-standby'

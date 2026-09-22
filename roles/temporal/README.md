@@ -78,17 +78,22 @@ so list every key above, not just the ones you are changing.
 This role **creates no database and no login role.** It migrates the schema into
 two databases that have to exist already, and fails if they do not.
 
-The default reaches the `postgres` role's primary on its published `5432`, over
-this host's own address. The `postgres` role names its compose network after its
-own project — `postgres-<name>_main` — and `postgres.name` has no default to fall
-back to, so there is no network name here worth guessing at. To go over the
-docker network instead:
+The default reaches PostgreSQL on port `5432` at the address of this host. With
+the [`postgres`](../postgres/README.md) role, that needs a `publish` entry there.
+A connection through a published port arrives with the address of the temporal
+container, or with the gateway of the postgres network when docker-proxy relays
+it. The `pg_hba` address of the temporal user must hold both. For the default
+address pool of docker, that is `172.16.0.0/12`.
+
+The shorter path is the docker network of the `postgres` role,
+`postgres.network` (`postgres` by default). There the `pg_hba` address is
+`samenet`, and nothing needs to be published:
 
 ```yaml
 temporal:
   postgres:
-    network: postgres-main_main   # whatever `postgres.name` makes it
-    host: postgres                # the service name on that network
+    network: postgres   # postgres.network
+    host: postgres      # the service name on that network
 ```
 
 **The `postgres` role writes `pg_hba.conf` per user, per database, per source
@@ -100,7 +105,7 @@ postgres:
   users:
     - name: temporal
       password: "{{ vault_temporal_pg }}"
-      ip: 172.0.0.0/8 # the container has to fall under this
+      ip: samenet # on postgres.network; a CIDR range through a published port
       privs:
         - { db: temporal,            type: database, privs: ALL, objs: temporal }
         - { db: temporal_visibility, type: database, privs: ALL, objs: temporal_visibility }
@@ -111,23 +116,12 @@ postgres:
 
 Both databases. A missing grant on `temporal_visibility` does not stop the server
 starting and does not stop a workflow running — it surfaces the first time
-anything lists workflows, which may be much later.
+anything lists workflows, which may be much later. A database with no grant also
+has no `pg_hba` line for the user, so the login to it fails.
 
-Whether those `pg_hba` rules are actually *in force* depends on the PostgreSQL
-image. The `postgres` role delivers them by writing into its data directory
-mount, which is `/var/lib/postgresql/data` — that is `PGDATA` up to PostgreSQL
-17, but **PostgreSQL 18 moved `PGDATA` to `/var/lib/postgresql/18/docker`**. On
-18 the file the role writes is not the one the server reads, and the image's own
-default (`host all all all scram-sha-256`) applies instead — which happens to
-let this role connect with nothing else configured. Check before relying on
-either:
-
-```
-docker exec <postgres container> psql -U <user> -tAc 'show hba_file'
-```
-
-What this role needs is true regardless: the login role and **both** databases
-have to exist, and the credentials have to work from the container.
+Whatever deploys PostgreSQL, this role needs the same: the login role and
+**both** databases have to exist, and the credentials have to work from the
+container.
 
 ### Namespaces
 

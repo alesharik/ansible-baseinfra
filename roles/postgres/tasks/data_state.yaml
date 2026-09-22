@@ -1,0 +1,78 @@
+---
+# Every cluster lives in <data>/<major>/docker. This file finds out which majors
+# are there, and stops on the states the role must not touch by itself.
+# The old role mounted the data dir at /var/lib/postgresql/data, so its cluster
+# sits right at the top. Upgrading it in place would put the new cluster inside
+# the old one.
+- name: Look for a cluster from the old role layout
+  tags: postgres
+  ansible.builtin.stat:
+    path: "{{ postgres.directories.data }}/PG_VERSION"
+  register: postgres_old_layout
+
+- name: Stop on a cluster from the old role layout
+  tags: postgres
+  ansible.builtin.fail:
+    msg: >-
+      {{ postgres.directories.data }} holds a cluster in the old role layout
+      (PG_VERSION at the top). Move it into
+      {{ postgres.directories.data }}/<its major>/docker first - see "Moving from
+      the old role" in the postgres role README.
+  when: postgres_old_layout.stat.exists
+
+# The upgrade writes into `upgrading` and renames it only on success. A leftover
+# means pg_upgrade failed or was cut off, and the next start must not pick it up.
+- name: Look for an unfinished upgrade
+  tags: postgres
+  ansible.builtin.stat:
+    path: "{{ postgres.directories.data }}/{{ postgres_major }}/upgrading"
+  register: postgres_leftover
+
+- name: Stop on an unfinished upgrade
+  tags: postgres
+  ansible.builtin.fail:
+    msg: >-
+      {{ postgres_leftover.stat.path }} is left over from an upgrade that did not
+      finish. The old cluster is still usable while its global/pg_control exists
+      (not pg_control.old). Read {{ postgres_leftover.stat.path }}/pg_upgrade_output.d
+      for the cause, remove {{ postgres_leftover.stat.path }}, and run the role again.
+  when: postgres_leftover.stat.exists
+
+# depth 3 reaches <data>/<major>/docker/PG_VERSION and nothing deeper - every
+# database directory inside a cluster has a PG_VERSION of its own.
+- name: Find the clusters in the data dir
+  tags: postgres
+  ansible.builtin.find:
+    paths: "{{ postgres.directories.data }}"
+    patterns: PG_VERSION
+    recurse: true
+    depth: 3
+  register: postgres_version_files
+
+- name: List the cluster majors
+  tags: postgres
+  ansible.builtin.set_fact:
+    postgres_clusters: >-
+      {{ postgres_version_files.files | map(attribute='path')
+         | select('search', '/[0-9]+/docker/PG_VERSION$')
+         | map('regex_replace', '^.*/([0-9]+)/docker/PG_VERSION$', '\1')
+         | map('int') | sort | list }}
+
+- name: Stop on a cluster newer than the image
+  tags: postgres
+  ansible.builtin.fail:
+    msg: >-
+      {{ postgres.directories.data }} holds a PostgreSQL
+      {{ postgres_clusters | max }} cluster, and postgres.version is
+      {{ postgres.version }}. A cluster cannot move to an older major.
+  when: postgres_clusters | select('gt', postgres_major | int) | list | length > 0
+
+# The major to upgrade from, 0 for none. An int either way: older ansible-core
+# turns a "16" string result into an int anyway, so a string test would break.
+- name: Decide whether to upgrade
+  tags: postgres
+  ansible.builtin.set_fact:
+    postgres_upgrade_from: >-
+      {{ (postgres_clusters | max)
+         if (postgres_clusters | length > 0 and postgres_major | int not in postgres_clusters)
+         else 0 }}

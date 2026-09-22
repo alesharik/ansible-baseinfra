@@ -1,0 +1,49 @@
+---
+# The server reads pg_hba.conf when it starts and on SIGHUP. Comparing the file
+# with pg_conf_load_time(), instead of notifying on the template change, also
+# catches a change from an earlier run that failed before it sent the signal.
+- name: Stat pg_hba.conf
+  tags: postgres
+  ansible.builtin.stat:
+    path: "{{ postgres.directories.ansible }}/config/pg_hba.conf"
+  register: postgres_hba_stat
+
+# pg_hba_file_rules parses the file on disk, not the rules in force. A bad line
+# shows up here, where a SIGHUP would make the server keep its old rules and
+# say nothing - until the next restart, which then fails.
+- name: Read the pg_hba.conf state of the server
+  tags: postgres
+  community.postgresql.postgresql_query:
+    login_unix_socket: "{{ postgres.directories.ansible }}/run"
+    login_user: "{{ postgres.username }}"
+    login_password: "{{ postgres.password }}"
+    query: >-
+      SELECT extract(epoch FROM pg_conf_load_time())::text AS loaded,
+             (SELECT string_agg('line ' || line_number || ': ' || error, '; ')
+              FROM pg_hba_file_rules WHERE error IS NOT NULL) AS errors
+  register: postgres_hba_state
+  changed_when: false
+
+- name: Stop on a bad pg_hba.conf
+  tags: postgres
+  ansible.builtin.fail:
+    msg: >-
+      {{ postgres_hba_stat.stat.path }} has errors, so the server keeps its old
+      rules: {{ postgres_hba_state.query_result[0].errors }}. Check
+      postgres.users[].ip and postgres.replication.source.
+  when: postgres_hba_state.query_result[0].errors is not none
+
+- name: Send SIGHUP to reload pg_hba.conf
+  tags: postgres
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --project-directory
+      - "{{ postgres.directories.ansible }}"
+      - kill
+      - --signal
+      - SIGHUP
+      - postgres
+  changed_when: true
+  when: postgres_hba_stat.stat.mtime | float > postgres_hba_state.query_result[0].loaded | float

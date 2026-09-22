@@ -1,159 +1,192 @@
 ---
-- include_tasks: debian.yaml
-  when: ansible_facts['os_family'] == "Debian"
+- name: Check the required secrets are set
   tags: postgres
+  ansible.builtin.assert:
+    that:
+      - postgres.password | length > 0
+      - not postgres.exporter.enabled or postgres.exporter.password | length > 0
+    fail_msg: >-
+      postgres.password is required, and so is postgres.exporter.password while
+      postgres.exporter.enabled is true.
+    quiet: true
+
+- name: Check the shape of the postgres settings
+  tags: postgres
+  ansible.builtin.assert:
+    that:
+      - postgres.mode in ['single', 'primary', 'standby']
+      - postgres.version | string is match('[0-9]+')
+      - postgres.publish is sequence
+      - postgres.publish is not string
+    fail_msg: >-
+      postgres.mode must be single, primary or standby (it is {{ postgres.mode }}),
+      postgres.version must start with the major number (it is {{ postgres.version }}),
+      and postgres.publish must be a list.
+    quiet: true
+
+- name: Check the replication settings for this mode
+  tags: postgres
+  ansible.builtin.assert:
+    that:
+      - postgres.mode == 'single' or postgres.replication.password | length > 0
+      - postgres.mode != 'primary' or postgres.replication.source | length > 0
+      - postgres.mode != 'standby' or postgres.replication.host | length > 0
+    fail_msg: >-
+      A {{ postgres.mode }} needs postgres.replication.password, a primary also
+      needs replication.source (the standby address, as CIDR), and a standby
+      needs replication.host (the primary address).
+    quiet: true
+
+- name: Work out the major version
+  tags: postgres
+  ansible.builtin.set_fact:
+    postgres_major: "{{ postgres.version | string | regex_search('^[0-9]+') }}"
+
+# The community.postgresql modules run on this host.
 - name: Install psycopg2
-  when: ansible_facts['os_family'] != "Debian"
-  ansible.builtin.pip:
-    name: psycopg2-binary
+  tags: postgres
+  ansible.builtin.apt:
+    name: python3-psycopg2
     state: present
-  tags: postgres
-- name: Create data dir
-  ansible.builtin.file:
-    path: "{{ dir.data }}/postgres-{{ postgres.name }}"
-    state: directory
-    mode: 0755
-  tags: postgres
-- name: Check if data dir is empty
-  ansible.builtin.find:
-    paths: "{{ dir.data }}/postgres-{{ postgres.name }}"
-  register: postgres_directory_files
-  when: postgres.role == 'standby'
-  tags: postgres
-- name: Run basebackup
-  ansible.builtin.docker_container:
-    name: pg_basebackup
-    image: "{{ postgres.image }}"
-    auto_remove: true
-    command: >
-      pg_basebackup
-        --pgdata /var/lib/postgresql/data
-        --format=p
-        --write-recovery-conf
-        --checkpoint=fast
-        --label=mffb
-        --progress
-        --host={{ hostvars[postgres.replication.primary_host].network.internal.ip }}
-        --port=5432
-        --username=replication
-    volumes:
-      - "{{ dir.data }}/postgres-{{ postgres.name }}:/var/lib/postgresql/data"
-    env:
-      PGPASSWORD: "{{ lookup('vars', postgres.replication.ref).replication.password }}"
-  when: postgres.role == 'standby' and postgres_directory_files.matched == 0
-  tags: postgres
-- name: Create wal archive dir
-  ansible.builtin.file:
-    path: "{{ dir.data }}/postgres-{{ postgres.name }}-wal-archive/"
-    state: directory
-    mode: 0755
-  when: postgres.role == 'primary' or postgres.role == 'standby'
-  tags: postgres
+
 - name: Create compose dir
+  tags: postgres
   ansible.builtin.file:
-    path: "{{ dir.ansible }}/postgres-{{ postgres.name }}"
+    path: "{{ postgres.directories.ansible }}"
     state: directory
-    mode: 0755
+    mode: "0755"
+
+- name: Create config dir
   tags: postgres
-- name: Configure exporter password
+  ansible.builtin.file:
+    path: "{{ postgres.directories.ansible }}/config"
+    state: directory
+    mode: "0755"
+
+# Mounted at /var/run/postgresql. The entrypoint sets 3775 and uid 999 on it at
+# every start, so anything else here would flip back and forth between runs.
+- name: Create socket dir
   tags: postgres
-  include_tasks:
-    file: monitoring-pwd.yaml
+  ansible.builtin.file:
+    path: "{{ postgres.directories.ansible }}/run"
+    state: directory
+    mode: "3775"
+    owner: "999"
+    group: "999"
+
+# 999 is the postgres user of the image. The standby base backup runs as that
+# uid and has to create <major>/docker in here.
+- name: Create data dir
+  tags: postgres
+  ansible.builtin.file:
+    path: "{{ postgres.directories.data }}"
+    state: directory
+    mode: "0700"
+    owner: "999"
+    group: "999"
+
+# No secrets in it, so readable by everyone - the server reads it as uid 999.
+- name: Move pg_hba.conf
+  tags: postgres
+  ansible.builtin.template:
+    src: pg_hba.conf
+    dest: "{{ postgres.directories.ansible }}/config/pg_hba.conf"
+    mode: "0444"
+
 - name: Move compose files
+  tags: postgres
   ansible.builtin.template:
     src: docker-compose.yml
-    dest: "{{ dir.ansible }}/postgres-{{ postgres.name }}/docker-compose.yml"
-    mode: 0755
-  tags: postgres
-- name: Copy new configs
-  ansible.builtin.template:
-    src: "{{ item }}"
-    dest: "{{ dir.data }}/postgres-{{ postgres.name }}/{{ item }}"
-    mode: 0755
-  loop:
-    - pg_hba.conf
-    - postgresql.conf
-  notify:
-    - restart db
-  tags: postgres
+    dest: "{{ postgres.directories.ansible }}/docker-compose.yml"
+    mode: "0700"
+
 # Pull separately: on an up that also pulls, compose 5.4.0 labels the container
 # with the local image ID, then recreates it once on the next up.
-- name: "{{ postgres.name }}/pull postgres images"
+- name: Pull postgres images
+  tags: postgres
   community.docker.docker_compose_v2_pull:
-    project_src: "{{ dir.ansible }}/postgres-{{ postgres.name }}"
+    project_src: "{{ postgres.directories.ansible }}"
     policy: missing
+
+- name: Read the data dir
   tags: postgres
-- name: "{{ postgres.name }}/deploy postgres container"
+  ansible.builtin.include_tasks:
+    file: data_state.yaml
+
+- name: Upgrade the cluster
+  tags: postgres
+  ansible.builtin.include_tasks:
+    file: upgrade.yaml
+  when: postgres_upgrade_from | int > 0
+
+- name: Seed the standby
+  tags: postgres
+  ansible.builtin.include_tasks:
+    file: standby.yaml
+  when:
+    - postgres.mode == 'standby'
+    - postgres_clusters | length == 0
+
+# remove_orphans so that turning the exporter off takes its container down.
+- name: Start postgres
+  tags: postgres
   community.docker.docker_compose_v2:
-    project_src: "{{ dir.ansible }}/postgres-{{ postgres.name }}"
-  tags: postgres
-- name: Wait for postgres to init
-  ansible.builtin.pause:
-    seconds: 5
-  tags: postgres
-- name: Set host fact
-  ansible.builtin.set_fact:
-    postgres_host: 127.0.0.1
-  when: postgres.role == 'primary'
-  tags: postgres
-- name: Get container info
-  ansible.builtin.docker_container_info:
-    name: postgres-{{ postgres.name }}-postgres-1
-  register: postgres_container_info
-  tags: postgres
-- name: Set host fact
-  ansible.builtin.set_fact:
-    postgres_host: >
-      {{ postgres_container_info['container']
-        ['NetworkSettings']
-        ['Networks']
-        ['postgres-' + postgres.name + '_main']
-        ['IPAddress']
-      }}
-  when: postgres.role != 'primary'
-  tags: postgres
-- name: Create users
-  community.postgresql.postgresql_user:
-    login_host: "{{ postgres_host | trim }}"
-    login_password: "{{ postgres.password }}"
-    login_user: "{{ postgres.username }}"
-    name: "{{ item.name }}"
-    password: "{{ item.password }}"
-  loop: "{{ postgres.users }}"
-  loop_control:
-    label: "{{ item.name }}"
-  when: postgres.role != 'standby'
-  tags: postgres
-- name: Create databases
-  community.postgresql.postgresql_db:
-    login_host: "{{ postgres_host | trim }}"
-    login_password: "{{ postgres.password }}"
-    login_user: "{{ postgres.username }}"
-    name: "{{ item.name }}"
-  loop: "{{ postgres.databases }}"
-  loop_control:
-    label: "{{ item.name }}"
-  when: postgres.role != 'standby'
-  tags: postgres
-- name: Give privileges
-  tags: postgres
-  include_tasks:
-    file: priv.yaml
-  loop: "{{ postgres.users }}"
-  loop_control:
-    loop_var: user
-- name: Create replication user
-  community.postgresql.postgresql_user:
-    login_host: "{{ postgres_host | trim }}"
-    login_password: "{{ postgres.password }}"
-    login_user: "{{ postgres.username }}"
-    name: replication
-    password: "{{ postgres.replication.password }}"
-    role_attr_flags: REPLICATION
+    project_src: "{{ postgres.directories.ansible }}"
     state: present
-  when: postgres.role == 'primary'
+    remove_orphans: true
+    wait: true
+    wait_timeout: 600
+
+- name: Reload pg_hba.conf when it changed
   tags: postgres
-- name: Configure exporter
+  ansible.builtin.include_tasks:
+    file: hba_reload.yaml
+
+# upgrade.yaml leaves this marker, so a run that fails between the upgrade and
+# here still analyzes on the next run. pg_upgrade carries the planner statistics
+# over only from 18 on, and even then not all of them.
+- name: Look for a pending analyze
   tags: postgres
-  include_tasks:
-    file: monitoring.yaml
+  ansible.builtin.stat:
+    path: "{{ postgres.directories.data }}/{{ postgres_major }}/analyze_pending"
+  register: postgres_analyze_pending
+
+# The password comes from the container environment, so it stays out of this
+# host's process list.
+- name: Refresh planner statistics after the upgrade
+  tags: postgres
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --project-directory
+      - "{{ postgres.directories.ansible }}"
+      - exec
+      - -T
+      - postgres
+      - sh
+      - -c
+      - >-
+        PGPASSWORD="$POSTGRES_PASSWORD"
+        exec vacuumdb --username "$POSTGRES_USER" --all --analyze-in-stages
+        {{ '--missing-stats-only' if postgres_major | int >= 18 else '' }}
+  changed_when: true
+  when: postgres_analyze_pending.stat.exists
+
+- name: Clear the pending analyze
+  tags: postgres
+  ansible.builtin.file:
+    path: "{{ postgres.directories.data }}/{{ postgres_major }}/analyze_pending"
+    state: absent
+  when: postgres_analyze_pending.stat.exists
+
+# A standby is read-only: everything below replicates from its primary.
+- name: Manage roles and databases
+  tags: postgres
+  ansible.builtin.include_tasks:
+    file: manage.yaml
+  when: postgres.mode != 'standby'
+
+- name: Make sure handlers are flushed immediately
+  tags: postgres
+  ansible.builtin.meta: flush_handlers

@@ -11,6 +11,7 @@
 - [`loki`](./roles/loki/README.md) - deploy loki log store
 - [`mimir`](./roles/mimir/README.md) - deploy mimir metrics store
 - [`node_exporter`](./roles/node_exporter/README.md) - deploy node exporter
+- [`postgres`](./roles/postgres/README.md) - deploy postgresql: a single server, a primary or a streaming standby
 - [`redis`](./roles/redis/README.md) - deploy a single-node redis
 - [`traefik`](./roles/traefik/README.md) - deploy traefik reverse proxy
 - [`valkey`](./roles/valkey/README.md) - deploy a single-node valkey
@@ -60,7 +61,7 @@ prometheus.io.address: 127.0.0.1:9586 # full address to server
 | `minio`                  | `RELEASE.2024-07-04T14-25-45Z`                                          |              |              |
 | `nginx_proxy`            | nginx - `1.7-alpine`, le - `2.5`                                        |              |              |
 | `node_exporter`          | `v1.8.1`                                                                | 2026-08-02   |              |
-| `postgres`               | `16.3`, exporter - `v0.15.0`                                            |              |              |
+| `postgres`               | `18.6`, exporter - `v0.20.1`                                            | 2026-09-22   | 2026-09-22   |
 | `redis`                  | `8.10-alpine`, exporter - `v1.89.0`                                     | 2026-08-15   | 2026-08-15   |
 | `valkey`                 | `9.1-alpine`, exporter - `v1.89.0`                                      | 2026-08-15   | 2026-08-15   |
 | `vmagent`                | `v1.101.0`                                                              |              |              |

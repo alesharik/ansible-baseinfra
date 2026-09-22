@@ -1,0 +1,54 @@
+---
+# Runs only while the data dir holds no cluster at all. --write-recovery-conf
+# writes standby.signal and primary_conninfo, which is what makes the server
+# start as a standby. As uid 999, so the copy is owned by the server's user.
+# PGPASSWORD comes from the task environment, which keeps it out of the docker
+# command line and the container config.
+- name: Take a base backup from the primary
+  tags: postgres
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --user
+      - "999:999"
+      - --volume
+      - "{{ postgres.directories.data }}:/var/lib/postgresql"
+      - --env
+      - PGPASSWORD
+      - --entrypoint
+      - pg_basebackup
+      - "{{ postgres.image }}:{{ postgres.version }}"
+      - --pgdata
+      - "/var/lib/postgresql/{{ postgres_major }}/docker"
+      - --write-recovery-conf
+      - --checkpoint=fast
+      - --host
+      - "{{ postgres.replication.host }}"
+      - --port
+      - "{{ postgres.replication.port }}"
+      - --username
+      - replication
+  environment:
+    PGPASSWORD: "{{ postgres.replication.password }}"
+  changed_when: true
+
+# pg_basebackup copies whatever major the primary runs. A copy of another major
+# would sit in the wrong directory and crash-loop the server.
+- name: Read the major of the copy
+  tags: postgres
+  ansible.builtin.slurp:
+    src: "{{ postgres.directories.data }}/{{ postgres_major }}/docker/PG_VERSION"
+  register: postgres_standby_version
+
+- name: Stop on a copy of another major
+  tags: postgres
+  ansible.builtin.fail:
+    msg: >-
+      The primary at {{ postgres.replication.host }} runs PostgreSQL
+      {{ postgres_standby_version.content | b64decode | trim }}, and this standby
+      is set to {{ postgres.version }}. Set postgres.version to the major of the
+      primary, move {{ postgres.directories.data }}/{{ postgres_major }} out of
+      the data dir, and run the role again.
+  when: (postgres_standby_version.content | b64decode | trim) != (postgres_major | string)

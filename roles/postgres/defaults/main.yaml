@@ -1,7 +1,48 @@
 ---
-postgres:
+postgres: # noqa: var-naming[no-role-prefix]
   image: postgres
-  version: 18.4
+  # Must start with the major number: the role builds PGDATA from it
+  # (/var/lib/postgresql/<major>/docker) and upgrades when it goes up.
+  version: "18.6"
+  # The bootstrap superuser. Only initdb reads it, so changing either of these
+  # on an existing cluster does not change the server - it only breaks the login.
+  username: postgres
+  password: ""
+  # single | primary | standby
+  mode: single
+  # The docker network the role creates, and the name consumers attach to.
+  network: postgres
+  # Host bindings for the server port, each one "[address:]port", e.g. "5432" or
+  # "10.0.0.5:5432". Empty publishes nothing.
+  publish: []
+  # Server settings, one `-c key=value` flag each, in key order, after the flags
+  # the role sets - so a key here wins. Everything else keeps the image's initdb defaults.
+  config:
+    session_preload_libraries: auto_explain
+    auto_explain.log_min_duration: 2s
+  # Login roles: {name, password, ip, privs: [{db, type, privs, objs}]}. `ip` is a
+  # pg_hba address (CIDR, `samenet`, `all`) and gets one line for each `db` in privs.
+  users: []
+  # Databases to create: {name}
+  databases: []
+  replication:
+    # The `replication` login. Primary and standby both need it.
+    password: ""
+    # primary: pg_hba address of the standby, in CIDR form ("10.0.0.6/32")
+    source: ""
+    # standby: where the primary is published
+    host: ""
+    port: 5432
+  # pg_upgrade runs from this image, tag <old major>-to-<new major>.
+  upgrade_image: tianon/postgres-upgrade
   exporter:
+    enabled: true
     image: quay.io/prometheuscommunity/postgres-exporter
     version: v0.20.1
+    # The prom-exporter login. It replicates, so a standby needs the same value
+    # as its primary.
+    password: ""
+  directories:
+    ansible: "{{ dir.ansible }}/postgres"
+    # Mounted at /var/lib/postgresql. The cluster lives in <major>/docker below it.
+    data: "{{ dir.data }}/postgres"

@@ -1,0 +1,100 @@
+---
+# The prepare play gathers no facts, and pg-primary's vars read pg-standby's
+# address out of hostvars - so every host gathers before any role runs.
+- name: Gather facts
+  ansible.builtin.setup:
+
+# During converge every host runs the same task at the same time, so the standby
+# would reach its base backup while the primary was not up yet. Deploying the
+# primary here is what gives the standby something to seed from.
+- name: Deploy the primary
+  ansible.builtin.include_role:
+    name: alesharik.baseinfra.postgres
+  when: inventory_hostname == 'pg-primary'
+
+# set_fact renders the copy once. A `vars: postgres: "{{ postgres | combine }}"`
+# on the include itself would refer to itself and loop.
+- name: Build the vars for the old major
+  ansible.builtin.set_fact:
+    molecule_pg_old: "{{ postgres | combine({'version': molecule_old_version}) }}"
+  when: inventory_hostname == 'pg-single'
+
+# converge then meets a 16 cluster under an 18 image: the upgrade path.
+- name: Deploy the old major on the single host
+  ansible.builtin.include_role:
+    name: alesharik.baseinfra.postgres
+  vars:
+    postgres: "{{ molecule_pg_old }}"
+  when: inventory_hostname == 'pg-single'
+
+- name: Write a row the upgrade has to carry over
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --project-directory
+      - "{{ expected_compose_dir }}"
+      - exec
+      - -T
+      - --env
+      - "PGPASSWORD={{ expected_superuser_password }}"
+      - postgres
+      - psql
+      - --no-psqlrc
+      - -v
+      - ON_ERROR_STOP=1
+      - --username
+      - "{{ expected_superuser }}"
+      - --dbname
+      - postgres
+      - -c
+      - CREATE TABLE upgrade_marker (v text)
+      - -c
+      - INSERT INTO upgrade_marker VALUES ('from-16')
+  changed_when: true
+  when: inventory_hostname == 'pg-single'
+
+# Without these, a converge that never upgraded anything - because the 16
+# cluster was not where the role looks - would pass the upgrade checks for the
+# wrong reason.
+- name: Check the old cluster is where the upgrade looks for it
+  ansible.builtin.slurp:
+    src: "{{ expected_data_dir }}/16/docker/PG_VERSION"
+  register: molecule_old_pg_version
+  when: inventory_hostname == 'pg-single'
+
+- name: Ask the old server for its version
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --project-directory
+      - "{{ expected_compose_dir }}"
+      - exec
+      - -T
+      - --env
+      - "PGPASSWORD={{ expected_superuser_password }}"
+      - postgres
+      - psql
+      - --no-psqlrc
+      - -tA
+      - --username
+      - "{{ expected_superuser }}"
+      - --dbname
+      - postgres
+      - -c
+      - SHOW server_version_num
+  register: molecule_old_server_version
+  changed_when: false
+  when: inventory_hostname == 'pg-single'
+
+- name: Check the single host runs 16 before converge
+  ansible.builtin.assert:
+    that:
+      - (molecule_old_pg_version.content | b64decode | trim) == '16'
+      - molecule_old_server_version.stdout | int >= 160000
+      - molecule_old_server_version.stdout | int < 170000
+    fail_msg: >-
+      PG_VERSION says {{ molecule_old_pg_version.content | b64decode | trim }},
+      the server says {{ molecule_old_server_version.stdout }}
+  when: inventory_hostname == 'pg-single'

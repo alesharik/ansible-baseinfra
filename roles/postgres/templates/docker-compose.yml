@@ -1,37 +1,81 @@
+#jinja2: trim_blocks: True, lstrip_blocks: True
+{#
+  Secrets and operator values go through `replace('$', '$$') | to_json`: compose
+  interpolates `$` in every string, and a JSON string is valid YAML whatever it
+  holds.
+#}
 networks:
-  main: {}
+  postgres:
+    name: "{{ postgres.network }}"
 services:
+  postgres:
+    image: "{{ postgres.image }}:{{ postgres.version }}"
+    restart: unless-stopped
+    # The image stops with SIGINT (fast shutdown). pg_upgrade refuses a cluster
+    # that was not shut down cleanly, so give the checkpoint time to finish.
+    stop_grace_period: 2m
+    # The image keeps the postgresql.conf that initdb wrote - with the locale,
+    # timezone and listen_addresses it picked - and the role only adds flags.
+    command:
+      - postgres
+      - -c
+      - hba_file=/etc/postgresql/pg_hba.conf
+{% if postgres.mode == 'primary' %}
+      - -c
+      - wal_keep_size=512MB
+{% endif %}
+{# sorted, so the file (and the container) does not change with dict order #}
+{% for key, value in postgres.config | dictsort %}
+      - -c
+      - {{ (key ~ '=' ~ value) | replace('$', '$$') | to_json }}
+{% endfor %}
+    environment:
+      POSTGRES_USER: {{ postgres.username | replace('$', '$$') | to_json }}
+      POSTGRES_PASSWORD: {{ postgres.password | replace('$', '$$') | to_json }}
+      # Explicit on every version. From 18 on this is the image default. Before
+      # 18 the image puts PGDATA on its own VOLUME at /var/lib/postgresql/data,
+      # which would send the cluster into an anonymous volume, not the mount.
+      PGDATA: /var/lib/postgresql/{{ postgres_major }}/docker
+    volumes:
+      - "{{ postgres.directories.data }}:/var/lib/postgresql"
+      # The directory, not the file: ansible replaces a file by rename, and a
+      # single-file bind mount keeps showing the old inode after a reload.
+      - "{{ postgres.directories.ansible }}/config:/etc/postgresql:ro"
+      # The socket, so the role manages the server as the superuser with no
+      # TCP rule for it. Over TCP, docker-proxy hands some remote connections
+      # over from the network gateway, where `samenet` would let them in.
+      - "{{ postgres.directories.ansible }}/run:/var/run/postgresql"
+{% if postgres.publish | length > 0 %}
+    ports:
+{% for binding in postgres.publish %}
+      - "{{ binding }}:5432"
+{% endfor %}
+{% endif %}
+    networks:
+      - postgres
+    healthcheck:
+      # Over TCP: while initdb runs, the entrypoint's temporary server listens
+      # on the socket only, and must not count as ready.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", {{ postgres.username | to_json }}, "-d", "postgres"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5m
+      start_interval: 2s
+{% if postgres.exporter.enabled %}
   exporter:
     image: "{{ postgres.exporter.image }}:{{ postgres.exporter.version }}"
-    restart: always
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_URI: postgres:5432/postgres?sslmode=disable
+      DATA_SOURCE_USER: prom-exporter
+      DATA_SOURCE_PASS: {{ postgres.exporter.password | replace('$', '$$') | to_json }}
     networks:
-      - main
+      - postgres
     depends_on:
       - postgres
-    environment:
-      DATA_SOURCE_URI: "postgres:5432/postgres?sslmode=disable"
-      DATA_SOURCE_USER: "prom-exporter"
-      DATA_SOURCE_PASS: "{{ mon_pwd }}"
     labels:
       prometheus.io.path: /metrics
       prometheus.io.port: 9187
-      prometheus.io.instance: "{{ inventory_hostname }}-{{ postgres.name }}"
-  postgres:
-    image: "{{ postgres.image }}:{{ postgres.version }}"
-    restart: always
-    networks:
-      - main
-{% if postgres.role == 'primary' %}
-    ports:
-      - 5432:5432
-{% endif %}
-    environment:
-      POSTGRES_PASSWORD: "{{ postgres.password }}"
-      POSTGRES_USER: "{{ postgres.username }}"
-    volumes:
-      - "{{ dir.data }}/postgres-{{ postgres.name }}:/var/lib/postgresql/data"
-      - "{{ dir.ansible }}/postgres-{{ postgres.name }}/pg_hba.conf:/etc/postgresql/pg_hba.conf"
-      - "{{ dir.ansible }}/postgres-{{ postgres.name }}/postgresql.conf:/etc/postgresql/postgresql.conf"
-{% if postgres.role == 'primary' or postgres.role == 'standby' %}
-      - "{{ dir.data }}/postgres-{{ postgres.name }}-wal-archive/:{{ dir.data }}/postgres-{{ postgres.name }}-wal-archive/"
+      prometheus.io.instance: "{{ inventory_hostname }}-{{ postgres.network }}"
 {% endif %}

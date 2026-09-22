@@ -1,0 +1,48 @@
+---
+# One refusal from side_effect.yml: a throwaway data dir holding the fixture, the
+# role run against it, and the message the role has to stop with.
+- name: Create the fixture directory
+  ansible.builtin.file:
+    path: "/data/refuse-{{ molecule_refusal.name }}/{{ molecule_refusal.fixture | dirname }}"
+    state: directory
+    mode: "0700"
+
+- name: Write the fixture file
+  ansible.builtin.copy:
+    dest: "/data/refuse-{{ molecule_refusal.name }}/{{ molecule_refusal.fixture }}"
+    content: "16\n"
+    mode: "0600"
+
+- name: Point the role at the fixture
+  ansible.builtin.set_fact:
+    molecule_pg_refusal: >-
+      {{ postgres | combine({
+           'network': 'refuse-' ~ molecule_refusal.name,
+           'directories': {
+             'ansible': '/data/ansible/refuse-' ~ molecule_refusal.name,
+             'data': '/data/refuse-' ~ molecule_refusal.name}}) }}
+    molecule_refused: false
+
+- name: Run the role against the fixture
+  block:
+    - name: Include the role
+      ansible.builtin.include_role:
+        name: alesharik.baseinfra.postgres
+      vars:
+        postgres: "{{ molecule_pg_refusal }}"
+  rescue:
+    - name: Check the role stopped with its own message
+      ansible.builtin.assert:
+        that:
+          - molecule_refusal.message in ansible_failed_result.msg
+        fail_msg: "{{ molecule_refusal.name }}: the role stopped with {{ ansible_failed_result.msg }}"
+
+    - name: Remember the role stopped
+      ansible.builtin.set_fact:
+        molecule_refused: true
+
+- name: Check the role did stop
+  ansible.builtin.assert:
+    that:
+      - molecule_refused
+    fail_msg: "{{ molecule_refusal.name }}: the role ran to the end on a state it must refuse"

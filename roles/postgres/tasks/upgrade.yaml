@@ -1,0 +1,108 @@
+---
+# pg_upgrade --link from <data>/<old>/docker to <data>/<new>/docker. Hard links
+# need both clusters on one filesystem, which is why the whole data dir is one
+# mount. The old cluster stays on disk until the operator removes it.
+- name: Stop on a standby with an older cluster
+  tags: postgres
+  ansible.builtin.fail:
+    msg: >-
+      {{ postgres.directories.data }}/{{ postgres_upgrade_from }}/docker is a
+      PostgreSQL {{ postgres_upgrade_from }} standby, and pg_upgrade cannot upgrade
+      a standby. Upgrade the primary first. Then stop this project, move
+      {{ postgres.directories.data }}/{{ postgres_upgrade_from }} out of the data
+      dir, and run the role again: it takes a new base backup from the primary.
+  when: postgres.mode == 'standby'
+
+# Before the stop: a missing tag or a registry outage must not leave the server
+# down with nothing to show for it.
+- name: Pull the upgrade image
+  tags: postgres
+  ansible.builtin.command:
+    argv:
+      - docker
+      - pull
+      - "{{ postgres.upgrade_image }}:{{ postgres_upgrade_from }}-to-{{ postgres_major }}"
+  register: postgres_upgrade_pull
+  changed_when: "'Downloaded newer image' in postgres_upgrade_pull.stdout"
+
+# Not docker_compose_v2 `state: stopped`: that runs `up --no-start` first, which
+# would recreate the container on the new image. The old server has to stop
+# cleanly, on its own image.
+- name: Stop postgres for the upgrade
+  tags: postgres
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --project-directory
+      - "{{ postgres.directories.ansible }}"
+      - stop
+      - --timeout
+      - "120"
+  changed_when: true
+
+# initdb of the new cluster must match the old one: the same bootstrap superuser
+# (pg_upgrade connects as it) and the same data checksum setting, which
+# pg_upgrade checks. 18 turns checksums on by default and is the first version
+# with --no-data-checksums, so the flag depends on both sides. PG_MAJOR in the
+# upgrade image is the new major.
+#
+# PGPASSWORD is only for a cluster whose own pg_hba.conf asks for a password on
+# the socket, like one from the old role. It comes from the task environment:
+# that keeps it out of the docker command line and out of the container config,
+# but ansible still passes it in the environment of the command it runs.
+- name: Run pg_upgrade
+  tags: postgres
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --volume
+      - "{{ postgres.directories.data }}:/var/lib/postgresql"
+      - --env
+      - "PGDATAOLD=/var/lib/postgresql/{{ postgres_upgrade_from }}/docker"
+      - --env
+      - "PGDATANEW=/var/lib/postgresql/{{ postgres_major }}/upgrading"
+      - --env
+      - "POSTGRES_INITDB_ARGS=--username={{ postgres.username }}"
+      - --env
+      - "PGUSER={{ postgres.username }}"
+      - --env
+      - PGPASSWORD
+      - --entrypoint
+      - sh
+      - "{{ postgres.upgrade_image }}:{{ postgres_upgrade_from }}-to-{{ postgres_major }}"
+      - -c
+      - |
+        set -e
+        if "$PGBINOLD/pg_controldata" "$PGDATAOLD" | grep -Eq '^Data page checksum version:[[:space:]]+0$'; then
+          if [ "$PG_MAJOR" -ge 18 ]; then
+            POSTGRES_INITDB_ARGS="$POSTGRES_INITDB_ARGS --no-data-checksums"
+          fi
+        else
+          POSTGRES_INITDB_ARGS="$POSTGRES_INITDB_ARGS --data-checksums"
+        fi
+        export POSTGRES_INITDB_ARGS
+        exec docker-upgrade pg_upgrade --link
+  environment:
+    PGPASSWORD: "{{ postgres.password }}"
+  changed_when: true
+
+- name: Move the upgraded cluster into place
+  tags: postgres
+  ansible.builtin.command:
+    argv:
+      - mv
+      - "{{ postgres.directories.data }}/{{ postgres_major }}/upgrading"
+      - "{{ postgres.directories.data }}/{{ postgres_major }}/docker"
+  changed_when: true
+
+# Outside the cluster, so the server never sees it. main.yaml runs the analyze
+# and removes the marker - on this run, or on the next one if this one fails.
+- name: Leave a marker for the analyze
+  tags: postgres
+  ansible.builtin.copy:
+    dest: "{{ postgres.directories.data }}/{{ postgres_major }}/analyze_pending"
+    content: ""
+    mode: "0600"

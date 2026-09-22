@@ -1,0 +1,67 @@
+---
+- name: Manage roles, databases and grants
+  tags: postgres
+  module_defaults:
+    # Over the socket, as pg_hba.conf gives the superuser no TCP rule.
+    group/community.postgresql.all:
+      login_unix_socket: "{{ postgres.directories.ansible }}/run"
+      login_user: "{{ postgres.username }}"
+      login_password: "{{ postgres.password }}"
+  block:
+    - name: Create users
+      tags: postgres
+      community.postgresql.postgresql_user:
+        name: "{{ item.name }}"
+        password: "{{ item.password }}"
+      loop: "{{ postgres.users }}"
+      loop_control:
+        label: "{{ item.name }}"
+      # the label hides the password in normal output, but not with -v
+      no_log: true
+
+    - name: Create databases
+      tags: postgres
+      community.postgresql.postgresql_db:
+        name: "{{ item.name }}"
+      loop: "{{ postgres.databases }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Give privileges
+      tags: postgres
+      community.postgresql.postgresql_privs:
+        login_db: "{{ item.1.db }}"
+        role: "{{ item.0.name }}"
+        type: "{{ item.1.type }}"
+        privs: "{{ item.1.privs }}"
+        objs: "{{ item.1.objs }}"
+      loop: "{{ postgres.users | subelements('privs', skip_missing=True) }}"
+      loop_control:
+        label: "{{ item.0.name }} {{ item.1.privs }} on {{ item.1.type }} {{ item.1.objs }} in {{ item.1.db }}"
+
+    - name: Create the replication user
+      tags: postgres
+      community.postgresql.postgresql_user:
+        name: replication
+        password: "{{ postgres.replication.password }}"
+        role_attr_flags: REPLICATION
+      when: postgres.mode == 'primary'
+
+    # Created on a single server and on a primary alike: the login replicates,
+    # which is what lets a standby's exporter in with the same password.
+    - name: Create the exporter login
+      tags: postgres
+      community.postgresql.postgresql_user:
+        name: prom-exporter
+        password: "{{ postgres.exporter.password }}"
+      when: postgres.exporter.enabled
+
+    - name: Let the exporter read the monitoring views
+      tags: postgres
+      community.postgresql.postgresql_membership:
+        groups:
+          - pg_monitor
+        target_roles:
+          - prom-exporter
+        state: present
+      when: postgres.exporter.enabled

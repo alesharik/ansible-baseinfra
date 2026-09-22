@@ -5,3 +5,5 @@ collections:
   - name: ansible.posix
   # etcd's PKI tasks
   - name: community.crypto
+  # postgres users, databases and grants
+  - name: community.postgresql
