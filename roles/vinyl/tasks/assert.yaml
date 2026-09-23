@@ -1,0 +1,29 @@
+---
+# The role owns the top of vinyl.vcl - the version line and the connector
+# backend - because VCL wants `vcl 4.x;` first and every backend declared before
+# use. A version line left in vinyl.config lands second and varnishd refuses the
+# file, which surfaces as a container that will not start rather than as
+# anything pointing at the config. Fail here instead, where the cause is named.
+- name: Check vinyl.config carries no VCL version line
+  tags: vinyl
+  ansible.builtin.assert:
+    that:
+      - vinyl.config is not search('(?m)^[ \t]*vcl[ \t]+[0-9]')
+    fail_msg: >-
+      vinyl.config declares its own `vcl ...;` version line. The role writes
+      that line itself, so remove it from vinyl.config - the config should now
+      start at its first import or backend. Set vinyl.vcl_version to change the
+      version.
+
+# .path backends exist only in VCL 4.1, and the connector is reached over one.
+- name: Check the connector is not paired with a VCL version that cannot reach it
+  tags: vinyl
+  when: vinyl.connector.enabled
+  ansible.builtin.assert:
+    that:
+      - vinyl.vcl_version == '4.1'
+    fail_msg: >-
+      vinyl.connector.enabled needs vinyl.vcl_version 4.1 - the connector is a
+      unix socket backend and `.path` does not exist in VCL
+      {{ vinyl.vcl_version }}. Set vcl_version to "4.1", or disable the
+      connector.

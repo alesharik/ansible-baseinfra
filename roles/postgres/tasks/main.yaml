@@ -1,41 +1,7 @@
 ---
-- name: Check the required secrets are set
+- name: Check the postgres settings
   tags: postgres
-  ansible.builtin.assert:
-    that:
-      - postgres.password | length > 0
-      - not postgres.exporter.enabled or postgres.exporter.password | length > 0
-    fail_msg: >-
-      postgres.password is required, and so is postgres.exporter.password while
-      postgres.exporter.enabled is true.
-    quiet: true
-
-- name: Check the shape of the postgres settings
-  tags: postgres
-  ansible.builtin.assert:
-    that:
-      - postgres.mode in ['single', 'primary', 'standby']
-      - postgres.version | string is match('[0-9]+')
-      - postgres.publish is sequence
-      - postgres.publish is not string
-    fail_msg: >-
-      postgres.mode must be single, primary or standby (it is {{ postgres.mode }}),
-      postgres.version must start with the major number (it is {{ postgres.version }}),
-      and postgres.publish must be a list.
-    quiet: true
-
-- name: Check the replication settings for this mode
-  tags: postgres
-  ansible.builtin.assert:
-    that:
-      - postgres.mode == 'single' or postgres.replication.password | length > 0
-      - postgres.mode != 'primary' or postgres.replication.source | length > 0
-      - postgres.mode != 'standby' or postgres.replication.host | length > 0
-    fail_msg: >-
-      A {{ postgres.mode }} needs postgres.replication.password, a primary also
-      needs replication.source (the standby address, as CIDR), and a standby
-      needs replication.host (the primary address).
-    quiet: true
+  ansible.builtin.include_tasks: assert.yaml
 
 - name: Work out the major version
   tags: postgres

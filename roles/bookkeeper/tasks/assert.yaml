@@ -1,0 +1,76 @@
+---
+# Every key below is set by the role from a var that also decides something
+# else - a bind mount, a published port, the directory a compose volume points
+# at. Setting one through `config` would move the bookie's idea of it without
+# moving the mount or the publication with it, and the only symptom would be a
+# bookie that does not come up.
+- name: Check no extra config entry collides with a setting the role owns
+  tags: bookkeeper
+  vars:
+    bookkeeper_managed_keys:
+      - zkServers
+      - zkLedgersRootPath
+      - metadataServiceUri
+      - advertisedAddress
+      - bookiePort
+      - journalDirectory
+      - journalDirectories
+      - ledgerDirectories
+      - indexDirectories
+      - httpServerEnabled
+      - httpServerPort
+      - enableStatistics
+      - statsProviderClass
+      - autoRecoveryDaemonEnabled
+      - diskUsageThreshold
+      - diskUsageWarnThreshold
+      - extraServerComponents
+      - storageserver.grpc.port
+      - storageserver.grpc.useHostname
+      - storage.range.store.dirs
+      - dlog.bkcEnsembleSize
+      - dlog.bkcWriteQuorumSize
+      - dlog.bkcAckQuorumSize
+  ansible.builtin.assert:
+    that:
+      - bookkeeper.config | list | intersect(bookkeeper_managed_keys) | length == 0
+    fail_msg: >-
+      bookkeeper.config sets
+      {{ bookkeeper.config | list | intersect(bookkeeper_managed_keys) }}, which
+      the role sets itself from its own vars. Those vars also decide what is
+      mounted and published, so overriding the setting alone leaves the two
+      disagreeing. Use the var instead.
+
+# BookKeeper's prometheus provider does not bind a port of its own while the
+# admin server is enabled - it serves /metrics through it. With that server off
+# there is nothing left to scrape, so the two vars cannot disagree.
+- name: Check the metrics have a server to come from
+  tags: bookkeeper
+  when: bookkeeper.metrics.enabled
+  ansible.builtin.assert:
+    that:
+      - bookkeeper.http.enabled
+    fail_msg: >-
+      bookkeeper.metrics.enabled is set with bookkeeper.http.enabled false.
+      /metrics is an endpoint of the bookie's admin server, so turning that
+      server off leaves nothing serving the metrics this would advertise.
+
+# A write goes to `ensemble_size` bookies, `write_quorum` of them hold each
+# entry and `ack_quorum` have to answer before it counts - so the sizes only
+# make sense in that order, and a table service asking for more bookies than the
+# cluster has never creates a log at all.
+- name: Check the table service replication sizes make sense
+  tags: bookkeeper
+  when: bookkeeper.stream_storage.enabled
+  vars:
+    bookkeeper_ss: "{{ bookkeeper.stream_storage }}"
+  ansible.builtin.assert:
+    that:
+      - bookkeeper_ss.ensemble_size | int >= bookkeeper_ss.write_quorum | int
+      - bookkeeper_ss.write_quorum | int >= bookkeeper_ss.ack_quorum | int
+      - bookkeeper_ss.ack_quorum | int >= 1
+    fail_msg: >-
+      bookkeeper.stream_storage is ensemble {{ bookkeeper_ss.ensemble_size }},
+      write quorum {{ bookkeeper_ss.write_quorum }}, ack quorum
+      {{ bookkeeper_ss.ack_quorum }}. They have to fall in that order, each at
+      least 1, and the ensemble needs that many bookies in the cluster.

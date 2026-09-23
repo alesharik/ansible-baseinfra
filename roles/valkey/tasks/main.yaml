@@ -1,16 +1,7 @@
 ---
-# valkey.conf is line-oriented and has no quoting, so a newline in the password
-# would not be part of the password - it would start a new directive. Fail here,
-# where the cause has a name, rather than on whatever that line happens to mean.
-- name: Check the password is a single line
+- name: Check the valkey settings
   tags: valkey
-  ansible.builtin.assert:
-    that:
-      - valkey.password is not search('[\r\n]')
-    fail_msg: >-
-      valkey.password contains a newline. valkey.conf takes one directive per
-      line, so the rest of the password would be read as configuration rather
-      than as part of the password.
+  ansible.builtin.include_tasks: assert.yaml
 
 - name: Create compose dir
   tags: valkey

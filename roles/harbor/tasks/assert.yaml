@@ -1,0 +1,16 @@
+---
+# `harbor` is a wholesale override, so a partial one silently drops keys that
+# have no working default. goharbor/prepare fails on each of these with a python
+# traceback four frames deep, which says nothing about the playbook.
+- name: Check the vars that have no usable default are set
+  tags: harbor
+  ansible.builtin.assert:
+    that:
+      - harbor.hostname | length > 0
+      - harbor.admin_password | length > 0
+      - harbor.db.host | length > 0
+      - harbor.db.password | length > 0
+      - harbor.redis.host | length > 0
+    fail_msg: >-
+      harbor needs hostname, admin_password, db.host, db.password and
+      redis.host. See roles/harbor/README.md.
