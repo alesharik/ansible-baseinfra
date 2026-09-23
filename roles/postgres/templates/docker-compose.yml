@@ -9,7 +9,18 @@ networks:
     name: "{{ postgres.network }}"
 services:
   postgres:
+{# With packages, the role builds its own image. The tag holds a hash of the
+   Dockerfile, so compose builds a missing tag only, and a package change
+   recreates the container. No slash in the name: nothing reads it as a
+   registry path and tries to pull it. #}
+{% if postgres.packages | length > 0 %}
+    image: "baseinfra-postgres:{{ postgres.version }}-{{ postgres_build_tag }}"
+    build:
+      context: .
+      dockerfile: Dockerfile
+{% else %}
     image: "{{ postgres.image }}:{{ postgres.version }}"
+{% endif %}
     restart: unless-stopped
     # The image stops with SIGINT (fast shutdown). pg_upgrade refuses a cluster
     # that was not shut down cleanly, so give the checkpoint time to finish.

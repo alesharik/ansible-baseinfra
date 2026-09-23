@@ -110,6 +110,12 @@
       # over TCP, so the socket-only server of the init phase is not "ready"
       - "'127.0.0.1' in compose.services.postgres.healthcheck.test"
       - compose.services.postgres.networks == ['postgres']
+      # a built image carries a 12-character hash after the prefix; an unbuilt
+      # one is the prefix and nothing else
+      - compose.services.postgres.image is match(expected_image_prefix | regex_escape ~ ('[0-9a-f]{12}$' if expected_build else '$'))
+      - ('build' in compose.services.postgres) == expected_build
+      - not expected_build or compose.services.postgres.build.context == '.'
+      - not expected_build or compose.services.postgres.build.dockerfile == 'Dockerfile'
       # key by key, and the port through `string`: compose YAML parses it as an
       # integer, while the label docker ends up carrying is text
       - compose.services.exporter.labels['prometheus.io.path'] == '/metrics'
@@ -331,7 +337,10 @@
       - role_defaults.publish == postgres.publish
       - role_defaults.config == postgres.config
       - role_defaults.users == postgres.users
-      - role_defaults.databases == postgres.databases
+      # this host sets `databases` and `packages` for the upgrade path, so both
+      # are checked against the empty lists the role ships, not against the host
+      - role_defaults.databases == []
+      - role_defaults.packages == []
       - role_defaults.replication == postgres.replication
       - role_defaults.upgrade_image == postgres.upgrade_image
       - >-
@@ -519,3 +528,52 @@
       - molecule_replicated.stdout == '1'
     fail_msg: "standby returned {{ molecule_replicated.stdout }}{{ molecule_replicated.stderr }}"
   when: inventory_hostname == 'pg-standby'
+
+# ==========================================================================
+# All hosts - extensions in the database, and the files behind them
+# ==========================================================================
+# molecule_psql ends with `--dbname postgres`. Drop that last element and put
+# the database that holds the extensions in its place.
+- name: Build the psql command for the extension database
+  ansible.builtin.set_fact:
+    molecule_psql_ext: "{{ molecule_psql[:-1] + [expected_extensions_db] }}"
+
+# plpgsql is in every database and says nothing about this role.
+- name: Ask the server which extensions the database holds
+  ansible.builtin.command:
+    argv: >-
+      {{ molecule_psql_ext + ['-c',
+         "SELECT extname FROM pg_extension WHERE extname <> 'plpgsql' ORDER BY extname"] }}
+  register: molecule_extensions
+  changed_when: false
+
+- name: Check the database holds exactly the extensions this host expects
+  ansible.builtin.assert:
+    that:
+      - molecule_extensions.stdout_lines == expected_extensions
+    fail_msg: "{{ expected_extensions_db }} holds {{ molecule_extensions.stdout_lines }}"
+
+- name: List the extension control files in the container
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --project-directory
+      - "{{ expected_compose_dir }}"
+      - exec
+      - -T
+      - postgres
+      - ls
+      - "{{ expected_extension_dir }}"
+  register: molecule_control_files
+  changed_when: false
+
+# The package puts the files in the image, and the catalog row replicates. So
+# the standby carries the row for `vector` with no vector.control behind it,
+# which is why an operator gives a standby the same packages as its primary.
+- name: Check the image carries the control files this host expects
+  ansible.builtin.assert:
+    that:
+      - expected_control_present | difference(molecule_control_files.stdout_lines) | length == 0
+      - expected_control_absent | intersect(molecule_control_files.stdout_lines) | length == 0
+    fail_msg: "the container lists {{ molecule_control_files.stdout_lines }}"

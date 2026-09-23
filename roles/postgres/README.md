@@ -36,7 +36,8 @@ postgres:
     session_preload_libraries: auto_explain
     auto_explain.log_min_duration: 2s
   users: [] # {name, password, ip, privs: [{db, type, privs, objs}]}
-  databases: [] # {name}
+  databases: [] # {name, extensions: []}
+  packages: [] # extension packages: "pgvector" -> postgresql-<major>-pgvector
   replication:
     password: "" # the `replication` login; primary and standby
     source: "" # primary: pg_hba address of the standby, as CIDR
@@ -151,6 +152,65 @@ revoke a grant that you take out of `privs`.
 connections that docker-proxy relays (see [pg_hba.conf](#pg_hbaconf)). For a
 client on another machine, use its address as CIDR, and add a `publish` entry.
 
+### Extensions
+
+An extension has two halves, and the role does both.
+
+```yaml
+postgres:
+  # the files, built into the image
+  packages:
+    - pgvector
+  databases:
+    - name: appdb
+      # the SQL, run in that database
+      extensions:
+        - vector
+        - pg_trgm
+```
+
+`packages` holds the part after the major number. `pgvector` becomes
+`postgresql-18-pgvector`. The official image already carries the PGDG apt
+repository, so any extension packaged there works.
+
+An apt package and a SQL extension carry different names.
+`postgresql-18-pgvector` gives the extension `vector`, and
+`postgresql-18-postgis-3` gives `postgis`, `postgis_topology` and more. The role
+maps neither to the other. State both.
+
+A contrib extension (`pg_trgm`, `pgcrypto`, `hstore`, `uuid-ossp`) ships in the
+image. It needs an `extensions` entry and no package.
+
+`extensions` reaches a database in `databases` only. For an extension in the
+`postgres` database, add `- name: postgres` with its own `extensions`.
+
+The role creates an extension and never drops one. It does not remove an
+extension you take out of the list.
+
+An extension that needs `shared_preload_libraries` or
+`session_preload_libraries` still goes in `config`.
+
+#### The built image
+
+With `packages` empty, the role runs `{{ image }}:{{ version }}` and builds
+nothing.
+
+With `packages` set, the role writes
+`{{ postgres.directories.ansible }}/Dockerfile` and tags the build
+`baseinfra-postgres:<version>-<hash>`, where `<hash>` is the first 12 characters
+of the SHA-1 of that file. So:
+
+- a package change changes the file, the hash, and the tag, and compose builds
+  the new image and recreates the container
+- a run that changes nothing finds the tag and builds nothing
+
+Old images stay on disk. Remove them with `docker image prune` after you check
+the new one.
+
+**A standby needs the same `packages` as its primary.** The catalog rows
+replicate, the files do not. A standby without the package holds a row for
+`vector` and fails the first query that calls a `vector` function.
+
 ### Replication
 
 Streaming replication, over the published port of the primary. The standby
@@ -227,6 +287,14 @@ reason. The role leaves `<data>/<old>` on disk. Remove it after you check the
 new server. Do not run the `delete_old_cluster.sh` that `pg_upgrade` leaves in
 the data directory: it holds the paths inside the container, not the host paths.
 
+With `packages` set, the role builds its own upgrade image as well. `pg_upgrade`
+checks every loadable library of the old cluster against the new installation,
+and `upgrade_image` carries plain contrib only. The role writes
+`Dockerfile.upgrade`, which installs each package for **both** majors, and tags
+it `baseinfra-postgres-upgrade:<old>-to-<new>-<hash>`. The build runs before the
+server stops, so a package missing for the old major fails the run with the
+server still up.
+
 The role stops, and changes nothing, in these cases:
 
 - **A standby with an older cluster.** `pg_upgrade` cannot upgrade a standby.
@@ -284,6 +352,10 @@ the upgraded primary instead.
 - deploys docker compose project named after `directories.ansible`, with
   containers `postgres` and, with the exporter on, `exporter`
 - on an upgrade: runs a one-shot `upgrade_image` container
+- with `packages` set: writes a `Dockerfile`, and builds
+  `baseinfra-postgres:<version>-<hash>` from it
+- with `packages` set, on an upgrade: writes a `Dockerfile.upgrade`, and builds
+  `baseinfra-postgres-upgrade:<old>-to-<new>-<hash>` from it
 - on a new standby: runs a one-shot `pg_basebackup` container
 
 #### Docker networks

@@ -98,3 +98,37 @@
       PG_VERSION says {{ molecule_old_pg_version.content | b64decode | trim }},
       the server says {{ molecule_old_server_version.stdout }}
   when: inventory_hostname == 'pg-single'
+
+# Without this, a 16 cluster that never got the extension would let the upgrade
+# pass for the wrong reason: pg_upgrade only checks libraries a cluster uses.
+- name: Ask the old server which extensions appdb holds
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --project-directory
+      - "{{ expected_compose_dir }}"
+      - exec
+      - -T
+      - --env
+      - "PGPASSWORD={{ expected_superuser_password }}"
+      - postgres
+      - psql
+      - --no-psqlrc
+      - -tA
+      - --username
+      - "{{ expected_superuser }}"
+      - --dbname
+      - appdb
+      - -c
+      - SELECT extname FROM pg_extension WHERE extname = 'vector'
+  register: molecule_old_extension
+  changed_when: false
+  when: inventory_hostname == 'pg-single'
+
+- name: Check the 16 cluster holds the extension the upgrade has to carry
+  ansible.builtin.assert:
+    that:
+      - molecule_old_extension.stdout == 'vector'
+    fail_msg: "appdb on 16 reports {{ molecule_old_extension.stdout }}"
+  when: inventory_hostname == 'pg-single'

@@ -94,6 +94,7 @@ provisioner:
         expected_client_image: postgres:18.6
         expected_pgdata: /var/lib/postgresql/18/docker
         expected_server_version_min: 180000
+        expected_extension_dir: /usr/share/postgresql/18/extension
 
     # expected_* is what tests.yml asserts against, spelled out per host rather
     # than derived from `postgres`. Deriving the expectation from the same var
@@ -102,10 +103,13 @@ provisioner:
     # from the facts of that instance.
     host_vars:
       pg-single:
-        # A copy of the published defaults. The two passwords are the only
-        # difference - the role refuses to run without them. tests.yml reads
-        # roles/postgres/defaults/main.yaml from the controller and asserts
-        # every other key still matches, so this copy cannot go stale unnoticed.
+        # A copy of the published defaults, with four keys changed on purpose:
+        # the two passwords, because the role refuses to run without them, and
+        # `packages` plus `databases`, because this host is the upgrade path and
+        # pg_upgrade with a third-party extension is what it has to prove.
+        # tests.yml reads roles/postgres/defaults/main.yaml from the controller
+        # and asserts every other key still matches, so this copy cannot go
+        # stale unnoticed.
         postgres:
           image: postgres
           version: "18.6"
@@ -118,7 +122,12 @@ provisioner:
             session_preload_libraries: auto_explain
             auto_explain.log_min_duration: 2s
           users: []
-          databases: []
+          databases:
+            - name: appdb
+              extensions:
+                - vector
+          packages:
+            - pgvector
           replication:
             password: ""
             source: ""
@@ -162,6 +171,17 @@ provisioner:
         expected_superuser: postgres
         expected_superuser_password: molecule-root
         expected_exporter_instance: pg-single-postgres
+        # a built image: the tag is the hash of the Dockerfile, so only the
+        # prefix and the shape are pinned here
+        expected_image_prefix: "baseinfra-postgres:18.6-"
+        expected_build: true
+        expected_extensions_db: appdb
+        expected_extensions:
+          - vector
+        expected_control_present:
+          - vector.control
+        expected_control_absent:
+          - postgis.control
 
       pg-primary:
         postgres:
@@ -191,10 +211,17 @@ provisioner:
                   type: database
                   privs: ALL
                   objs: appdb
-          # otherdb gets no pg_hba line for app - tests.yml checks the refusal
+          # otherdb gets no pg_hba line for app - tests.yml checks the refusal.
+          # pg_trgm ships in the image, vector comes from the package: one
+          # database holding both proves the role does not care which is which.
           databases:
             - name: appdb
+              extensions:
+                - pg_trgm
+                - vector
             - name: otherdb
+          packages:
+            - pgvector
           replication:
             password: molecule-repl
             source: "{{ hostvars['pg-standby'].ansible_default_ipv4.address }}/32"
@@ -248,6 +275,17 @@ provisioner:
         expected_app_password: molecule-app
         expected_work_mem: 8MB
         expected_wal_keep_size: 512MB
+        expected_image_prefix: "baseinfra-postgres:18.6-"
+        expected_build: true
+        expected_extensions_db: appdb
+        expected_extensions:
+          - pg_trgm
+          - vector
+        expected_control_present:
+          - pg_trgm.control
+          - vector.control
+        expected_control_absent:
+          - postgis.control
         # the default paths this host must not touch
         unexpected_paths:
           - /data/ansible/postgres
@@ -268,6 +306,10 @@ provisioner:
             auto_explain.log_min_duration: 2s
           users: []
           databases: []
+          # Empty on purpose: this host keeps the unbuilt path under test, and
+          # it shows the split - the catalog row for `vector` replicates from
+          # the primary, the vector.control file does not.
+          packages: []
           replication:
             password: molecule-repl
             source: ""
@@ -312,3 +354,15 @@ provisioner:
         expected_superuser: postgres
         expected_superuser_password: molecule-$$root
         expected_exporter_instance: pg-standby-postgres
+        # no build: the compose file names the image straight
+        expected_image_prefix: "postgres:18.6"
+        expected_build: false
+        # appdb and its extension rows come over replication from pg-primary
+        expected_extensions_db: appdb
+        expected_extensions:
+          - pg_trgm
+          - vector
+        expected_control_present:
+          - pg_trgm.control
+        expected_control_absent:
+          - vector.control

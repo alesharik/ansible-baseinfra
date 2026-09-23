@@ -1,0 +1,15 @@
+#jinja2: trim_blocks: True, lstrip_blocks: True
+{#
+  pg_upgrade checks every loadable library of the old cluster against the new
+  installation, so both majors need the packages. The upgrade image lists both
+  in its PGDG sources (trixie-pgdg main 18 16), so one apt-get reaches both.
+#}
+FROM {{ postgres.upgrade_image }}:{{ postgres_upgrade_from }}-to-{{ postgres_major }}
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+{% for major in [postgres_upgrade_from, postgres_major] %}
+{% for pkg in postgres.packages | sort %}
+      postgresql-{{ major }}-{{ pkg }} \
+{% endfor %}
+{% endfor %}
+ && rm -rf /var/lib/apt/lists/*

@@ -27,6 +27,18 @@
       loop_control:
         label: "{{ item.name }}"
 
+    # The files come from the image, so a third-party extension also needs its
+    # package in postgres.packages. The role creates an extension and never
+    # drops one - the same rule as users and databases.
+    - name: Create extensions
+      tags: postgres
+      community.postgresql.postgresql_ext:
+        name: "{{ item.1 }}"
+        login_db: "{{ item.0.name }}"
+      loop: "{{ postgres.databases | subelements('extensions', skip_missing=True) }}"
+      loop_control:
+        label: "{{ item.1 }} in {{ item.0.name }}"
+
     - name: Give privileges
       tags: postgres
       community.postgresql.postgresql_privs:

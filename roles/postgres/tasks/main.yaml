@@ -63,6 +63,32 @@
     state: directory
     mode: "0755"
 
+# Only with packages. The image tag carries a hash of this file, so a package
+# change gives a new tag and compose builds it.
+- name: Move the Dockerfile
+  tags: postgres
+  ansible.builtin.template:
+    src: Dockerfile
+    dest: "{{ postgres.directories.ansible }}/Dockerfile"
+    mode: "0444"
+  when: postgres.packages | length > 0
+
+# stat, not the checksum the template task returns: stat gives the same value on
+# a changed run and on an unchanged one.
+- name: Read the Dockerfile checksum
+  tags: postgres
+  ansible.builtin.stat:
+    path: "{{ postgres.directories.ansible }}/Dockerfile"
+    checksum_algorithm: sha1
+  register: postgres_dockerfile
+  when: postgres.packages | length > 0
+
+- name: Work out the image tag
+  tags: postgres
+  ansible.builtin.set_fact:
+    postgres_build_tag: "{{ postgres_dockerfile.stat.checksum[:12] }}"
+  when: postgres.packages | length > 0
+
 # Mounted at /var/run/postgresql. The entrypoint sets 3775 and uid 999 on it at
 # every start, so anything else here would flip back and forth between runs.
 - name: Create socket dir
@@ -107,6 +133,9 @@
   community.docker.docker_compose_v2_pull:
     project_src: "{{ postgres.directories.ansible }}"
     policy: missing
+    # The built image is local only, and `docker build` pulls its own base. The
+    # exporter is not buildable, so it is still pulled.
+    ignore_buildable: true
 
 - name: Read the data dir
   tags: postgres

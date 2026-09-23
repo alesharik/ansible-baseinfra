@@ -23,8 +23,13 @@ postgres: # noqa: var-naming[no-role-prefix]
   # Login roles: {name, password, ip, privs: [{db, type, privs, objs}]}. `ip` is a
   # pg_hba address (CIDR, `samenet`, `all`) and gets one line for each `db` in privs.
   users: []
-  # Databases to create: {name}
+  # Databases to create: {name, extensions}. `extensions` is a list of
+  # CREATE EXTENSION names and is optional.
   databases: []
+  # Extension packages built into the image. Each entry is the part after the
+  # major number: "pgvector" becomes postgresql-<major>-pgvector. A non-empty
+  # list makes the role build its own image from a Dockerfile it writes.
+  packages: []
   replication:
     # The `replication` login. Primary and standby both need it.
     password: ""

@@ -13,6 +13,34 @@
       dir, and run the role again: it takes a new base backup from the primary.
   when: postgres.mode == 'standby'
 
+# With packages, the stock upgrade image has none of the libraries the old
+# cluster references, and pg_upgrade stops. So the role builds its own.
+- name: Move the upgrade Dockerfile
+  tags: postgres
+  ansible.builtin.template:
+    src: Dockerfile.upgrade
+    dest: "{{ postgres.directories.ansible }}/Dockerfile.upgrade"
+    mode: "0444"
+  when: postgres.packages | length > 0
+
+- name: Read the upgrade Dockerfile checksum
+  tags: postgres
+  ansible.builtin.stat:
+    path: "{{ postgres.directories.ansible }}/Dockerfile.upgrade"
+    checksum_algorithm: sha1
+  register: postgres_upgrade_dockerfile
+  when: postgres.packages | length > 0
+
+# One name for both branches, so the pg_upgrade task below reads one var.
+- name: Name the upgrade image
+  tags: postgres
+  ansible.builtin.set_fact:
+    postgres_upgrade_tag: >-
+      {{ ('baseinfra-postgres-upgrade:' ~ postgres_upgrade_from ~ '-to-' ~ postgres_major
+          ~ '-' ~ postgres_upgrade_dockerfile.stat.checksum[:12])
+         if postgres.packages | length > 0
+         else (postgres.upgrade_image ~ ':' ~ postgres_upgrade_from ~ '-to-' ~ postgres_major) }}
+
 # Before the stop: a missing tag or a registry outage must not leave the server
 # down with nothing to show for it.
 - name: Pull the upgrade image
@@ -21,9 +49,44 @@
     argv:
       - docker
       - pull
-      - "{{ postgres.upgrade_image }}:{{ postgres_upgrade_from }}-to-{{ postgres_major }}"
+      - "{{ postgres_upgrade_tag }}"
   register: postgres_upgrade_pull
   changed_when: "'Downloaded newer image' in postgres_upgrade_pull.stdout"
+  when: postgres.packages | length == 0
+
+# The build is skipped when the tag is already there, so a second run over the
+# same state changes nothing.
+- name: Look for the upgrade image
+  tags: postgres
+  ansible.builtin.command:
+    argv:
+      - docker
+      - image
+      - inspect
+      - "{{ postgres_upgrade_tag }}"
+  register: postgres_upgrade_image_found
+  changed_when: false
+  failed_when: false
+  when: postgres.packages | length > 0
+
+# --pull, so this reaches the registry like the docker pull it replaces, and
+# still fails before the server stops.
+- name: Build the upgrade image
+  tags: postgres
+  ansible.builtin.command:
+    argv:
+      - docker
+      - build
+      - --pull
+      - --file
+      - "{{ postgres.directories.ansible }}/Dockerfile.upgrade"
+      - --tag
+      - "{{ postgres_upgrade_tag }}"
+      - "{{ postgres.directories.ansible }}"
+  changed_when: true
+  when:
+    - postgres.packages | length > 0
+    - postgres_upgrade_image_found.rc != 0
 
 # Not docker_compose_v2 `state: stopped`: that runs `up --no-start` first, which
 # would recreate the container on the new image. The old server has to stop
@@ -72,7 +135,7 @@
       - PGPASSWORD
       - --entrypoint
       - sh
-      - "{{ postgres.upgrade_image }}:{{ postgres_upgrade_from }}-to-{{ postgres_major }}"
+      - "{{ postgres_upgrade_tag }}"
       - -c
       - |
         set -e
