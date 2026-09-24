@@ -1,0 +1,91 @@
+---
+- name: Read the bucket {{ garage_bucket.name }}
+  tags: garage
+  ansible.builtin.command:
+    argv: "{{ garage_cli + ['json-api', 'GetBucketInfo', {'globalAlias': garage_bucket.name} | to_json] }}"
+  register: garage_bucket_read
+  changed_when: false
+  failed_when:
+    - garage_bucket_read.rc != 0
+    - "'NoSuchBucket' not in garage_bucket_read.stderr"
+
+- name: Create the bucket {{ garage_bucket.name }}
+  tags: garage
+  ansible.builtin.command:
+    argv: "{{ garage_cli + ['json-api', 'CreateBucket', {'globalAlias': garage_bucket.name} | to_json] }}"
+  register: garage_bucket_created
+  changed_when: true
+  when: garage_bucket_read.rc != 0
+
+# Both calls answer with the same bucket info.
+- name: Remember the bucket {{ garage_bucket.name }}
+  tags: garage
+  ansible.builtin.set_fact:
+    garage_bucket_info: >-
+      {{ (garage_bucket_created.stdout if garage_bucket_read.rc != 0
+          else garage_bucket_read.stdout) | from_json }}
+
+# Allow and Deny change only the permissions set to true in the call, so each
+# call carries only the permissions that have to change.
+- name: Grant access to the bucket {{ garage_bucket.name }}
+  tags: garage
+  vars: &garage_perms_vars
+    garage_key_id: "{{ (garage.access_keys | selectattr('name', 'equalto', item.key) | first).id }}"
+    # the permissions this key has now, and the ones it should have
+    garage_perms_have: >-
+      {{ garage_bucket_info['keys'] | selectattr('accessKeyId', 'equalto', garage_key_id)
+         | map(attribute='permissions') | map('dict2items') | flatten
+         | selectattr('value') | map(attribute='key') | list }}
+    garage_perms_want: >-
+      {{ {'read': item.read | default(true), 'write': item.write | default(true),
+          'owner': item.owner | default(false)}
+         | dict2items | selectattr('value') | map(attribute='key') | list }}
+    garage_perms_grant: "{{ garage_perms_want | difference(garage_perms_have) }}"
+    garage_perms_revoke: "{{ garage_perms_have | difference(garage_perms_want) }}"
+  ansible.builtin.command:
+    argv: >-
+      {{ garage_cli + ['json-api', 'AllowBucketKey',
+         {'bucketId': garage_bucket_info.id, 'accessKeyId': garage_key_id,
+          'permissions': {'read': 'read' in garage_perms_grant,
+                          'write': 'write' in garage_perms_grant,
+                          'owner': 'owner' in garage_perms_grant}} | to_json] }}
+  changed_when: true
+  loop: "{{ garage_bucket.access | default([]) }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: garage_perms_grant | length > 0
+
+- name: Revoke access to the bucket {{ garage_bucket.name }}
+  tags: garage
+  vars: *garage_perms_vars
+  ansible.builtin.command:
+    argv: >-
+      {{ garage_cli + ['json-api', 'DenyBucketKey',
+         {'bucketId': garage_bucket_info.id, 'accessKeyId': garage_key_id,
+          'permissions': {'read': 'read' in garage_perms_revoke,
+                          'write': 'write' in garage_perms_revoke,
+                          'owner': 'owner' in garage_perms_revoke}} | to_json] }}
+  changed_when: true
+  loop: "{{ garage_bucket.access | default([]) }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: garage_perms_revoke | length > 0
+
+# A key that is not in `access` keeps no permission on the bucket.
+- name: Revoke access of unlisted keys to the bucket {{ garage_bucket.name }}
+  tags: garage
+  vars:
+    garage_listed_ids: >-
+      {{ garage.access_keys
+         | selectattr('name', 'in', garage_bucket.access | default([]) | map(attribute='key') | list)
+         | map(attribute='id') | list }}
+  ansible.builtin.command:
+    argv: >-
+      {{ garage_cli + ['json-api', 'DenyBucketKey',
+         {'bucketId': garage_bucket_info.id, 'accessKeyId': item.accessKeyId,
+          'permissions': {'read': true, 'write': true, 'owner': true}} | to_json] }}
+  changed_when: true
+  loop: "{{ garage_bucket_info['keys'] | rejectattr('accessKeyId', 'in', garage_listed_ids) | list }}"
+  loop_control:
+    label: "{{ item.accessKeyId }}"
+  when: item.permissions.values() | select | list | length > 0

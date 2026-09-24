@@ -1,0 +1,136 @@
+---
+- name: Check the garage settings
+  tags: garage
+  ansible.builtin.include_tasks: assert.yaml
+
+- name: Create compose dir
+  tags: garage
+  ansible.builtin.file:
+    path: "{{ garage.directories.ansible }}"
+    state: directory
+    mode: "0755"
+
+- name: Create config dir
+  tags: garage
+  ansible.builtin.file:
+    path: "{{ garage.directories.ansible }}/config"
+    state: directory
+    mode: "0755"
+
+# The image runs as root, so root owns the data.
+- name: Create data dir
+  tags: garage
+  ansible.builtin.file:
+    path: "{{ garage.directories.data }}"
+    state: directory
+    mode: "0700"
+
+# The leader lays out the cluster and owns the RPC secret, the keys and the
+# buckets. They are cluster-wide, so one member is enough.
+- name: Find the leader
+  tags: garage
+  ansible.builtin.set_fact:
+    garage_leader: "{{ garage.peers | first | default(inventory_hostname) }}"
+    garage_members: "{{ garage.peers if garage.peers | length > 0 else [inventory_hostname] }}"
+
+- name: Look for the stored RPC secret
+  tags: garage
+  ansible.builtin.stat:
+    path: "{{ garage.directories.ansible }}/rpc_secret"
+  register: garage_rpc_secret_file
+  when: inventory_hostname == garage_leader
+
+- name: Read the stored RPC secret
+  tags: garage
+  ansible.builtin.slurp:
+    src: "{{ garage.directories.ansible }}/rpc_secret"
+  register: garage_rpc_secret_raw
+  when:
+    - inventory_hostname == garage_leader
+    - garage_rpc_secret_file.stat.exists
+
+# 32 random bytes as 64 lowercase hex characters, the format garage expects
+- name: Generate the RPC secret
+  tags: garage
+  ansible.builtin.set_fact:
+    garage_rpc_secret: >-
+      {{ garage_rpc_secret_raw.content | b64decode | trim
+         if garage_rpc_secret_raw.content is defined
+         else lookup('ansible.builtin.password', '/dev/null', length=64, chars=['digits', 'abcdef']) }}
+  no_log: true
+  when: inventory_hostname == garage_leader
+
+# A secret someone edited by hand fails here, not as a node that cannot join
+- name: Check the stored RPC secret
+  tags: garage
+  ansible.builtin.assert:
+    that:
+      - garage_rpc_secret is match('^[0-9a-f]{64}$')
+    fail_msg: >-
+      {{ garage.directories.ansible }}/rpc_secret is not 64 lowercase hex
+      characters. Fix the file or remove it. Without the file, the role makes a
+      new secret, and every member of the cluster restarts with it.
+    quiet: true
+  when: inventory_hostname == garage_leader
+
+- name: Store the RPC secret
+  tags: garage
+  ansible.builtin.copy:
+    dest: "{{ garage.directories.ansible }}/rpc_secret"
+    content: "{{ garage_rpc_secret }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  when: inventory_hostname == garage_leader
+
+# Every member must use the same secret. The plays run in lockstep, so the
+# leader has its secret by now.
+- name: Take the RPC secret from the leader
+  tags: garage
+  ansible.builtin.set_fact:
+    garage_rpc_secret: "{{ hostvars[garage_leader].garage_rpc_secret }}"
+  no_log: true
+  when: inventory_hostname != garage_leader
+
+# 0600 is enough: it holds the RPC secret, and the container reads it as root.
+- name: Move garage config
+  tags: garage
+  ansible.builtin.template:
+    src: config.toml
+    dest: "{{ garage.directories.ansible }}/config/garage.toml"
+    mode: "0600"
+  notify:
+    - restart garage
+
+- name: Move compose files
+  tags: garage
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ garage.directories.ansible }}/docker-compose.yml"
+    mode: "0700"
+  notify:
+    - restart garage
+
+# Pull separately: on an up that also pulls, compose 5.4.0 labels the container
+# with the local image ID, then recreates it once on the next up.
+- name: Pull garage image
+  tags: garage
+  community.docker.docker_compose_v2_pull:
+    project_src: "{{ garage.directories.ansible }}"
+    policy: missing
+
+- name: Start garage
+  tags: garage
+  community.docker.docker_compose_v2:
+    project_src: "{{ garage.directories.ansible }}"
+    state: present
+    remove_orphans: true
+
+- name: Make sure handlers are flushed immediately
+  tags: garage
+  ansible.builtin.meta: flush_handlers
+
+- name: Manage the cluster, the keys and the buckets
+  tags: garage
+  ansible.builtin.include_tasks: manage.yaml

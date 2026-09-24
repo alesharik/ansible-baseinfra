@@ -1,0 +1,48 @@
+---
+- name: Read the access key {{ garage_key.name }}
+  tags: garage
+  ansible.builtin.command:
+    argv: >-
+      {{ garage_cli + ['json-api', 'GetKeyInfo',
+         {'id': garage_key.id, 'showSecretKey': true} | to_json] }}
+  register: garage_key_info
+  changed_when: false
+  failed_when:
+    - garage_key_info.rc != 0
+    - "'NoSuchAccessKey' not in garage_key_info.stderr"
+  no_log: true
+
+- name: Import the access key {{ garage_key.name }}
+  tags: garage
+  ansible.builtin.command:
+    argv: >-
+      {{ garage_cli + ['json-api', 'ImportKey',
+         {'accessKeyId': garage_key.id, 'secretAccessKey': garage_key.secret,
+          'name': garage_key.name} | to_json] }}
+  changed_when: true
+  no_log: true
+  when: garage_key_info.rc != 0
+
+# Garage cannot change the secret of a key, and never takes an id back once
+# used, even after the key is deleted. So a new secret needs a new id.
+- name: Check the secret of the access key {{ garage_key.name }}
+  tags: garage
+  ansible.builtin.assert:
+    that:
+      - (garage_key_info.stdout | from_json).secretAccessKey == garage_key.secret
+    fail_msg: >-
+      Access key {{ garage_key.id }} ({{ garage_key.name }}) exists with another
+      secret. Garage cannot change the secret of a key. Give the key a new id.
+    quiet: true
+  when: garage_key_info.rc == 0
+
+- name: Rename the access key {{ garage_key.name }}
+  tags: garage
+  ansible.builtin.command:
+    argv: >-
+      {{ garage_cli + ['json-api', 'UpdateKey',
+         {'id': garage_key.id, 'body': {'name': garage_key.name}} | to_json] }}
+  changed_when: true
+  when:
+    - garage_key_info.rc == 0
+    - (garage_key_info.stdout | from_json).name != garage_key.name

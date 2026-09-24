@@ -9,6 +9,7 @@
 - [`clickhouse`](./roles/clickhouse/README.md) - deploy clickhouse, a single server or a sharded, replicated cluster
 - [`clickhouse_keeper`](./roles/clickhouse_keeper/README.md) - deploy clickhouse keeper, a single server or an ensemble
 - [`docker_registry_server`](./roles/docker_registry_server/README.md) - deploy a docker registry with htpasswd auth
+- [`garage`](./roles/garage/README.md) - deploy garage S3 object store, a single node or a cluster, with keys and buckets
 - [`grafana`](./roles/grafana/README.md) - deploy grafana
 - [`loki`](./roles/loki/README.md) - deploy loki log store
 - [`mimir`](./roles/mimir/README.md) - deploy mimir metrics store
@@ -57,6 +58,7 @@ prometheus.io.address: 127.0.0.1:9586 # full address to server
 | `clickhouse`             | `26.8.10.6`                                                             | 2026-09-24   | 2026-09-24   |
 | `clickhouse_keeper`      | `26.8.10.6`                                                             | 2026-09-24   | 2026-09-24   |
 | `docker_registry_server` | `2`                                                                     | 2026-08-02   |              |
+| `garage`                 | `v2.4.1`                                                                | 2026-09-24   | 2026-09-24   |
 | `grafana`                | `13.0.2`                                                                | 2026-08-01   | 2026-06-14   |
 | `harbor`                 | `2.15.2`                                                                | 2026-09-17   | 2026-09-17   |
 | `loki`                   | `3.5`                                                                   | 2026-08-01   | 2025-06-22   |

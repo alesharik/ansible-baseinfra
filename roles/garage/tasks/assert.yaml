@@ -1,0 +1,85 @@
+---
+- name: Check the layout settings
+  tags: garage
+  ansible.builtin.assert:
+    that:
+      - garage.capacity | human_to_bytes > 0
+      - garage.zone | length > 0
+      - garage.tags is sequence and garage.tags is not string
+      - garage.replication_factor | int >= 1
+      - garage.replication_factor | int <= [garage.peers | length, 1] | max
+      - garage.publish is sequence and garage.publish is not string
+    fail_msg: >-
+      garage.capacity must be a size such as 100G (it is {{ garage.capacity }}),
+      zone must be set, and tags and publish must be lists.
+      garage.replication_factor is {{ garage.replication_factor }}. It must be
+      1 or more, and not more than the number of members.
+    quiet: true
+
+# Checked across hostvars: the first member lays out the whole cluster from
+# every member's settings, so one bad member breaks the layout for all of them.
+- name: Check the cluster is coherent
+  tags: garage
+  when: garage.peers | length > 0
+  vars:
+    garage_peer_ips: >-
+      {{ garage.peers | map('extract', hostvars, ['garage', 'peer_ip'])
+         | map('default', '') | list }}
+    garage_peer_factors: >-
+      {{ garage.peers | map('extract', hostvars, ['garage', 'replication_factor'])
+         | map('default', 0) | map('int') | unique | list }}
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname in garage.peers
+      - garage.peers | difference(hostvars | list) | length == 0
+      - garage.peers | difference(ansible_play_hosts_all) | length == 0
+      - garage_peer_ips | select('equalto', '') | list | length == 0
+      - garage_peer_factors | length == 1
+    fail_msg: >-
+      garage.peers is {{ garage.peers }}. It must contain {{ inventory_hostname }}
+      and name only hosts of this play. Every member needs a peer_ip, and all
+      members need the same replication_factor. Members resolve
+      to addresses {{ garage_peer_ips }} and replication factors
+      {{ garage_peer_factors }}.
+
+- name: Check the access keys
+  tags: garage
+  ansible.builtin.assert:
+    that:
+      - item.name | default('') | length > 0
+      - item.id | default('') is match('^GK[0-9a-f]{24}$')
+      - item.secret | default('') is match('^[0-9a-f]{64}$')
+    fail_msg: >-
+      Key "{{ item.name | default('') }}" needs a name, an id of "GK" and 24 hex
+      characters, and a secret of 64 hex characters.
+    quiet: true
+  loop: "{{ garage.access_keys }}"
+  loop_control:
+    label: "{{ item.name | default('') }}"
+
+- name: Check the key names and ids are unique
+  tags: garage
+  ansible.builtin.assert:
+    that:
+      - garage.access_keys | map(attribute='name') | unique | length == garage.access_keys | length
+      - garage.access_keys | map(attribute='id') | unique | length == garage.access_keys | length
+    fail_msg: Two entries of garage.access_keys have the same name or the same id.
+    quiet: true
+
+- name: Check the buckets
+  tags: garage
+  vars:
+    garage_bucket_keys: "{{ item.access | default([]) | map(attribute='key') | list }}"
+  ansible.builtin.assert:
+    that:
+      - item.name | default('') | length > 0
+      - garage_bucket_keys | difference(garage.access_keys | map(attribute='name')) | length == 0
+      - garage_bucket_keys | unique | length == garage_bucket_keys | length
+    fail_msg: >-
+      Bucket "{{ item.name | default('') }}" needs a name, and the keys in
+      its access list {{ garage_bucket_keys }} must each appear once and be
+      names from garage.access_keys.
+    quiet: true
+  loop: "{{ garage.buckets }}"
+  loop_control:
+    label: "{{ item.name | default('') }}"

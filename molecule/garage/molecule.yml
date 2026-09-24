@@ -1,0 +1,249 @@
+---
+# Three platforms:
+#   garage-single  a single node. Pins a copy of the published role defaults,
+#                  except access_keys and buckets. tests.yml
+#                  re-reads defaults/main.yaml from the controller so the copy
+#                  cannot drift. side_effect.yml gives the reader key rights it
+#                  must not have, and the role takes them back.
+#   garage-node-1  a cluster of two with garage-node-2, replication factor 2.
+#   garage-node-2  relocated directories, renamed network, another zone, extra
+#                  labels, vhost-style root domain, metrics OFF.
+# An object written through node-1 and read back through node-2 proves that the
+# two nodes form one cluster.
+platforms:
+  - name: garage-single
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+    # docker runs inside the instance, and overlayfs does not stack on overlayfs
+    volumes:
+      - /var/lib/docker
+      - /var/lib/containerd
+    keep_volumes: false
+  - name: garage-node-1
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+    volumes:
+      - /var/lib/docker
+      - /var/lib/containerd
+    keep_volumes: false
+  - name: garage-node-2
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+    volumes:
+      - /var/lib/docker
+      - /var/lib/containerd
+    keep_volumes: false
+
+provisioner:
+  inventory:
+    group_vars:
+      all:
+        # `bootstrap` is a wholesale override, so every key the role reads is here
+        bootstrap:
+          # would reach the host kernel through the privileged container
+          disable_algif_aead: false
+          disable_transparent_huge_pages: false
+          setup_users: false
+          setup_sudo: false
+          # the prometheus.io.instance label is built from ansible_hostname
+          set_hostname: true
+          limits:
+            enabled: true
+            nofile:
+              soft: 8192
+              hard: 1048576
+          swap:
+            enabled: false
+            # NOT /swapfile: /proc/swaps is not namespaced
+            file: /molecule_swapfile
+            size_mb: 4096
+        dir:
+          data: /data
+          ansible: /data/ansible
+
+        # Test credentials, the same on every host
+        molecule_writer_id: GKa1a1a1a1a1a1a1a1a1a1a1a1
+        molecule_writer_secret: b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2
+        molecule_reader_id: GKc3c3c3c3c3c3c3c3c3c3c3c3
+        molecule_reader_secret: d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4
+        # the S3 client, run from a throwaway container
+        molecule_curl_image: curlimages/curl:8.22.0
+
+    # expected_* is spelled out per host, never derived from `garage`
+    host_vars:
+      garage-single:
+        garage:
+          image: dxflrs/garage
+          version: v2.4.1
+          peers: []
+          peer_ip: ""
+          rpc_port: 3901
+          replication_factor: 1
+          zone: dc1
+          capacity: 100G
+          tags: []
+          s3:
+            region: garage
+            root_domain: ""
+          network: garage
+          publish: []
+          labels: {}
+          access_keys:
+            - name: writer
+              id: GKa1a1a1a1a1a1a1a1a1a1a1a1
+              secret: b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2
+            - name: reader
+              id: GKc3c3c3c3c3c3c3c3c3c3c3c3
+              secret: d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4
+          buckets:
+            - name: media
+              access:
+                - key: writer
+                - key: reader
+                  write: false
+          metrics:
+            enabled: true
+          directories:
+            ansible: "{{ dir.ansible }}/garage"
+            data: "{{ dir.data }}/garage"
+
+        expected_compose_dir: /data/ansible/garage
+        expected_data_dir: /data/garage
+        expected_network: garage
+        expected_container: garage-garage-1
+        expected_mounts:
+          - /data/garage:/var/lib/garage
+          - /data/ansible/garage/config:/etc/garage
+        expected_image: dxflrs/garage:v2.4.1
+        expected_ports: []
+        expected_rpc_public_addr: 127.0.0.1:3901
+        expected_replication_factor: 1
+        expected_nodes: 1
+        # zone, capacity in bytes, tags - for this node's entry in the layout
+        expected_role:
+          zone: dc1
+          capacity: 107374182400
+          tags: []
+        expected_bucket: media
+        expected_metrics_enabled: true
+        expected_instance_label: garage-single-garage
+        # the leader stores the RPC secret, other members do not
+        expected_secret_file: true
+
+      garage-node-1:
+        garage:
+          image: dxflrs/garage
+          version: v2.4.1
+          peers:
+            - garage-node-1
+            - garage-node-2
+          peer_ip: "{{ ansible_default_ipv4.address }}"
+          rpc_port: 3901
+          replication_factor: 2
+          zone: dc1
+          capacity: 2G
+          tags: [node-1]
+          s3:
+            region: garage
+            root_domain: ""
+          network: garage
+          publish:
+            - "{{ ansible_default_ipv4.address }}:3900"
+          labels: {}
+          access_keys:
+            - name: writer
+              id: GKa1a1a1a1a1a1a1a1a1a1a1a1
+              secret: b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2
+          buckets:
+            - name: shared
+              access:
+                - key: writer
+          metrics:
+            enabled: true
+          directories:
+            ansible: "{{ dir.ansible }}/garage"
+            data: "{{ dir.data }}/garage"
+
+        expected_compose_dir: /data/ansible/garage
+        expected_data_dir: /data/garage
+        expected_network: garage
+        expected_container: garage-garage-1
+        expected_mounts:
+          - /data/garage:/var/lib/garage
+          - /data/ansible/garage/config:/etc/garage
+        expected_image: dxflrs/garage:v2.4.1
+        # S3 on the host address, RPC on the host address
+        expected_ports: ["3900", "3901"]
+        expected_replication_factor: 2
+        expected_nodes: 2
+        expected_role:
+          zone: dc1
+          capacity: 2147483648
+          tags: [node-1]
+        expected_bucket: shared
+        expected_metrics_enabled: true
+        expected_instance_label: garage-node-1-garage
+        expected_secret_file: true
+
+      garage-node-2:
+        garage:
+          image: dxflrs/garage
+          version: v2.4.1
+          peers:
+            - garage-node-1
+            - garage-node-2
+          peer_ip: "{{ ansible_default_ipv4.address }}"
+          rpc_port: 3901
+          replication_factor: 2
+          zone: dc2
+          capacity: 1G
+          tags: [node-2, moved]
+          s3:
+            region: garage
+            root_domain: .s3.example.test
+          network: garage-cluster
+          publish: []
+          labels:
+            traefik.enable: "true"
+          # the leader owns keys and buckets, so these only have to pass the checks
+          access_keys: []
+          buckets: []
+          metrics:
+            enabled: false
+          directories:
+            ansible: "{{ dir.ansible }}/garage-moved"
+            data: "{{ dir.data }}/garage-moved"
+
+        expected_compose_dir: /data/ansible/garage-moved
+        expected_data_dir: /data/garage-moved
+        expected_network: garage-cluster
+        # compose names the project after directories.ansible
+        expected_container: garage-moved-garage-1
+        expected_mounts:
+          - /data/garage-moved:/var/lib/garage
+          - /data/ansible/garage-moved/config:/etc/garage
+        expected_image: dxflrs/garage:v2.4.1
+        expected_ports: ["3901"]
+        expected_replication_factor: 2
+        expected_nodes: 2
+        expected_role:
+          zone: dc2
+          capacity: 1073741824
+          tags: [moved, node-2]
+        expected_bucket: shared
+        expected_metrics_enabled: false
+        expected_root_domain: .s3.example.test
+        expected_secret_file: false
+        # the default paths this host must not touch
+        unexpected_paths:
+          - /data/ansible/garage
+          - /data/garage

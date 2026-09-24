@@ -1,0 +1,57 @@
+---
+# Gives keys rights on `media` that the role config does not list, then re-runs
+# the role. tests.yml checks that the role took them back: the reader loses
+# write and owner, and a key outside `access` loses everything.
+- name: Side effect
+  hosts: garage-single
+  environment:
+    ANSIBLE_UNSAFE_WRITES: "1"
+  vars:
+    molecule_stranger_id: GKe5e5e5e5e5e5e5e5e5e5e5e5
+    molecule_stranger_secret: f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7
+  tasks:
+    - name: Read the node id
+      ansible.builtin.command: docker exec garage-garage-1 /garage -c /etc/garage/garage.toml node id -q
+      register: molecule_node_id
+      changed_when: false
+
+    - name: Remember how to call the garage CLI
+      ansible.builtin.set_fact:
+        molecule_cli:
+          - docker
+          - exec
+          - garage-garage-1
+          - /garage
+          - -c
+          - /etc/garage/garage.toml
+          - -h
+          - "{{ molecule_node_id.stdout.split('@') | first }}@127.0.0.1:3901"
+
+    - name: Read the media bucket
+      ansible.builtin.command:
+        argv: "{{ molecule_cli + ['json-api', 'GetBucketInfo', '{\"globalAlias\":\"media\"}'] }}"
+      register: molecule_media
+      changed_when: false
+
+    - name: Import a key the role does not know
+      ansible.builtin.command:
+        argv: >-
+          {{ molecule_cli + ['json-api', 'ImportKey',
+             {'accessKeyId': molecule_stranger_id, 'secretAccessKey': molecule_stranger_secret,
+              'name': 'stranger'} | to_json] }}
+      changed_when: true
+
+    - name: Give the reader and the stranger full rights on media
+      ansible.builtin.command:
+        argv: >-
+          {{ molecule_cli + ['json-api', 'AllowBucketKey',
+             {'bucketId': (molecule_media.stdout | from_json).id, 'accessKeyId': item,
+              'permissions': {'read': true, 'write': true, 'owner': true}} | to_json] }}
+      changed_when: true
+      loop:
+        - "{{ molecule_reader_id }}"
+        - "{{ molecule_stranger_id }}"
+
+    - name: Re-run the role
+      ansible.builtin.include_role:
+        name: alesharik.baseinfra.garage

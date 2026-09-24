@@ -1,0 +1,411 @@
+---
+# ==========================================================================
+# All hosts - what the role wrote to disk
+# ==========================================================================
+- name: Stat the directories and files the role owns
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: garage_paths
+  loop:
+    - "{{ expected_compose_dir }}"
+    - "{{ expected_data_dir }}"
+    - "{{ expected_compose_dir }}/config/garage.toml"
+    - "{{ expected_compose_dir }}/docker-compose.yml"
+
+# The image runs as root, so root-only modes are enough, and the config carries
+# the RPC secret.
+- name: Check the directories, the files and their modes
+  vars:
+    compose_dir: "{{ garage_paths.results[0].stat }}"
+    data_dir: "{{ garage_paths.results[1].stat }}"
+    config: "{{ garage_paths.results[2].stat }}"
+    compose: "{{ garage_paths.results[3].stat }}"
+  ansible.builtin.assert:
+    that:
+      - compose_dir.isdir
+      - compose_dir.mode == '0755'
+      - data_dir.isdir
+      - data_dir.mode == '0700'
+      - data_dir.uid == 0
+      - config.isreg
+      - config.mode == '0600'
+      - compose.isreg
+      - compose.mode == '0700'
+    fail_msg: "compose dir {{ compose_dir }}, data dir {{ data_dir }}, config {{ config }}, compose {{ compose }}"
+
+- name: Read the rendered config
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/config/garage.toml"
+  register: garage_config_raw
+
+- name: Check the rendered config
+  vars:
+    config: "{{ garage_config_raw.content | b64decode }}"
+    rpc_public_addr: "{{ expected_rpc_public_addr | default(ansible_default_ipv4.address ~ ':3901') }}"
+  ansible.builtin.assert:
+    that:
+      - config is search('(?m)^rpc_public_addr = "' ~ (rpc_public_addr | regex_escape) ~ '"$')
+      - config is search('(?m)^replication_factor = ' ~ expected_replication_factor ~ '$')
+      - config is search('(?m)^s3_region = "garage"$')
+      # the admin API serves /metrics, so it is there only with metrics on
+      - (config is search('(?m)^\[admin\]$')) == expected_metrics_enabled
+      - config is not search('(?m)^admin_token')
+    fail_msg: "garage.toml is {{ config }}"
+
+- name: Check the root domain is written only where it is set
+  vars:
+    config: "{{ garage_config_raw.content | b64decode }}"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (config is search('(?m)^root_domain = "' ~ (expected_root_domain | regex_escape) ~ '"$'))
+        if expected_root_domain is defined else (config is not search('root_domain'))
+    fail_msg: "garage.toml is {{ config }}"
+
+- name: Stat the stored RPC secret
+  ansible.builtin.stat:
+    path: "{{ expected_compose_dir }}/rpc_secret"
+  register: garage_secret_file
+
+- name: Check only the leader stores the RPC secret
+  ansible.builtin.assert:
+    that:
+      - garage_secret_file.stat.exists == expected_secret_file
+      - not expected_secret_file or garage_secret_file.stat.mode == '0600'
+      - not expected_secret_file or garage_secret_file.stat.uid == 0
+    fail_msg: "rpc_secret is {{ garage_secret_file.stat }}"
+
+- name: Read the stored RPC secret
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/rpc_secret"
+  register: garage_secret_raw
+  when: expected_secret_file
+
+# The config of every member carries the secret that the leader stored. The
+# leader of the cluster is garage-node-1.
+- name: Check the config uses the leader's RPC secret
+  vars:
+    config: "{{ garage_config_raw.content | b64decode }}"
+    leader: "{{ 'garage-single' if inventory_hostname == 'garage-single' else 'garage-node-1' }}"
+    secret: "{{ hostvars[leader].garage_secret_raw.content | b64decode }}"
+  ansible.builtin.assert:
+    that:
+      - secret is match('^[0-9a-f]{64}$')
+      - config is search('(?m)^rpc_secret = "' ~ secret ~ '"$')
+    fail_msg: "leader {{ leader }} stores a secret that is not in garage.toml"
+
+- name: Read the rendered compose file
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/docker-compose.yml"
+  register: garage_compose_raw
+
+- name: Check the compose file
+  vars:
+    compose: "{{ garage_compose_raw.content | b64decode | from_yaml }}"
+    service: "{{ (garage_compose_raw.content | b64decode | from_yaml).services.garage }}"
+    own_ip: "{{ ansible_default_ipv4.address }}"
+  ansible.builtin.assert:
+    that:
+      - compose.services | list == ['garage']
+      - compose.networks.garage.name == expected_network
+      - service.image == expected_image
+      - service.command == ['/garage', '-c', '/etc/garage/garage.toml', 'server']
+      - service.networks == ['garage']
+      # every published port sits on this host's own address
+      - service.ports | default([]) | map('regex_replace', '^.*:', '') | list == expected_ports
+      - service.ports | default([]) | reject('match', (own_ip | regex_escape) ~ ':') | list == []
+    fail_msg: "rendered compose is {{ compose }}"
+
+# ==========================================================================
+# All hosts - what is actually running
+# ==========================================================================
+- name: List the running containers
+  ansible.builtin.command: docker ps --format '{% raw %}{{.Names}}{% endraw %}'
+  register: garage_ps
+  changed_when: false
+
+- name: Check the container is running
+  ansible.builtin.assert:
+    that:
+      - expected_container in garage_ps.stdout_lines
+    fail_msg: "containers present: {{ garage_ps.stdout_lines }}"
+
+- name: Inspect the container
+  ansible.builtin.command: "docker inspect {{ expected_container }}"
+  register: garage_inspect
+  changed_when: false
+
+# HostConfig.Binds carries a :rw or :ro suffix, so strip it before comparing
+- name: Check the container got the expected mounts and network
+  vars:
+    inspect: "{{ (garage_inspect.stdout | from_json)[0] }}"
+    binds: >-
+      {{ (garage_inspect.stdout | from_json)[0].HostConfig.Binds
+         | map('regex_replace', ':(rw|ro)$', '') | list }}
+  ansible.builtin.assert:
+    that:
+      - binds | sort == expected_mounts | sort
+      - expected_network in inspect.NetworkSettings.Networks
+    fail_msg: "container is bound to {{ binds }}, networks {{ inspect.NetworkSettings.Networks | list }}"
+
+- name: Read the node id
+  ansible.builtin.command: "docker exec {{ expected_container }} /garage -c /etc/garage/garage.toml node id -q"
+  register: garage_node_id_out
+  changed_when: false
+
+- name: Remember how to call the garage CLI
+  ansible.builtin.set_fact:
+    garage_test_node_id: "{{ garage_node_id_out.stdout.split('@') | first }}"
+    garage_test_cli:
+      - docker
+      - exec
+      - "{{ expected_container }}"
+      - /garage
+      - -c
+      - /etc/garage/garage.toml
+      - -h
+      - "{{ garage_node_id_out.stdout.split('@') | first }}@127.0.0.1:3901"
+
+- name: Ask the node for the cluster health
+  ansible.builtin.command:
+    argv: "{{ garage_test_cli + ['json-api', 'GetClusterHealth'] }}"
+  register: garage_health
+  changed_when: false
+
+- name: Check every node is up and every partition complete
+  vars:
+    health: "{{ garage_health.stdout | from_json }}"
+  ansible.builtin.assert:
+    that:
+      - health.status == 'healthy'
+      - health.connectedNodes == expected_nodes
+      - health.storageNodes == expected_nodes
+      - health.storageNodesUp == expected_nodes
+      - health.partitionsAllOk == health.partitions
+    fail_msg: "health is {{ health }}"
+
+- name: Ask the node for the cluster layout
+  ansible.builtin.command:
+    argv: "{{ garage_test_cli + ['json-api', 'GetClusterLayout'] }}"
+  register: garage_layout
+  changed_when: false
+
+# Every node reads the same layout, and finds its own entry in it
+- name: Check this node's role in the applied layout
+  vars:
+    layout: "{{ garage_layout.stdout | from_json }}"
+    role: "{{ layout.roles | selectattr('id', 'equalto', garage_test_node_id) | first | default({}) }}"
+  ansible.builtin.assert:
+    that:
+      - layout.roles | length == expected_nodes
+      - layout.stagedRoleChanges == []
+      - role.zone | default('') == expected_role.zone
+      - role.capacity | default(0) == expected_role.capacity
+      - role.tags | default([]) | sort == expected_role.tags
+    fail_msg: "layout is {{ layout }}"
+
+- name: Ask the node for the bucket
+  ansible.builtin.command:
+    argv: "{{ garage_test_cli + ['json-api', 'GetBucketInfo', {'globalAlias': expected_bucket} | to_json] }}"
+  register: garage_bucket
+  changed_when: false
+
+- name: Check the writer has read and write, and nothing more
+  vars:
+    bucket_keys: "{{ (garage_bucket.stdout | from_json)['keys'] }}"
+    writer: "{{ bucket_keys | selectattr('accessKeyId', 'equalto', molecule_writer_id) | first | default({}) }}"
+  ansible.builtin.assert:
+    that:
+      - "writer.permissions | default({}) == {'read': true, 'write': true, 'owner': false}"
+    fail_msg: "bucket keys are {{ bucket_keys }}"
+
+# ==========================================================================
+# garage-single - S3 through the network, and the permissions of each key
+# ==========================================================================
+- name: Put an object with the writer key
+  ansible.builtin.command: >-
+    timeout 60 docker run --rm --network {{ expected_network }} {{ molecule_curl_image }}
+    -sS -o /dev/null -w '%{http_code}' -X PUT --data-binary molecule-object
+    --aws-sigv4 aws:amz:garage:s3 --user {{ molecule_writer_id }}:{{ molecule_writer_secret }}
+    http://garage:3900/media/molecule.txt
+  register: garage_put
+  changed_when: false
+  failed_when: garage_put.stdout != '200'
+  when: inventory_hostname == 'garage-single'
+
+- name: Read the object with the reader key
+  ansible.builtin.command: >-
+    timeout 60 docker run --rm --network {{ expected_network }} {{ molecule_curl_image }}
+    -sS --fail --aws-sigv4 aws:amz:garage:s3
+    --user {{ molecule_reader_id }}:{{ molecule_reader_secret }}
+    http://garage:3900/media/molecule.txt
+  register: garage_get
+  changed_when: false
+  failed_when: garage_get.stdout != 'molecule-object'
+  when: inventory_hostname == 'garage-single'
+
+# side_effect.yml gave the reader write and owner. The role took both back.
+- name: Try to write with the reader key
+  ansible.builtin.command: >-
+    timeout 60 docker run --rm --network {{ expected_network }} {{ molecule_curl_image }}
+    -sS -o /dev/null -w '%{http_code}' -X PUT --data-binary nope
+    --aws-sigv4 aws:amz:garage:s3 --user {{ molecule_reader_id }}:{{ molecule_reader_secret }}
+    http://garage:3900/media/reader.txt
+  register: garage_reader_put
+  changed_when: false
+  failed_when: garage_reader_put.stdout != '403'
+  when: inventory_hostname == 'garage-single'
+
+# side_effect.yml imports this key. It exists, or the check below passes for
+# the wrong reason.
+- name: Ask the node for the key that side_effect.yml imported
+  ansible.builtin.command:
+    argv: "{{ garage_test_cli + ['json-api', 'GetKeyInfo', '{\"id\":\"GKe5e5e5e5e5e5e5e5e5e5e5e5\"}'] }}"
+  register: garage_stranger
+  changed_when: false
+  when: inventory_hostname == 'garage-single'
+
+# Garage drops a key with no rights left from the bucket's key list
+- name: Check the reader and the unlisted key lost the rights they were given
+  vars:
+    bucket_keys: "{{ (garage_bucket.stdout | from_json)['keys'] }}"
+    reader: "{{ bucket_keys | selectattr('accessKeyId', 'equalto', molecule_reader_id) | first | default({}) }}"
+  ansible.builtin.assert:
+    that:
+      - "reader.permissions | default({}) == {'read': true, 'write': false, 'owner': false}"
+      - bucket_keys | selectattr('accessKeyId', 'equalto', 'GKe5e5e5e5e5e5e5e5e5e5e5e5') | list == []
+    fail_msg: "bucket keys are {{ bucket_keys }}"
+  when: inventory_hostname == 'garage-single'
+
+# ==========================================================================
+# Cluster - an object written through node-1 is read back through node-2
+# ==========================================================================
+- name: Put an object through the port node-1 publishes
+  ansible.builtin.command: >-
+    timeout 60 docker run --rm {{ molecule_curl_image }}
+    -sS -o /dev/null -w '%{http_code}' -X PUT --data-binary written-on-node-1
+    --aws-sigv4 aws:amz:garage:s3 --user {{ molecule_writer_id }}:{{ molecule_writer_secret }}
+    http://{{ ansible_default_ipv4.address }}:3900/shared/cluster.txt
+  register: garage_cluster_put
+  changed_when: false
+  failed_when: garage_cluster_put.stdout != '200'
+  when: inventory_hostname == 'garage-node-1'
+
+- name: Read the object back through node-2
+  ansible.builtin.command: >-
+    timeout 60 docker run --rm --network {{ expected_network }} {{ molecule_curl_image }}
+    -sS --fail --aws-sigv4 aws:amz:garage:s3
+    --user {{ molecule_writer_id }}:{{ molecule_writer_secret }}
+    http://garage:3900/shared/cluster.txt
+  register: garage_cluster_get
+  changed_when: false
+  retries: 6
+  delay: 5
+  until: garage_cluster_get.stdout == 'written-on-node-1'
+  when: inventory_hostname == 'garage-node-2'
+
+# ==========================================================================
+# Metrics
+# ==========================================================================
+- name: Check the metrics labels for autodiscovery
+  vars:
+    labels: "{{ (garage_compose_raw.content | b64decode | from_yaml).services.garage.labels }}"
+  ansible.builtin.assert:
+    that:
+      - labels['prometheus.io.path'] == '/metrics'
+      - labels['prometheus.io.port'] | string == '3903'
+      - labels['prometheus.io.network'] == expected_network
+      - labels['prometheus.io.instance'] == expected_instance_label
+    fail_msg: "labels are {{ labels }}"
+  when: expected_metrics_enabled
+
+- name: Scrape the metrics endpoint from inside the network
+  ansible.builtin.command: >-
+    timeout 60 docker run --rm --network {{ expected_network }} {{ molecule_curl_image }}
+    -sS --fail http://garage:3903/metrics
+  register: garage_metrics
+  changed_when: false
+  failed_when: "'cluster_healthy 1' not in garage_metrics.stdout_lines"
+  when: expected_metrics_enabled
+
+- name: Check the extra labels and no metrics labels are rendered
+  vars:
+    labels: "{{ (garage_compose_raw.content | b64decode | from_yaml).services.garage.labels }}"
+  ansible.builtin.assert:
+    that:
+      - "labels == {'traefik.enable': 'true'}"
+    fail_msg: "labels are {{ labels }}"
+  when: not expected_metrics_enabled
+
+- name: Check the metrics port is closed with metrics off
+  ansible.builtin.command: >-
+    timeout 60 docker run --rm --network {{ expected_network }} {{ molecule_curl_image }}
+    -sS --max-time 5 http://garage:3903/metrics
+  register: garage_metrics_closed
+  changed_when: false
+  failed_when: garage_metrics_closed.rc == 0
+  when: not expected_metrics_enabled
+
+# ==========================================================================
+# garage-single - the published defaults
+# ==========================================================================
+# slurp + from_yaml is never templated, so `directories` keeps its literal
+# "{{ dir.data }}" and is compared by shape
+- name: Read the role defaults from the controller
+  ansible.builtin.slurp:
+    src: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}/roles/garage/defaults/main.yaml"
+  delegate_to: localhost
+  become: false
+  register: garage_defaults_raw
+  when: inventory_hostname == 'garage-single'
+
+- name: Check this host still pins what the role ships
+  vars:
+    role_defaults: "{{ (garage_defaults_raw.content | b64decode | from_yaml).garage }}"
+  ansible.builtin.assert:
+    that:
+      - role_defaults | list | sort == garage | list | sort
+      - role_defaults.image == garage.image
+      - role_defaults.version == garage.version
+      - role_defaults.peers == garage.peers
+      - role_defaults.peer_ip == garage.peer_ip
+      - role_defaults.rpc_port == garage.rpc_port
+      - role_defaults.replication_factor == garage.replication_factor
+      - role_defaults.zone == garage.zone
+      - role_defaults.capacity == garage.capacity
+      - role_defaults.tags == garage.tags
+      - role_defaults.s3 == garage.s3
+      - role_defaults.network == garage.network
+      - role_defaults.publish == garage.publish
+      - role_defaults.labels == garage.labels
+      - role_defaults.metrics == garage.metrics
+      # the keys this host differs on, checked the other way round
+      - role_defaults.access_keys == []
+      - role_defaults.buckets == []
+      - "'dir.ansible' in role_defaults.directories.ansible"
+      - role_defaults.directories.ansible.endswith('/garage')
+      - "'dir.data' in role_defaults.directories.data"
+      - role_defaults.directories.data.endswith('/garage')
+    fail_msg: "role ships {{ role_defaults }}, this host pins {{ garage }}"
+  when: inventory_hostname == 'garage-single'
+
+# ==========================================================================
+# garage-node-2 - relocated directories
+# ==========================================================================
+- name: Stat the paths this host moved away from
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: garage_unexpected
+  # a loop is expanded before `when`, and only node-2 has this var
+  loop: "{{ unexpected_paths | default([]) }}"
+  when: unexpected_paths is defined
+
+- name: Check the default paths were left alone
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists
+    fail_msg: "{{ item.item }} exists, so directories did not move"
+  loop: "{{ garage_unexpected.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: unexpected_paths is defined

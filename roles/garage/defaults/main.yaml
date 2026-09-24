@@ -1,0 +1,44 @@
+---
+garage: # noqa: var-naming[no-role-prefix]
+  image: dxflrs/garage
+  version: v2.4.1
+  # Inventory hostnames of every cluster member, this host included. Empty runs
+  # a single node.
+  peers: []
+  # The address the other members dial. Required once `peers` is set. The RPC
+  # port is published on it.
+  peer_ip: ""
+  rpc_port: 3901
+  # How many copies of each object the cluster keeps. Cannot be more than the
+  # number of members, and cannot change once data is written.
+  replication_factor: 1
+  # This node's role in the cluster layout. `capacity` is a weight for the
+  # partition split, not a quota. Binary units: 1G is 1024^3 bytes.
+  zone: dc1
+  capacity: 100G
+  tags: []
+  s3:
+    region: garage
+    # Enables vhost-style bucket addressing, e.g. ".s3.example.com". Empty
+    # allows path-style addressing only.
+    root_domain: ""
+  # The docker network the role creates, and the name consumers attach to.
+  network: garage
+  # Host bindings for the S3 port, each one "[address:]port", e.g. "3900" or
+  # "10.0.0.5:3900". Empty publishes nothing.
+  publish: []
+  # Extra container labels, e.g. for traefik.
+  labels: {}
+  # S3 access keys: {name, id, secret}. `id` is "GK" and 24 hex characters,
+  # `secret` is 64 hex characters. Keys not listed here are left alone.
+  access_keys: []
+  # Buckets: {name, access: [{key, read, write, owner}]}. `key` is the name of
+  # an entry in `access_keys`. A key not in `access` loses its access to the
+  # bucket. Buckets not listed here are left alone.
+  buckets: []
+  metrics:
+    enabled: true
+  directories:
+    ansible: "{{ dir.ansible }}/garage"
+    # Mounted at /var/lib/garage: the metadata db in meta/, the objects in data/.
+    data: "{{ dir.data }}/garage"

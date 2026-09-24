@@ -1,0 +1,176 @@
+---
+# `node id` reads the node key from the metadata dir and needs no RPC. The key
+# appears a moment after the server starts.
+- name: Read the node id
+  tags: garage
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --project-directory
+      - "{{ garage.directories.ansible }}"
+      - exec
+      - -T
+      - garage
+      - /garage
+      - -c
+      - /etc/garage/garage.toml
+      - node
+      - id
+      - -q
+  register: garage_node_id_out
+  changed_when: false
+  retries: 12
+  delay: 5
+  until:
+    - garage_node_id_out.rc == 0
+    - garage_node_id_out.stdout is match('^[0-9a-f]{64}@')
+
+# The CLI dials rpc_public_addr unless told otherwise. That is the host address
+# in a cluster, and a container does not always reach its own host address, so
+# the role dials the node over loopback instead.
+- name: Remember the node id and how to reach the node
+  tags: garage
+  ansible.builtin.set_fact:
+    garage_node_id: "{{ garage_node_id_out.stdout.split('@') | first }}"
+    garage_cli:
+      - docker
+      - compose
+      - --project-directory
+      - "{{ garage.directories.ansible }}"
+      - exec
+      - -T
+      - -e
+      - RUST_LOG=garage=warn
+      - garage
+      - /garage
+      - -c
+      - /etc/garage/garage.toml
+      - -h
+      - "{{ garage_node_id_out.stdout.split('@') | first }}@127.0.0.1:3901"
+
+- name: Read the cluster status
+  tags: garage
+  ansible.builtin.command:
+    argv: "{{ garage_cli + ['json-api', 'GetClusterStatus'] }}"
+  register: garage_status
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: garage_status.rc == 0
+  when: inventory_hostname == garage_leader
+
+# Garage keeps the peers it has met in the metadata dir, so a member needs this
+# only once. Every member runs the server by now: the plays run in lockstep.
+- name: Connect the other members
+  tags: garage
+  vars:
+    garage_up_ids: >-
+      {{ (garage_status.stdout | from_json).nodes | selectattr('isUp')
+         | map(attribute='id') | list }}
+  ansible.builtin.command:
+    argv: >-
+      {{ garage_cli + ['node', 'connect', hostvars[item].garage_node_id ~ '@'
+         ~ hostvars[item].garage.peer_ip ~ ':' ~ hostvars[item].garage.rpc_port] }}
+  register: garage_connect
+  changed_when: true
+  retries: 6
+  delay: 5
+  until: garage_connect.rc == 0
+  loop: "{{ garage_members | difference([inventory_hostname]) }}"
+  when:
+    - inventory_hostname == garage_leader
+    - hostvars[item].garage_node_id not in garage_up_ids
+
+- name: Read the cluster layout
+  tags: garage
+  ansible.builtin.command:
+    argv: "{{ garage_cli + ['json-api', 'GetClusterLayout'] }}"
+  register: garage_layout
+  changed_when: false
+  when: inventory_hostname == garage_leader
+
+- name: Start with no layout changes
+  tags: garage
+  ansible.builtin.set_fact:
+    garage_roles_changed: []
+  when: inventory_hostname == garage_leader
+
+# One entry for each member whose zone, capacity or tags differ from the applied
+# layout. Members that are not in `peers` keep their role.
+- name: Compare each member with the layout
+  tags: garage
+  vars:
+    garage_cfg: "{{ garage if item == inventory_hostname else hostvars[item].garage }}"
+    garage_role_desired:
+      id: "{{ hostvars[item].garage_node_id }}"
+      zone: "{{ garage_cfg.zone }}"
+      capacity: "{{ garage_cfg.capacity | human_to_bytes }}"
+      tags: "{{ garage_cfg.tags }}"
+    garage_role_current: >-
+      {{ (garage_layout.stdout | from_json).roles
+         | selectattr('id', 'equalto', hostvars[item].garage_node_id) | first | default({}) }}
+  ansible.builtin.set_fact:
+    garage_roles_changed: >-
+      {{ garage_roles_changed + [garage_role_desired
+         | combine({'capacity': garage_role_desired.capacity | int})] }}
+  loop: "{{ garage_members }}"
+  when:
+    - inventory_hostname == garage_leader
+    - >-
+      garage_role_current.zone | default('') != garage_role_desired.zone
+      or garage_role_current.capacity | default(0) | int != garage_role_desired.capacity | int
+      or garage_role_current.tags | default([]) | sort != garage_role_desired.tags | sort
+
+- name: Stage the layout changes
+  tags: garage
+  ansible.builtin.command:
+    argv: "{{ garage_cli + ['json-api', 'UpdateClusterLayout', {'roles': garage_roles_changed} | to_json] }}"
+  register: garage_layout_staged
+  changed_when: true
+  when:
+    - inventory_hostname == garage_leader
+    - garage_roles_changed | length > 0
+
+- name: Apply the layout
+  tags: garage
+  ansible.builtin.command:
+    argv: >-
+      {{ garage_cli + ['json-api', 'ApplyClusterLayout',
+         {'version': (garage_layout.stdout | from_json).version + 1} | to_json] }}
+  changed_when: true
+  when:
+    - inventory_hostname == garage_leader
+    - garage_layout_staged is changed
+
+# `healthy` means every storage node is up and every partition has all its
+# copies. A fresh layout takes a moment to reach every member.
+- name: Wait for the cluster to be healthy
+  tags: garage
+  ansible.builtin.command:
+    argv: "{{ garage_cli + ['json-api', 'GetClusterHealth'] }}"
+  register: garage_health
+  changed_when: false
+  retries: 30
+  delay: 5
+  until:
+    - garage_health.rc == 0
+    - (garage_health.stdout | from_json).status == 'healthy'
+
+- name: Manage the access keys
+  tags: garage
+  ansible.builtin.include_tasks: access_key.yaml
+  loop: "{{ garage.access_keys }}"
+  loop_control:
+    loop_var: garage_key
+    label: "{{ garage_key.name }}"
+  when: inventory_hostname == garage_leader
+
+- name: Manage the buckets
+  tags: garage
+  ansible.builtin.include_tasks: bucket.yaml
+  loop: "{{ garage.buckets }}"
+  loop_control:
+    loop_var: garage_bucket
+    label: "{{ garage_bucket.name }}"
+  when: inventory_hostname == garage_leader

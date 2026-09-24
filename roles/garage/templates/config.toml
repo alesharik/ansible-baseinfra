@@ -1,0 +1,31 @@
+{# Values go through to_json: a JSON string is a valid TOML basic string. #}
+# Rendered by the alesharik.baseinfra.garage role - edits here are overwritten.
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+db_engine = "lmdb"
+metadata_auto_snapshot_interval = "6h"
+
+replication_factor = {{ garage.replication_factor | int }}
+compression_level = 2
+
+rpc_bind_addr = "[::]:3901"
+{% if garage.peers | length > 0 %}
+rpc_public_addr = {{ (garage.peer_ip ~ ':' ~ garage.rpc_port) | to_json }}
+{% else %}
+rpc_public_addr = "127.0.0.1:3901"
+{% endif %}
+rpc_secret = {{ garage_rpc_secret | to_json }}
+
+[s3_api]
+s3_region = {{ garage.s3.region | to_json }}
+api_bind_addr = "[::]:3900"
+{% if garage.s3.root_domain | length > 0 %}
+root_domain = {{ garage.s3.root_domain | to_json }}
+{% endif %}
+{% if garage.metrics.enabled %}
+
+# No admin_token: the admin API then serves only /health and /metrics, and
+# /metrics needs no token. The role manages the cluster over RPC instead.
+[admin]
+api_bind_addr = "[::]:3903"
+{% endif %}

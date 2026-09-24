@@ -1,0 +1,38 @@
+#jinja2: trim_blocks: True, lstrip_blocks: True
+networks:
+  garage:
+    name: "{{ garage.network }}"
+services:
+  garage:
+    image: "{{ garage.image }}:{{ garage.version }}"
+    restart: unless-stopped
+    command: ["/garage", "-c", "/etc/garage/garage.toml", "server"]
+    volumes:
+      - "{{ garage.directories.data }}:/var/lib/garage"
+      - "{{ garage.directories.ansible }}/config:/etc/garage:ro"
+    networks:
+      - garage
+    {% if garage.publish | length > 0 or garage.peers | length > 0 %}
+    ports:
+    {% for binding in garage.publish %}
+      - "{{ binding }}:3900"
+    {% endfor %}
+    {% if garage.peers | length > 0 %}
+      - "{{ garage.peer_ip }}:{{ garage.rpc_port }}:3901"
+    {% endif %}
+    {% endif %}
+    # No healthcheck: the image has no shell, and `garage health` dials
+    # rpc_public_addr, which is not reachable from inside the container on every
+    # host. The role waits for GetClusterHealth itself.
+    {% if garage.metrics.enabled or garage.labels | length > 0 %}
+    labels:
+    {% if garage.metrics.enabled %}
+      prometheus.io.path: /metrics
+      prometheus.io.port: 3903
+      prometheus.io.network: "{{ garage.network }}"
+      prometheus.io.instance: "{{ ansible_hostname }}-{{ garage.directories.ansible | basename }}"
+    {% endif %}
+    {% for key, value in garage.labels | dictsort %}
+      {{ key | to_json }}: {{ value | string | replace('$', '$$') | to_json }}
+    {% endfor %}
+    {% endif %}
