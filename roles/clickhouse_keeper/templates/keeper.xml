@@ -1,0 +1,54 @@
+{# Merged over the image's keeper_config.xml, so anything not set here keeps the
+   image's default. #}
+<clickhouse>
+    <!-- Console only. The image logs to files inside the container at trace level. -->
+    <logger replace="replace">
+        <level>information</level>
+        <console>1</console>
+    </logger>
+    <listen_host>0.0.0.0</listen_host>
+{% if clickhouse_keeper.metrics.enabled %}
+    <prometheus>
+        <endpoint>/metrics</endpoint>
+        <port>{{ clickhouse_keeper.metrics.port }}</port>
+        <metrics>true</metrics>
+        <events>true</events>
+        <asynchronous_metrics>true</asynchronous_metrics>
+    </prometheus>
+{% endif %}
+    <keeper_server>
+        <tcp_port>{{ clickhouse_keeper.client_port }}</tcp_port>
+        <server_id>{{ clickhouse_keeper.id }}</server_id>
+        <four_letter_word_allow_list>{{ clickhouse_keeper.four_lw_commands }}</four_letter_word_allow_list>
+{% if clickhouse_keeper.coordination | length > 0 %}
+        <coordination_settings>
+{% for key, value in clickhouse_keeper.coordination | dictsort %}
+            <{{ key }}>{{ value }}</{{ key }}>
+{% endfor %}
+        </coordination_settings>
+{% endif %}
+        {# replace: the image ships one <server> entry, and a merge would keep it. #}
+        <raft_configuration replace="replace">
+{% if clickhouse_keeper.quorum | length > 0 %}
+{% for member in clickhouse_keeper.quorum %}
+{% set peer = hostvars[member].clickhouse_keeper %}
+            <server>
+                <id>{{ peer.id }}</id>
+                {# The real peer_ip also for this server's own entry, not 0.0.0.0:
+                   the leader's entry is copied into the raft log, and followers
+                   forward client sessions to that address. The keeper binds the
+                   raft port on every interface anyway. #}
+                <hostname>{{ peer.peer_ip }}</hostname>
+                <port>{{ peer.raft_port | default(9234) }}</port>
+            </server>
+{% endfor %}
+{% else %}
+            <server>
+                <id>{{ clickhouse_keeper.id }}</id>
+                <hostname>localhost</hostname>
+                <port>{{ clickhouse_keeper.raft_port }}</port>
+            </server>
+{% endif %}
+        </raft_configuration>
+    </keeper_server>
+</clickhouse>

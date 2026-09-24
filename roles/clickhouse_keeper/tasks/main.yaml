@@ -1,0 +1,67 @@
+---
+- name: Check the clickhouse_keeper settings
+  tags: clickhouse_keeper
+  ansible.builtin.include_tasks: assert.yaml
+
+- name: Create compose dir
+  tags: clickhouse_keeper
+  ansible.builtin.file:
+    path: "{{ clickhouse_keeper.directories.ansible }}"
+    state: directory
+    mode: "0755"
+
+- name: Create config dir
+  tags: clickhouse_keeper
+  ansible.builtin.file:
+    path: "{{ clickhouse_keeper.directories.ansible }}/config"
+    state: directory
+    mode: "0755"
+
+# 101:101 is the `clickhouse` user of the image. The container runs as it from
+# the start, so the entrypoint never chowns anything.
+- name: Create data dir
+  tags: clickhouse_keeper
+  ansible.builtin.file:
+    path: "{{ clickhouse_keeper.directories.data }}"
+    state: directory
+    mode: "0700"
+    owner: "101"
+    group: "101"
+
+# No secrets in it, so readable by everyone - the keeper reads it as uid 101.
+- name: Move keeper config
+  tags: clickhouse_keeper
+  ansible.builtin.template:
+    src: keeper.xml
+    dest: "{{ clickhouse_keeper.directories.ansible }}/config/keeper.xml"
+    mode: "0444"
+  notify:
+    - restart clickhouse_keeper
+
+- name: Move compose files
+  tags: clickhouse_keeper
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ clickhouse_keeper.directories.ansible }}/docker-compose.yml"
+    mode: "0700"
+  notify:
+    - restart clickhouse_keeper
+
+# Pull separately: on an up that also pulls, compose 5.4.0 labels the container
+# with the local image ID, then recreates it once on the next up.
+- name: Pull clickhouse_keeper image
+  tags: clickhouse_keeper
+  community.docker.docker_compose_v2_pull:
+    project_src: "{{ clickhouse_keeper.directories.ansible }}"
+    policy: missing
+
+- name: Start clickhouse_keeper
+  tags: clickhouse_keeper
+  community.docker.docker_compose_v2:
+    project_src: "{{ clickhouse_keeper.directories.ansible }}"
+    state: present
+    remove_orphans: true
+
+- name: Make sure handlers are flushed immediately
+  tags: clickhouse_keeper
+  ansible.builtin.meta: flush_handlers

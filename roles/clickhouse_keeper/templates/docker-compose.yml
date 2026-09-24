@@ -1,0 +1,40 @@
+#jinja2: trim_blocks: True, lstrip_blocks: True
+networks:
+  clickhouse_keeper:
+    name: "{{ clickhouse_keeper.network }}"
+services:
+  clickhouse_keeper:
+    image: "{{ clickhouse_keeper.image }}:{{ clickhouse_keeper.version }}"
+    restart: unless-stopped
+    # The `clickhouse` user of the image. Named here so the entrypoint never
+    # starts as root and chowns the data directory.
+    user: "101:101"
+    volumes:
+      - "{{ clickhouse_keeper.directories.data }}:/var/lib/clickhouse"
+      - "{{ clickhouse_keeper.directories.ansible }}/config/keeper.xml:/etc/clickhouse-keeper/keeper_config.d/ansible.xml:ro"
+    networks:
+      - clickhouse_keeper
+    {% if clickhouse_keeper.listen_ips | length > 0 or clickhouse_keeper.quorum | length > 0 %}
+    ports:
+    {% for ip in clickhouse_keeper.listen_ips %}
+      - "{{ ip }}:{{ clickhouse_keeper.client_port }}:{{ clickhouse_keeper.client_port }}"
+    {% endfor %}
+    {% if clickhouse_keeper.quorum | length > 0 %}
+      - "{{ clickhouse_keeper.peer_ip }}:{{ clickhouse_keeper.raft_port }}:{{ clickhouse_keeper.raft_port }}"
+    {% endif %}
+    {% endif %}
+    healthcheck:
+      # Liveness only: ruok answers imok while the member still looks for a
+      # leader. `mntr`'s zk_server_state tells whether it joined the ensemble.
+      test: ["CMD-SHELL", "echo ruok | nc -w 2 127.0.0.1 {{ clickhouse_keeper.client_port }} | grep -q imok"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    {% if clickhouse_keeper.metrics.enabled %}
+    labels:
+      prometheus.io.path: /metrics
+      prometheus.io.port: {{ clickhouse_keeper.metrics.port }}
+      prometheus.io.network: "{{ clickhouse_keeper.network }}"
+      prometheus.io.instance: "{{ ansible_hostname }}-{{ clickhouse_keeper.directories.ansible | basename }}"
+    {% endif %}

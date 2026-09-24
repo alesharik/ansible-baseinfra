@@ -1,0 +1,47 @@
+---
+- name: Check this server has a usable id
+  tags: clickhouse_keeper
+  ansible.builtin.assert:
+    that:
+      - clickhouse_keeper.id | string is match('^[0-9]+$')
+      - clickhouse_keeper.id | int >= 1
+    fail_msg: >-
+      clickhouse_keeper.id is "{{ clickhouse_keeper.id }}". It has to be a whole
+      number, 1 or more.
+
+# The healthcheck is `ruok`. A keeper that does not allow it comes up and then
+# never reports healthy.
+- name: Check the healthcheck's four letter word is allowed
+  tags: clickhouse_keeper
+  vars:
+    clickhouse_keeper_lw: "{{ clickhouse_keeper.four_lw_commands | split(',') | map('trim') | list }}"
+  ansible.builtin.assert:
+    that:
+      - "'ruok' in clickhouse_keeper_lw or '*' in clickhouse_keeper_lw"
+    fail_msg: >-
+      clickhouse_keeper.four_lw_commands is "{{ clickhouse_keeper.four_lw_commands }}".
+      Add ruok to it. The container healthcheck sends ruok.
+
+# Checked across hostvars: every member renders the whole raft configuration, so
+# one bad member breaks the ensemble for all of them.
+- name: Check the ensemble is coherent
+  tags: clickhouse_keeper
+  when: clickhouse_keeper.quorum | length > 0
+  vars:
+    clickhouse_keeper_ids: >-
+      {{ clickhouse_keeper.quorum | map('extract', hostvars, ['clickhouse_keeper', 'id'])
+         | map('default', '') | list }}
+    clickhouse_keeper_ips: >-
+      {{ clickhouse_keeper.quorum | map('extract', hostvars, ['clickhouse_keeper', 'peer_ip'])
+         | map('default', '') | list }}
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname in clickhouse_keeper.quorum
+      - clickhouse_keeper.quorum | difference(hostvars | list) | length == 0
+      - clickhouse_keeper_ips | select('equalto', '') | list | length == 0
+      - clickhouse_keeper_ids | unique | length == clickhouse_keeper.quorum | length
+    fail_msg: >-
+      clickhouse_keeper.quorum is {{ clickhouse_keeper.quorum }}. It must contain
+      {{ inventory_hostname }} and name only hosts in the inventory. Every member
+      needs a peer_ip and a distinct id. Members resolve to ids
+      {{ clickhouse_keeper_ids }} at addresses {{ clickhouse_keeper_ips }}.

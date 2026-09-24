@@ -1,0 +1,318 @@
+---
+# ==========================================================================
+# Both hosts - what the role wrote to disk
+# ==========================================================================
+- name: Stat the directories and files the role owns
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: keeper_paths
+  loop:
+    - "{{ expected_compose_dir }}"
+    - "{{ expected_data_dir }}"
+    - "{{ expected_compose_dir }}/config/keeper.xml"
+
+# 101:101 is the `clickhouse` user of the image. With the data dir already its
+# own, the entrypoint has nothing to chown.
+- name: Check the directories, their modes and their ownership
+  vars:
+    compose_dir: "{{ keeper_paths.results[0].stat }}"
+    data_dir: "{{ keeper_paths.results[1].stat }}"
+    keeper_xml: "{{ keeper_paths.results[2].stat }}"
+  ansible.builtin.assert:
+    that:
+      - compose_dir.isdir
+      - compose_dir.mode == '0755'
+      - data_dir.isdir
+      - data_dir.mode == '0700'
+      - data_dir.uid == 101
+      - data_dir.gid == 101
+      # read by uid 101 inside the container, so it has to be world-readable
+      - keeper_xml.exists
+      - keeper_xml.mode == '0444'
+    fail_msg: "compose dir {{ compose_dir }}, data dir {{ data_dir }}, keeper.xml {{ keeper_xml }}"
+
+# ==========================================================================
+# Both hosts - the rendered files
+# ==========================================================================
+- name: Read the rendered compose file
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/docker-compose.yml"
+  register: keeper_compose_raw
+
+- name: Check the compose file
+  vars:
+    compose: "{{ keeper_compose_raw.content | b64decode | from_yaml }}"
+    service: "{{ (keeper_compose_raw.content | b64decode | from_yaml).services.clickhouse_keeper }}"
+    own_ip: "{{ ansible_default_ipv4.address }}"
+  ansible.builtin.assert:
+    that:
+      - compose.services | list == ['clickhouse_keeper']
+      - compose.networks.clickhouse_keeper.name == expected_network
+      - service.image == expected_image
+      - service.user == '101:101'
+      # client port on listen_ips, raft port on peer_ip
+      - service.ports == [own_ip ~ ':9181:9181', own_ip ~ ':9234:9234']
+      - service.healthcheck.test[1] is search('ruok')
+    fail_msg: "rendered compose is {{ compose }}"
+
+- name: Read the rendered keeper config
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/config/keeper.xml"
+  register: keeper_xml_raw
+
+# The raft configuration is rebuilt here from the gathered facts of both hosts,
+# which is a source independent of the clickhouse_keeper.peer_ip the template
+# read. The own entry carries the real address too: followers forward client
+# sessions to the leader's entry, and 0.0.0.0 there sends them back to the
+# follower itself.
+- name: Check the raft configuration names both members
+  vars:
+    keeper_xml: "{{ keeper_xml_raw.content | b64decode }}"
+    expected_hosts:
+      - "{{ hostvars['ck-node-1'].ansible_default_ipv4.address }}"
+      - "{{ hostvars['ck-node-2'].ansible_default_ipv4.address }}"
+  ansible.builtin.assert:
+    that:
+      - keeper_xml is search('<server_id>' ~ expected_id ~ '</server_id>')
+      - keeper_xml is search('raft_configuration replace="replace"')
+      - "'<hostname>0.0.0.0' not in keeper_xml"
+      - >-
+        keeper_xml is search('<id>1</id>\s*<hostname>' ~ (expected_hosts[0] | regex_escape)
+        ~ '</hostname>\s*<port>9234</port>')
+      - >-
+        keeper_xml is search('<id>2</id>\s*<hostname>' ~ (expected_hosts[1] | regex_escape)
+        ~ '</hostname>\s*<port>9234</port>')
+    fail_msg: "keeper.xml is {{ keeper_xml }}"
+
+# ==========================================================================
+# Both hosts - what is actually running
+# ==========================================================================
+- name: List the running containers
+  ansible.builtin.command: docker ps --format '{% raw %}{{.Names}}{% endraw %}'
+  register: keeper_ps
+  changed_when: false
+
+- name: Check this member's container is running
+  ansible.builtin.assert:
+    that:
+      - expected_container in keeper_ps.stdout_lines
+    fail_msg: "containers present: {{ keeper_ps.stdout_lines }}"
+
+- name: Inspect the member container
+  ansible.builtin.command: "docker inspect {{ expected_container }}"
+  register: keeper_inspect
+  changed_when: false
+
+# HostConfig.Binds carries a :rw or :ro suffix, so strip it before comparing
+- name: Check the container got the expected mounts and network
+  vars:
+    inspect: "{{ (keeper_inspect.stdout | from_json)[0] }}"
+    binds: >-
+      {{ (keeper_inspect.stdout | from_json)[0].HostConfig.Binds
+         | map('regex_replace', ':(rw|ro)$', '') | list }}
+  ansible.builtin.assert:
+    that:
+      - binds | sort == expected_mounts | sort
+      - expected_network in inspect.NetworkSettings.Networks
+    fail_msg: "container is bound to {{ binds }}, networks {{ inspect.NetworkSettings.Networks | list }}"
+
+# ==========================================================================
+# Both hosts - the ensemble itself, asked from a container outside the project
+# ==========================================================================
+- name: Ask the keeper whether it is up
+  ansible.builtin.command: >-
+    timeout 30 docker run --rm --network {{ expected_network }} --entrypoint sh
+    {{ expected_image }} -c 'echo ruok | nc -w 2 clickhouse_keeper 9181'
+  register: keeper_ruok
+  changed_when: false
+  retries: 12
+  delay: 5
+  until:
+    - keeper_ruok.rc == 0
+    - "'imok' in keeper_ruok.stdout"
+
+# ruok answers while the member still looks for a leader. zk_server_state tells
+# a member that joined the ensemble from one that came up alone.
+- name: Ask the keeper what state it settled in
+  ansible.builtin.command: >-
+    timeout 30 docker run --rm --network {{ expected_network }} --entrypoint sh
+    {{ expected_image }} -c 'echo mntr | nc -w 2 clickhouse_keeper 9181'
+  register: keeper_mntr
+  changed_when: false
+  retries: 30
+  delay: 5
+  until:
+    - keeper_mntr.rc == 0
+    - keeper_mntr.stdout is search('zk_server_state\s+(leader|follower)')
+
+- name: Ask the keeper for its loaded configuration
+  ansible.builtin.command: >-
+    timeout 30 docker run --rm --network {{ expected_network }} --entrypoint sh
+    {{ expected_image }} -c 'echo conf | nc -w 2 clickhouse_keeper 9181'
+  register: keeper_conf
+  changed_when: false
+
+# `conf` shows what the keeper loaded, not what the file says
+- name: Check the keeper loaded this host's settings
+  ansible.builtin.assert:
+    that:
+      - ('server_id=' ~ expected_id) in keeper_conf.stdout_lines
+      - "'four_letter_word_allow_list=ruok,mntr,srvr,stat,conf' in keeper_conf.stdout_lines"
+      - "'tcp_port=9181' in keeper_conf.stdout_lines"
+    fail_msg: "conf reports {{ keeper_conf.stdout }}"
+
+- name: Check the coordination settings reached the keeper
+  ansible.builtin.assert:
+    that:
+      - (item.key ~ '=' ~ item.value) in keeper_conf.stdout_lines
+    fail_msg: "conf reports {{ keeper_conf.stdout }}"
+  loop: "{{ expected_coordination | dict2items }}"
+
+# A command outside four_lw_commands gets no answer - proof that the list is
+# enforced and not only written.
+- name: Ask the keeper a command it does not allow
+  ansible.builtin.command: >-
+    timeout 30 docker run --rm --network {{ expected_network }} --entrypoint sh
+    {{ expected_image }} -c 'echo envi | nc -w 2 clickhouse_keeper 9181'
+  register: keeper_envi
+  changed_when: false
+  failed_when: false
+
+- name: Check the command outside the list is refused
+  ansible.builtin.assert:
+    that:
+      - "'user.name' not in keeper_envi.stdout"
+    fail_msg: "envi was answered: {{ keeper_envi.stdout }}"
+
+# A 2-member ensemble cannot commit without both members, so a node written on
+# node-1 that reads back on node-2 proves the two found each other.
+- name: Create a node on node-1
+  ansible.builtin.command: >-
+    timeout 60 docker run --rm --network {{ expected_network }}
+    --entrypoint clickhouse-keeper-client {{ expected_image }}
+    -h clickhouse_keeper -p 9181
+    -q "create '{{ molecule_znode }}' '{{ molecule_znode_value }}'"
+  register: keeper_create
+  # rc 0 also when the node exists, with "Node exists" on stderr
+  changed_when: "'Node exists' not in keeper_create.stderr"
+  when: inventory_hostname == 'ck-node-1'
+
+# node-2 is a follower on some runs and the leader on others. As a follower it
+# forwards the session to the leader, which is the path that broke with 0.0.0.0
+# as the own raft entry.
+- name: Read that node back on node-2
+  ansible.builtin.command: >-
+    timeout 60 docker run --rm --network {{ expected_network }}
+    --entrypoint clickhouse-keeper-client {{ expected_image }}
+    -h clickhouse_keeper -p 9181 -q "get '{{ molecule_znode }}'"
+  register: keeper_get
+  changed_when: false
+  retries: 12
+  delay: 5
+  until:
+    - keeper_get.rc == 0
+    - molecule_znode_value in keeper_get.stdout_lines
+  when: inventory_hostname == 'ck-node-2'
+
+# ==========================================================================
+# ck-node-1 - the published defaults, metrics on
+# ==========================================================================
+- name: Check the metrics labels for autodiscovery
+  vars:
+    labels: "{{ (keeper_compose_raw.content | b64decode | from_yaml).services.clickhouse_keeper.labels }}"
+  ansible.builtin.assert:
+    that:
+      - labels['prometheus.io.path'] == '/metrics'
+      - labels['prometheus.io.port'] | string == expected_metrics_port | string
+      - labels['prometheus.io.network'] == expected_network
+      - labels['prometheus.io.instance'] == expected_instance_label
+    fail_msg: "labels are {{ labels }}"
+  when: expected_metrics_enabled
+
+- name: Scrape the metrics endpoint from inside the network
+  ansible.builtin.command: >-
+    timeout 30 docker run --rm --network {{ expected_network }} --entrypoint wget
+    {{ expected_image }} -qO- http://clickhouse_keeper:{{ expected_metrics_port }}/metrics
+  register: keeper_metrics
+  changed_when: false
+  retries: 12
+  delay: 5
+  until:
+    - keeper_metrics.rc == 0
+    - "'ClickHouseProfileEvents_KeeperPacketsReceived' in keeper_metrics.stdout"
+  when: expected_metrics_enabled
+
+# slurp + from_yaml is never templated, so `directories` keeps its literal
+# "{{ dir.data }}" and is compared by shape
+- name: Read the role defaults from the controller
+  ansible.builtin.slurp:
+    src: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}/roles/clickhouse_keeper/defaults/main.yaml"
+  delegate_to: localhost
+  become: false
+  register: keeper_defaults_raw
+  when: inventory_hostname == 'ck-node-1'
+
+- name: Check this host still pins what the role ships
+  vars:
+    role_defaults: "{{ (keeper_defaults_raw.content | b64decode | from_yaml).clickhouse_keeper }}"
+  ansible.builtin.assert:
+    that:
+      - role_defaults.image == clickhouse_keeper.image
+      - role_defaults.version == clickhouse_keeper.version
+      - role_defaults.id == clickhouse_keeper.id
+      - role_defaults.network == clickhouse_keeper.network
+      - role_defaults.client_port == clickhouse_keeper.client_port
+      - role_defaults.raft_port == clickhouse_keeper.raft_port
+      - role_defaults.four_lw_commands == clickhouse_keeper.four_lw_commands
+      - role_defaults.coordination == clickhouse_keeper.coordination
+      - role_defaults.metrics == clickhouse_keeper.metrics
+      # the keys this host differs on, checked the other way round
+      - role_defaults.peer_ip == ''
+      - role_defaults.quorum == []
+      - role_defaults.listen_ips == []
+      - "'dir.ansible' in role_defaults.directories.ansible"
+      - role_defaults.directories.ansible.endswith('/clickhouse_keeper')
+      - "'dir.data' in role_defaults.directories.data"
+      - role_defaults.directories.data.endswith('/clickhouse_keeper')
+    fail_msg: "role ships {{ role_defaults }}, this host pins {{ clickhouse_keeper }}"
+  when: inventory_hostname == 'ck-node-1'
+
+# ==========================================================================
+# ck-node-2 - relocated directories, renamed network, metrics off
+# ==========================================================================
+- name: Check no metrics labels or prometheus section were rendered
+  vars:
+    compose: "{{ keeper_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - compose.services.clickhouse_keeper.labels is not defined
+      - "'<prometheus>' not in (keeper_xml_raw.content | b64decode)"
+    fail_msg: "metrics off still rendered {{ compose }}"
+  when: not expected_metrics_enabled
+
+- name: Check the metrics port is not served with metrics off
+  ansible.builtin.command: >-
+    timeout 30 docker run --rm --network {{ expected_network }} --entrypoint sh
+    {{ expected_image }} -c 'nc -z -w 2 clickhouse_keeper {{ expected_metrics_port }}'
+  register: keeper_metrics_closed
+  changed_when: false
+  failed_when: keeper_metrics_closed.rc == 0
+  when: not expected_metrics_enabled
+
+- name: Stat the paths this host moved away from
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: keeper_unexpected
+  # a loop is expanded before `when`, and only node-2 has this var
+  loop: "{{ unexpected_paths | default([]) }}"
+  when: unexpected_paths is defined
+
+- name: Check the default paths were left alone
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists
+    fail_msg: "{{ item.item }} exists, so directories did not move"
+  loop: "{{ keeper_unexpected.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: unexpected_paths is defined

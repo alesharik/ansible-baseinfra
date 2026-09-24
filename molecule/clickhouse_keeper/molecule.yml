@@ -1,0 +1,152 @@
+---
+# Two platforms forming ONE ensemble. The raft configuration is built from every
+# member's id, peer_ip and raft_port in hostvars. A node written on node-1 that
+# reads back on node-2 proves it: a 2-member ensemble cannot commit without both
+# members, and node-2 only answers when it can forward to the leader.
+#
+# The two hosts also split the option matrix:
+#   ck-node-1  default directories, metrics on. Pins a copy of the published
+#              role defaults; tests.yml re-reads defaults/main.yaml from the
+#              controller so the copy cannot drift unnoticed.
+#   ck-node-2  relocated directories, renamed network, `coordination`
+#              settings, metrics OFF.
+platforms:
+  - name: ck-node-1
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+    # docker runs inside the instance, and overlayfs does not stack on overlayfs
+    volumes:
+      - /var/lib/docker
+      - /var/lib/containerd
+    keep_volumes: false
+  - name: ck-node-2
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+    volumes:
+      - /var/lib/docker
+      - /var/lib/containerd
+    keep_volumes: false
+
+provisioner:
+  inventory:
+    group_vars:
+      all:
+        # `bootstrap` is a wholesale override, so every key the role reads is here
+        bootstrap:
+          # would reach the host kernel through the privileged container
+          disable_algif_aead: false
+          disable_transparent_huge_pages: false
+          setup_users: false
+          setup_sudo: false
+          # the prometheus.io.instance label is built from ansible_hostname
+          set_hostname: true
+          limits:
+            enabled: true
+            nofile:
+              soft: 8192
+              hard: 1048576
+          swap:
+            enabled: false
+            # NOT /swapfile: /proc/swaps is not namespaced
+            file: /molecule_swapfile
+            size_mb: 4096
+        dir:
+          data: /data
+          ansible: /data/ansible
+
+        # Written on node-1, read back on node-2
+        molecule_znode: /molecule-keeper
+        molecule_znode_value: written-by-ck-node-1
+
+    # expected_* is spelled out per host, never derived from `clickhouse_keeper`
+    host_vars:
+      ck-node-1:
+        # A copy of the published defaults, except peer_ip, quorum and
+        # listen_ips, which an ensemble needs. tests.yml checks the copy.
+        clickhouse_keeper:
+          image: clickhouse/clickhouse-keeper
+          version: "26.8.10.6"
+          id: 1
+          peer_ip: "{{ ansible_default_ipv4.address }}"
+          quorum:
+            - ck-node-1
+            - ck-node-2
+          listen_ips:
+            - "{{ ansible_default_ipv4.address }}"
+          network: clickhouse-keeper
+          client_port: 9181
+          raft_port: 9234
+          four_lw_commands: "ruok,mntr,srvr,stat,conf"
+          coordination: {}
+          metrics:
+            enabled: true
+            port: 9363
+          directories:
+            ansible: "{{ dir.ansible }}/clickhouse_keeper"
+            data: "{{ dir.data }}/clickhouse_keeper"
+
+        expected_compose_dir: /data/ansible/clickhouse_keeper
+        expected_data_dir: /data/clickhouse_keeper
+        expected_network: clickhouse-keeper
+        expected_container: clickhouse_keeper-clickhouse_keeper-1
+        expected_id: "1"
+        expected_mounts:
+          - /data/clickhouse_keeper:/var/lib/clickhouse
+          - /data/ansible/clickhouse_keeper/config/keeper.xml:/etc/clickhouse-keeper/keeper_config.d/ansible.xml
+        expected_image: clickhouse/clickhouse-keeper:26.8.10.6
+        expected_metrics_enabled: true
+        expected_metrics_port: 9363
+        expected_instance_label: ck-node-1-clickhouse_keeper
+        expected_coordination: {}
+
+      ck-node-2:
+        clickhouse_keeper:
+          image: clickhouse/clickhouse-keeper
+          version: "26.8.10.6"
+          id: 2
+          peer_ip: "{{ ansible_default_ipv4.address }}"
+          quorum:
+            - ck-node-1
+            - ck-node-2
+          listen_ips:
+            - "{{ ansible_default_ipv4.address }}"
+          network: keeper-ensemble
+          client_port: 9181
+          raft_port: 9234
+          four_lw_commands: "ruok,mntr,srvr,stat,conf"
+          # pushed all the way through: tests.yml asks the running keeper
+          coordination:
+            session_timeout_ms: 30000
+            raft_logs_level: warning
+          metrics:
+            enabled: false
+            port: 9363
+          directories:
+            ansible: "{{ dir.ansible }}/keeper-moved"
+            data: "{{ dir.data }}/keeper-moved"
+
+        expected_compose_dir: /data/ansible/keeper-moved
+        expected_data_dir: /data/keeper-moved
+        expected_network: keeper-ensemble
+        # compose names the project after directories.ansible
+        expected_container: keeper-moved-clickhouse_keeper-1
+        expected_id: "2"
+        expected_mounts:
+          - /data/keeper-moved:/var/lib/clickhouse
+          - /data/ansible/keeper-moved/config/keeper.xml:/etc/clickhouse-keeper/keeper_config.d/ansible.xml
+        expected_image: clickhouse/clickhouse-keeper:26.8.10.6
+        expected_metrics_enabled: false
+        expected_metrics_port: 9363
+        expected_coordination:
+          session_timeout_ms: "30000"
+          raft_logs_level: warning
+        # the default paths this host must not touch
+        unexpected_paths:
+          - /data/ansible/clickhouse_keeper
+          - /data/clickhouse_keeper

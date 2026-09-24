@@ -1,0 +1,34 @@
+---
+clickhouse_keeper: # noqa: var-naming[no-role-prefix]
+  image: clickhouse/clickhouse-keeper
+  version: "26.8.10.6"
+  # The raft server_id. Unique across the ensemble, and the number the other
+  # members know this one by.
+  id: 1
+  # The address the other members dial, and the one clickhouse servers use to
+  # reach this keeper. Required once `quorum` is set. The raft port is published
+  # on it.
+  peer_ip: ""
+  # Inventory hostnames of every ensemble member, this host included. Empty runs
+  # a single-server keeper.
+  quorum: []
+  # Host IPs the client port is published on. Empty publishes nothing, leaving
+  # the keeper reachable only from the docker network below.
+  listen_ips: []
+  # The docker network the role creates, and the name consumers attach to.
+  network: clickhouse-keeper
+  client_port: 9181
+  raft_port: 9234
+  # The healthcheck sends `ruok`, so that command has to stay in this list.
+  four_lw_commands: "ruok,mntr,srvr,stat,conf"
+  # Extra <coordination_settings>, as setting: value. Everything else keeps the
+  # image's defaults.
+  coordination: {}
+  metrics:
+    enabled: true
+    port: 9363
+  directories:
+    ansible: "{{ dir.ansible }}/clickhouse_keeper"
+    # Mounted at /var/lib/clickhouse. The raft log and snapshots live in
+    # coordination/ below it.
+    data: "{{ dir.data }}/clickhouse_keeper"

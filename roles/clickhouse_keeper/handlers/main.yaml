@@ -1,0 +1,6 @@
+---
+- name: restart clickhouse_keeper  # noqa: name[casing]
+  tags: clickhouse_keeper
+  community.docker.docker_compose_v2:
+    project_src: "{{ clickhouse_keeper.directories.ansible }}"
+    state: restarted
