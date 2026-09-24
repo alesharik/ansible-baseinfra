@@ -1,0 +1,69 @@
+{# Merged over the image's config.xml as config.d/ansible.xml, so anything not
+   set here keeps the image's default. #}
+{% set cluster = clickhouse.cluster %}
+<clickhouse>
+    <!-- Console only. The image logs to files inside the container at trace level. -->
+    <logger replace="replace">
+        <level>information</level>
+        <console>1</console>
+    </logger>
+{% if clickhouse.metrics.enabled %}
+    <prometheus>
+        <endpoint>/metrics</endpoint>
+        <port>{{ clickhouse.metrics.port }}</port>
+        <metrics>true</metrics>
+        <events>true</events>
+        <asynchronous_metrics>true</asynchronous_metrics>
+        <errors>true</errors>
+    </prometheus>
+{% endif %}
+{% for key, value in clickhouse.config | dictsort %}
+    <{{ key }}>{{ value }}</{{ key }}>
+{% endfor %}
+{% if cluster.name | length > 0 %}
+{# Shard number -> inventory hostnames of its replicas, in cluster.hosts order #}
+{% set shards = {} %}
+{% for member in cluster.hosts %}
+{% set shard = hostvars[member].clickhouse.cluster.shard | int %}
+{% set _ = shards.update({shard: shards.get(shard, []) + [member]}) %}
+{% endfor %}
+    <!-- Hosts are inventory names: each server resolves its own name to its
+         container, which is how an ON CLUSTER query finds its local entry. -->
+    <remote_servers replace="replace">
+        <{{ cluster.name }}>
+            <secret>{{ cluster.secret | e }}</secret>
+{% for shard in shards | sort %}
+            <shard>
+                <internal_replication>true</internal_replication>
+{% for member in shards[shard] %}
+                <replica>
+                    <host>{{ member }}</host>
+                    <port>9000</port>
+                </replica>
+{% endfor %}
+            </shard>
+{% endfor %}
+        </{{ cluster.name }}>
+    </remote_servers>
+    <macros>
+        <cluster>{{ cluster.name }}</cluster>
+        <shard>{{ cluster.shard }}</shard>
+        <replica>{{ inventory_hostname }}</replica>
+    </macros>
+    <!-- The name the other replicas fetch parts from, on port 9009. -->
+    <interserver_http_host>{{ inventory_hostname }}</interserver_http_host>
+    <interserver_http_credentials>
+        <user>interserver</user>
+        <password>{{ cluster.secret | e }}</password>
+    </interserver_http_credentials>
+    <zookeeper replace="replace">
+{% for member in cluster.keeper %}
+{% set keeper = hostvars[member].clickhouse_keeper %}
+        <node>
+            <host>{{ keeper.peer_ip }}</host>
+            <port>{{ keeper.client_port | default(9181) }}</port>
+        </node>
+{% endfor %}
+    </zookeeper>
+{% endif %}
+</clickhouse>

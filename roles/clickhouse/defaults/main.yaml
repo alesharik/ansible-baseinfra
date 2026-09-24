@@ -1,8 +1,42 @@
 ---
 clickhouse: # noqa: var-naming[no-role-prefix]
   image: clickhouse/clickhouse-server
-  version: 24.6.2.17-alpine
-  databases: []
-  users: {}
+  version: "26.8.10.6"
+  # The docker network the role creates, and the name consumers attach to.
+  network: clickhouse
+  # Host IPs the HTTP (8123) and native (9000) ports are published on. Empty
+  # publishes nothing, leaving the server reachable only from the network above.
+  listen_ips: []
+  # The admin login. The image entrypoint creates it and removes `default`.
   root:
     user: root
+    password: ""
+  # Logins: name: {password, grants: [GRANT ... queries]}.
+  users: {}
+  # Databases created on this server with CREATE DATABASE IF NOT EXISTS.
+  databases: []
+  # Extra top-level server settings, as setting: value. Everything else keeps
+  # the image's defaults.
+  config: {}
+  metrics:
+    enabled: true
+    port: 9363
+  # Cluster mode is on when `name` is set. Empty runs a single server.
+  cluster:
+    name: ""
+    # Inventory hostnames of every server in the cluster, this host included.
+    hosts: []
+    # This server's shard number. Hosts with the same shard are its replicas.
+    shard: 1
+    # The address the other servers dial. The native (9000) and interserver
+    # (9009) ports are published on it.
+    peer_ip: ""
+    # Shared by every server: authenticates distributed queries and replica
+    # fetches between servers.
+    secret: ""
+    # Inventory hostnames of the clickhouse_keeper ensemble.
+    keeper: []
+  directories:
+    ansible: "{{ dir.ansible }}/clickhouse"
+    # Mounted at /var/lib/clickhouse.
+    data: "{{ dir.data }}/clickhouse"

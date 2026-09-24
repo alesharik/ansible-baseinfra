@@ -1,0 +1,167 @@
+---
+# Included by tests.yml on the three cluster members only. The hosts run each
+# task in step, so a task limited to one host runs before the next task starts
+# on the others.
+
+- name: Ask the server how it sees the cluster
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "{{ expected_container }}"
+      - clickhouse-client
+      - --user
+      - root
+      - --password
+      - "{{ molecule_root_password }}"
+      - --query
+      - >-
+        SELECT host_name, shard_num, is_local FROM system.clusters
+        WHERE cluster = 'main' ORDER BY shard_num, host_name FORMAT TSV
+  register: clickhouse_clusters
+  changed_when: false
+
+# is_local is what an ON CLUSTER query uses to find this server's entry. A
+# server with no local entry never runs the query, and the initiator times out.
+- name: Check the cluster has two shards and this server finds itself in it
+  vars:
+    expected_rows:
+      - "ch-node-1\t1\t{{ (inventory_hostname == 'ch-node-1') | int }}"
+      - "ch-node-2\t1\t{{ (inventory_hostname == 'ch-node-2') | int }}"
+      - "ch-node-3\t2\t{{ (inventory_hostname == 'ch-node-3') | int }}"
+  ansible.builtin.assert:
+    that:
+      - clickhouse_clusters.stdout_lines == expected_rows
+    fail_msg: "system.clusters has {{ clickhouse_clusters.stdout_lines }}"
+
+- name: Ask the server for its macros
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "{{ expected_container }}"
+      - clickhouse-client
+      - --user
+      - root
+      - --password
+      - "{{ molecule_root_password }}"
+      - --query
+      - SELECT macro, substitution FROM system.macros ORDER BY macro FORMAT TSV
+  register: clickhouse_macros
+  changed_when: false
+
+- name: Check the macros name this replica
+  ansible.builtin.assert:
+    that:
+      - >-
+        clickhouse_macros.stdout_lines ==
+        ["cluster\tmain", "replica\t" ~ inventory_hostname, "shard\t" ~ expected_shard]
+    fail_msg: "system.macros has {{ clickhouse_macros.stdout_lines }}"
+
+# system.zookeeper is read through the keeper, so an answer means the server
+# reached the keeper on ch-node-4.
+- name: Ask the keeper for its root through the server
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "{{ expected_container }}"
+      - clickhouse-client
+      - --user
+      - root
+      - --password
+      - "{{ molecule_root_password }}"
+      - --query
+      - SELECT count() > 0 FROM system.zookeeper WHERE path = '/'
+  register: clickhouse_zookeeper
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: clickhouse_zookeeper.stdout == '1'
+
+# ON CLUSTER waits until every member ran the query, so success here means all
+# three found themselves in remote_servers and read the queue in the keeper.
+- name: Create the replicated and distributed tables on the cluster
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "{{ expected_container }}"
+      - clickhouse-client
+      - --user
+      - root
+      - --password
+      - "{{ molecule_root_password }}"
+      - --distributed_ddl_task_timeout
+      - "120"
+      - --multiquery
+      - --query
+      - >-
+        CREATE TABLE IF NOT EXISTS molecule.events ON CLUSTER '{cluster}' (id UInt32)
+        ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/molecule/events', '{replica}')
+        ORDER BY id;
+        CREATE TABLE IF NOT EXISTS molecule.events_all ON CLUSTER '{cluster}' AS molecule.events
+        ENGINE = Distributed('{cluster}', molecule, events, id);
+  changed_when: true
+  when: inventory_hostname == 'ch-node-1'
+
+# One block per shard. A replicated insert of the same block again is dropped as
+# a duplicate, so a second verify leaves the counts as they are.
+- name: Insert rows into the local table of each shard
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "{{ expected_container }}"
+      - clickhouse-client
+      - --user
+      - root
+      - --password
+      - "{{ molecule_root_password }}"
+      - --query
+      - "INSERT INTO molecule.events VALUES {{ '(1), (2)' if inventory_hostname == 'ch-node-1' else '(3)' }}"
+  changed_when: true
+  when: inventory_hostname in ['ch-node-1', 'ch-node-3']
+
+# ch-node-2 got no insert. Its rows came from ch-node-1 through the keeper and a
+# fetch over 9009, which is what proves replication and the interserver setup.
+- name: Read the replicated rows on ch-node-2
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "{{ expected_container }}"
+      - clickhouse-client
+      - --user
+      - root
+      - --password
+      - "{{ molecule_root_password }}"
+      - --query
+      - SELECT count() FROM molecule.events
+  register: clickhouse_replicated
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: clickhouse_replicated.stdout == '2'
+  when: inventory_hostname == 'ch-node-2'
+
+# Every member sees the rows of both shards through the Distributed table. That
+# needs remote_servers, the secret and the peer ports on every member.
+- name: Read all rows through the distributed table
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "{{ expected_container }}"
+      - clickhouse-client
+      - --user
+      - root
+      - --password
+      - "{{ molecule_root_password }}"
+      - --query
+      - SELECT count() FROM molecule.events_all
+  register: clickhouse_distributed
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: clickhouse_distributed.stdout == '3'

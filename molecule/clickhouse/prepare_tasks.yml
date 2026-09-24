@@ -1,0 +1,27 @@
+---
+# clickhouse does not depend on clickhouse_keeper: the keeper is a running
+# service on other hosts, not a role. So the scenario deploys it here, before
+# converge, and the role under test runs with the keeper's defaults out of scope.
+- name: Gather facts
+  ansible.builtin.setup:
+
+- name: Deploy the keeper the cluster coordinates through
+  ansible.builtin.include_role:
+    name: alesharik.baseinfra.clickhouse_keeper
+  when: inventory_hostname == 'ch-node-4'
+
+# The precondition for every replication assertion. Without it a missing keeper
+# shows up later as a replicated table stuck in read-only mode.
+- name: Check the keeper is up and settled
+  ansible.builtin.command: >-
+    timeout 30 docker run --rm --network {{ clickhouse_keeper.network }} --entrypoint sh
+    {{ clickhouse_keeper.image }}:{{ clickhouse_keeper.version }}
+    -c 'echo mntr | nc -w 2 clickhouse_keeper {{ clickhouse_keeper.client_port }}'
+  register: clickhouse_prepare_mntr
+  changed_when: false
+  retries: 30
+  delay: 5
+  until:
+    - clickhouse_prepare_mntr.rc == 0
+    - clickhouse_prepare_mntr.stdout is search('zk_server_state\s+(leader|standalone)')
+  when: inventory_hostname == 'ch-node-4'

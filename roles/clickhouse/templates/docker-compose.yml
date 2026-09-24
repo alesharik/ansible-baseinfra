@@ -1,32 +1,66 @@
+#jinja2: trim_blocks: True, lstrip_blocks: True
+{% set cluster = clickhouse.cluster %}
+{% set clustered = cluster.name | length > 0 %}
+{# The native port goes on listen_ips and on peer_ip. unique, so a peer_ip that
+   is also in listen_ips is not bound twice. #}
+{% set native_ips = (clickhouse.listen_ips + ([cluster.peer_ip] if clustered else [])) | unique %}
 networks:
   clickhouse:
-    name: clickhouse
+    name: "{{ clickhouse.network }}"
 services:
   clickhouse:
     image: "{{ clickhouse.image }}:{{ clickhouse.version }}"
-    restart: always
+    restart: unless-stopped
+    # Not the image's own 101: existing data directories belong to 1002. Named
+    # here so the entrypoint never starts as root and chowns the data directory.
+    user: "1002:1002"
+    {% if clustered %}
+    # remote_servers names servers by inventory hostname. Docker resolves this
+    # server's own name to its container, so it finds itself in the cluster, and
+    # extra_hosts sends the other names to their peer_ip.
+    hostname: "{{ inventory_hostname }}"
+    extra_hosts:
+    {% for member in cluster.hosts | reject('equalto', inventory_hostname) %}
+      - "{{ member }}:{{ hostvars[member].clickhouse.cluster.peer_ip }}"
+    {% endfor %}
+    {% endif %}
     ulimits:
-      nproc: 65535
       nofile:
         soft: 262144
         hard: 262144
-    user: 1002:1002
     environment:
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
-      CLICKHOUSE_INIT_TIMEOUT: 300
+      CLICKHOUSE_USER: "{{ clickhouse.root.user }}"
+      CLICKHOUSE_PASSWORD_FILE: /etc/clickhouse-server/root_password
     volumes:
-      - ./init-defaults.sh:/docker-entrypoint-initdb.d/init-defaults.sh:ro
-      - "{{ dir.data }}/clickhouse:/var/lib/clickhouse:cached"
-      - "{{ dir.ansible }}/clickhouse/users:/etc/clickhouse-server/users.d/"
+      - "{{ clickhouse.directories.data }}:/var/lib/clickhouse"
+      - "{{ clickhouse.directories.ansible }}/config/config.xml:/etc/clickhouse-server/config.d/ansible.xml:ro"
+      - "{{ clickhouse.directories.ansible }}/config/users.xml:/etc/clickhouse-server/users.d/ansible.xml:ro"
+      - "{{ clickhouse.directories.ansible }}/config/root_password:/etc/clickhouse-server/root_password:ro"
     networks:
       - clickhouse
+    {% if clickhouse.listen_ips | length > 0 or clustered %}
+    ports:
+    {% for ip in clickhouse.listen_ips %}
+      - "{{ ip }}:8123:8123"
+    {% endfor %}
+    {% for ip in native_ips %}
+      - "{{ ip }}:9000:9000"
+    {% endfor %}
+    {% if clustered %}
+      - "{{ cluster.peer_ip }}:9009:9009"
+    {% endif %}
+    {% endif %}
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "localhost:8123/ping"]
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8123/ping"]
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 60s
+      start_interval: 2s
+    {% if clickhouse.metrics.enabled %}
     labels:
       prometheus.io.path: /metrics
-      prometheus.io.port: 9363 # port
-      prometheus.io.instance: "{{ inventory_hostname }}"
+      prometheus.io.port: {{ clickhouse.metrics.port }}
+      prometheus.io.network: "{{ clickhouse.network }}"
+      prometheus.io.instance: "{{ ansible_hostname }}-{{ clickhouse.directories.ansible | basename }}"
+    {% endif %}

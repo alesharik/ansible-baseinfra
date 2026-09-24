@@ -1,0 +1,327 @@
+---
+# ==========================================================================
+# All hosts - what the role wrote to disk
+# ==========================================================================
+- name: Stat the directories and files the role owns
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: clickhouse_paths
+  loop:
+    - "{{ expected_compose_dir }}"
+    - "{{ expected_data_dir }}"
+    - "{{ expected_compose_dir }}/config/config.xml"
+    - "{{ expected_compose_dir }}/config/users.xml"
+    - "{{ expected_compose_dir }}/config/root_password"
+
+# 1002:1002 is the uid earlier versions of the role ran as, kept so existing
+# data directories stay readable. The three config files hold
+# secrets, so only that uid reads them.
+- name: Check the directories, the files, their modes and their ownership
+  vars:
+    compose_dir: "{{ clickhouse_paths.results[0].stat }}"
+    data_dir: "{{ clickhouse_paths.results[1].stat }}"
+    secret_files: "{{ clickhouse_paths.results[2:] | map(attribute='stat') | list }}"
+  ansible.builtin.assert:
+    that:
+      - compose_dir.isdir
+      - compose_dir.mode == '0755'
+      - data_dir.isdir
+      - data_dir.mode == '0700'
+      - data_dir.uid == 1002
+      - data_dir.gid == 1002
+      - secret_files | map(attribute='exists') | unique | list == [true]
+      - secret_files | map(attribute='mode') | unique | list == ['0400']
+      - secret_files | map(attribute='uid') | unique | list == [1002]
+    fail_msg: "compose dir {{ compose_dir }}, data dir {{ data_dir }}, files {{ secret_files }}"
+
+- name: Read the rendered users config
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/config/users.xml"
+  register: clickhouse_users_raw
+
+# The hashes are computed from the literal passwords in expected_users, not
+# from the role's var.
+- name: Check user passwords are stored only as hashes
+  vars:
+    users_xml: "{{ clickhouse_users_raw.content | b64decode }}"
+  ansible.builtin.assert:
+    that:
+      - ('<password_sha256_hex>' ~ (item.value | hash('sha256')) ~ '</password_sha256_hex>') in users_xml
+      - item.value not in users_xml
+    fail_msg: "users.xml is {{ users_xml }}"
+  loop: "{{ expected_users | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+# ==========================================================================
+# All hosts - the rendered compose file
+# ==========================================================================
+- name: Read the rendered compose file
+  ansible.builtin.slurp:
+    src: "{{ expected_compose_dir }}/docker-compose.yml"
+  register: clickhouse_compose_raw
+
+- name: Check the compose file
+  vars:
+    compose: "{{ clickhouse_compose_raw.content | b64decode | from_yaml }}"
+    service: "{{ (clickhouse_compose_raw.content | b64decode | from_yaml).services.clickhouse }}"
+    own_ip: "{{ ansible_default_ipv4.address }}"
+    expected_ports: >-
+      {{ ([own_ip ~ ':8123:8123'] if expected_listen else [])
+         + ([own_ip ~ ':9000:9000'] if expected_listen or expected_clustered else [])
+         + ([own_ip ~ ':9009:9009'] if expected_clustered else []) }}
+  ansible.builtin.assert:
+    that:
+      - compose.services | list == ['clickhouse']
+      - compose.networks.clickhouse.name == expected_network
+      - service.image == 'clickhouse/clickhouse-server:26.8.10.6'
+      - service.user == '1002:1002'
+      - service.environment.CLICKHOUSE_USER == 'root'
+      # no password in the compose file, only the path to it
+      - molecule_root_password not in (clickhouse_compose_raw.content | b64decode)
+      # 9000 once, even where peer_ip is also in listen_ips
+      - service.ports | default([]) == expected_ports
+    fail_msg: "rendered compose is {{ compose }}"
+
+# ==========================================================================
+# All hosts - what is actually running
+# ==========================================================================
+- name: List the running containers
+  ansible.builtin.command: docker ps --format '{% raw %}{{.Names}}{% endraw %}'
+  register: clickhouse_ps
+  changed_when: false
+
+- name: Check this server's container is running
+  ansible.builtin.assert:
+    that:
+      - expected_container in clickhouse_ps.stdout_lines
+    fail_msg: "containers present: {{ clickhouse_ps.stdout_lines }}"
+
+- name: Inspect the server container
+  ansible.builtin.command: "docker inspect {{ expected_container }}"
+  register: clickhouse_inspect
+  changed_when: false
+
+# HostConfig.Binds carries a :rw or :ro suffix, so strip it before comparing
+- name: Check the container got the expected mounts and network
+  vars:
+    inspect: "{{ (clickhouse_inspect.stdout | from_json)[0] }}"
+    binds: >-
+      {{ (clickhouse_inspect.stdout | from_json)[0].HostConfig.Binds
+         | map('regex_replace', ':(rw|ro)$', '') | list }}
+    expected_mounts:
+      - "{{ expected_data_dir }}:/var/lib/clickhouse"
+      - "{{ expected_compose_dir }}/config/config.xml:/etc/clickhouse-server/config.d/ansible.xml"
+      - "{{ expected_compose_dir }}/config/users.xml:/etc/clickhouse-server/users.d/ansible.xml"
+      - "{{ expected_compose_dir }}/config/root_password:/etc/clickhouse-server/root_password"
+  ansible.builtin.assert:
+    that:
+      - binds | sort == expected_mounts | sort
+      - expected_network in inspect.NetworkSettings.Networks
+      - inspect.State.Health.Status == 'healthy'
+    fail_msg: "container is bound to {{ binds }}, networks {{ inspect.NetworkSettings.Networks | list }}"
+
+# The root password is given here in full, so this also proves the entrypoint
+# read it from the password file.
+- name: Ask the server who logs in as root
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "{{ expected_container }}"
+      - clickhouse-client
+      - --user
+      - root
+      - --password
+      - "{{ molecule_root_password }}"
+      - --query
+      - SELECT currentUser()
+  register: clickhouse_whoami
+  changed_when: false
+
+- name: Check root logs in and `default` is gone
+  ansible.builtin.assert:
+    that:
+      - clickhouse_whoami.stdout == 'root'
+    fail_msg: "root login answered {{ clickhouse_whoami.stdout }} {{ clickhouse_whoami.stderr }}"
+
+- name: Ask the server for its users and databases
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "{{ expected_container }}"
+      - clickhouse-client
+      - --user
+      - root
+      - --password
+      - "{{ molecule_root_password }}"
+      - --query
+      - >-
+        SELECT 'user', name FROM system.users
+        UNION ALL
+        SELECT 'db', name FROM system.databases
+        WHERE name NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA', 'default')
+        FORMAT TSV
+  register: clickhouse_objects
+  changed_when: false
+
+- name: Check the users and databases are exactly the configured ones
+  vars:
+    users: "{{ clickhouse_objects.stdout_lines | select('match', '^user\t') | map('regex_replace', '^user\t', '') | sort }}"
+    dbs: "{{ clickhouse_objects.stdout_lines | select('match', '^db\t') | map('regex_replace', '^db\t', '') | sort }}"
+  ansible.builtin.assert:
+    that:
+      - users == (['root'] + (expected_users | list)) | sort
+      - dbs == expected_databases | sort
+    fail_msg: "server has users {{ users }} and databases {{ dbs }}"
+
+- name: Log in as each configured user
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "{{ expected_container }}"
+      - clickhouse-client
+      - --user
+      - "{{ item.key }}"
+      - --password
+      - "{{ item.value }}"
+      - --query
+      - SELECT currentUser()
+  register: clickhouse_user_login
+  changed_when: false
+  failed_when: clickhouse_user_login.stdout != item.key
+  loop: "{{ expected_users | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Ask the server for the extra settings
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "{{ expected_container }}"
+      - clickhouse-client
+      - --user
+      - root
+      - --password
+      - "{{ molecule_root_password }}"
+      - --query
+      - "SELECT value FROM system.server_settings WHERE name = '{{ item.key }}'"
+  register: clickhouse_setting
+  changed_when: false
+  failed_when: clickhouse_setting.stdout != item.value
+  loop: "{{ expected_config | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+# ==========================================================================
+# Metrics on and off
+# ==========================================================================
+- name: Check the metrics labels for autodiscovery
+  vars:
+    labels: "{{ (clickhouse_compose_raw.content | b64decode | from_yaml).services.clickhouse.labels }}"
+  ansible.builtin.assert:
+    that:
+      - labels['prometheus.io.path'] == '/metrics'
+      - labels['prometheus.io.port'] | string == '9363'
+      - labels['prometheus.io.network'] == expected_network
+      - labels['prometheus.io.instance'] == expected_instance_label
+    fail_msg: "labels are {{ labels }}"
+  when: expected_metrics_enabled
+
+- name: Scrape the metrics endpoint from inside the network
+  ansible.builtin.command: >-
+    timeout 30 docker run --rm --network {{ expected_network }} --entrypoint wget
+    clickhouse/clickhouse-server:26.8.10.6 -qO- http://clickhouse:9363/metrics
+  register: clickhouse_metrics
+  changed_when: false
+  failed_when: >-
+    clickhouse_metrics.rc != 0 or 'ClickHouse_Info' not in clickhouse_metrics.stdout
+  when: expected_metrics_enabled
+
+- name: Check nothing answers on the metrics port with metrics off
+  ansible.builtin.command: >-
+    timeout 30 docker run --rm --network {{ expected_network }} --entrypoint sh
+    clickhouse/clickhouse-server:26.8.10.6 -c 'nc -z -w 2 clickhouse 9363'
+  register: clickhouse_metrics_closed
+  changed_when: false
+  failed_when: clickhouse_metrics_closed.rc == 0
+  when: not expected_metrics_enabled
+
+# ==========================================================================
+# ch-node-4 - a single server with the published defaults
+# ==========================================================================
+- name: Check a single server has no cluster settings
+  vars:
+    compose: "{{ clickhouse_compose_raw.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - compose.services.clickhouse.hostname is not defined
+      - compose.services.clickhouse.extra_hosts is not defined
+      - compose.services.clickhouse.ports is not defined
+    fail_msg: "single server rendered {{ compose }}"
+  when: not expected_clustered
+
+# slurp + from_yaml is never templated, so `directories` keeps its literal
+# "{{ dir.data }}" and is compared by shape
+- name: Read the role defaults from the controller
+  ansible.builtin.slurp:
+    src: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}/roles/clickhouse/defaults/main.yaml"
+  delegate_to: localhost
+  become: false
+  register: clickhouse_defaults_raw
+  when: inventory_hostname == 'ch-node-4'
+
+- name: Check this host still pins what the role ships
+  vars:
+    role_defaults: "{{ (clickhouse_defaults_raw.content | b64decode | from_yaml).clickhouse }}"
+  ansible.builtin.assert:
+    that:
+      - role_defaults.image == clickhouse.image
+      - role_defaults.version == clickhouse.version
+      - role_defaults.network == clickhouse.network
+      - role_defaults.listen_ips == clickhouse.listen_ips
+      - role_defaults.root.user == clickhouse.root.user
+      - role_defaults.users == clickhouse.users
+      - role_defaults.databases == clickhouse.databases
+      - role_defaults.config == clickhouse.config
+      - role_defaults.metrics == clickhouse.metrics
+      - role_defaults.cluster == clickhouse.cluster
+      # the key this host differs on, checked the other way round
+      - role_defaults.root.password == ''
+      - "'dir.ansible' in role_defaults.directories.ansible"
+      - role_defaults.directories.ansible.endswith('/clickhouse')
+      - "'dir.data' in role_defaults.directories.data"
+      - role_defaults.directories.data.endswith('/clickhouse')
+    fail_msg: "role ships {{ role_defaults }}, this host pins {{ clickhouse }}"
+  when: inventory_hostname == 'ch-node-4'
+
+# ==========================================================================
+# ch-node-3 - relocated directories
+# ==========================================================================
+- name: Stat the paths this host moved away from
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: clickhouse_unexpected
+  # a loop is expanded before `when`, and only ch-node-3 has this var
+  loop: "{{ unexpected_paths | default([]) }}"
+  when: unexpected_paths is defined
+
+- name: Check the default paths were left alone
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists
+    fail_msg: "{{ item.item }} exists, so directories did not move"
+  loop: "{{ clickhouse_unexpected.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: unexpected_paths is defined
+
+# ==========================================================================
+# Cluster members - the cluster itself
+# ==========================================================================
+- name: Include the cluster checks
+  ansible.builtin.include_tasks: "{{ lookup('env', 'MOLECULE_SCENARIO_DIRECTORY') }}/cluster.yml"
+  when: expected_clustered

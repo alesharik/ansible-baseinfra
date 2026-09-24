@@ -1,0 +1,87 @@
+---
+# The entrypoint creates root with whatever password it gets, and opens it to
+# every address. An empty one is an open server.
+- name: Check the root login has a password
+  tags: clickhouse
+  ansible.builtin.assert:
+    that:
+      - clickhouse.root.user is match('^[A-Za-z_][A-Za-z0-9_]*$')
+      - clickhouse.root.password | length > 0
+    fail_msg: >-
+      clickhouse.root needs a user made of letters, digits and underscores, and a
+      password that is not empty.
+
+# User names become XML tags and database names go into SQL, so both are held
+# to plain identifiers.
+- name: Check every user has a plain name and a password
+  tags: clickhouse
+  ansible.builtin.assert:
+    that:
+      - item.key is match('^[A-Za-z_][A-Za-z0-9_]*$')
+      - item.key != clickhouse.root.user
+      - item.value.password | default('') | length > 0
+    fail_msg: >-
+      clickhouse.users.{{ item.key }} needs a name made of letters, digits and
+      underscores, other than the root user, and a password that is not empty.
+  loop: "{{ clickhouse.users | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Check every database has a plain name
+  tags: clickhouse
+  ansible.builtin.assert:
+    that:
+      - item is match('^[A-Za-z_][A-Za-z0-9_]*$')
+    fail_msg: >-
+      clickhouse.databases entry "{{ item }}" has to be made of letters, digits
+      and underscores.
+  loop: "{{ clickhouse.databases }}"
+
+# Checked across hostvars: every server renders the whole cluster, so one bad
+# member breaks it for all of them.
+- name: Check the cluster is coherent
+  tags: clickhouse
+  when: clickhouse.cluster.name | length > 0
+  vars:
+    clickhouse_peers: >-
+      {{ clickhouse.cluster.hosts | map('extract', hostvars, ['clickhouse', 'cluster'])
+         | map('default', {}) | list }}
+  ansible.builtin.assert:
+    that:
+      - clickhouse.cluster.name is match('^[A-Za-z_][A-Za-z0-9_]*$')
+      - inventory_hostname in clickhouse.cluster.hosts
+      - clickhouse.cluster.hosts | difference(hostvars | list) | length == 0
+      # the names are what the servers resolve each other by
+      - clickhouse.cluster.hosts | reject('match', '^[A-Za-z0-9][A-Za-z0-9.-]*$') | list | length == 0
+      - clickhouse_peers | map(attribute='peer_ip', default='') | select('equalto', '') | list | length == 0
+      - clickhouse_peers | map(attribute='shard', default='') | map('string') | reject('match', '^[1-9][0-9]*$') | list | length == 0
+      - clickhouse_peers | map(attribute='name', default='') | unique | list == [clickhouse.cluster.name]
+      - clickhouse_peers | map(attribute='secret', default='') | unique | list == [clickhouse.cluster.secret]
+      - clickhouse.cluster.secret | length > 0
+      # a remote server runs a distributed query as the user that started it
+      - >-
+        clickhouse.cluster.hosts | map('extract', hostvars, ['clickhouse', 'root', 'user'])
+        | map('default', '') | unique | list == [clickhouse.root.user]
+    fail_msg: >-
+      clickhouse.cluster.hosts is {{ clickhouse.cluster.hosts }}. It must contain
+      {{ inventory_hostname }} and name only inventory hosts with plain DNS names.
+      Every member needs a peer_ip and a shard of 1 or more. All members need the
+      same name, the same root user and the same secret, which is not empty.
+
+- name: Check the cluster has a keeper to coordinate through
+  tags: clickhouse
+  when: clickhouse.cluster.name | length > 0
+  vars:
+    clickhouse_keeper_ips: >-
+      {{ clickhouse.cluster.keeper | map('extract', hostvars, ['clickhouse_keeper', 'peer_ip'])
+         | map('default', '') | list }}
+  ansible.builtin.assert:
+    that:
+      - clickhouse.cluster.keeper | length > 0
+      - clickhouse.cluster.keeper | difference(hostvars | list) | length == 0
+      - clickhouse_keeper_ips | select('equalto', '') | list | length == 0
+    fail_msg: >-
+      clickhouse.cluster.keeper is {{ clickhouse.cluster.keeper }}. Replicated
+      tables and ON CLUSTER queries need it to name clickhouse_keeper hosts in the
+      inventory, and each of them needs clickhouse_keeper.peer_ip. They resolve to
+      {{ clickhouse_keeper_ips }}.

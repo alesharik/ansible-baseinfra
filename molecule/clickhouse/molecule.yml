@@ -1,0 +1,293 @@
+---
+# Three platforms form ONE cluster of two shards, and a fourth runs alone:
+#   ch-node-1  shard 1, replica. Users and databases. Publishes on listen_ips
+#              too, and its peer_ip is in listen_ips, so 9000 must be bound once.
+#   ch-node-2  shard 1, replica. Nothing on listen_ips: only the cluster ports.
+#   ch-node-3  shard 2. Relocated directories, renamed network, extra `config`,
+#              metrics OFF.
+#   ch-node-4  a single server that pins the published role defaults. It also
+#              runs the clickhouse_keeper the cluster coordinates through,
+#              deployed by prepare_tasks.yml.
+#
+# Rows inserted on ch-node-1 that read back on ch-node-2 prove replication through
+# the keeper. A Distributed table that sees the rows of both shards proves
+# remote_servers, and the ON CLUSTER queries that made the tables prove each
+# server finds itself in the cluster.
+#
+# The shared converge.yml includes the role by scenario name, so the option
+# matrix goes into platforms, not into a second scenario.
+platforms:
+  - name: ch-node-1
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+    # docker runs inside the instance, and overlayfs does not stack on overlayfs
+    volumes:
+      - /var/lib/docker
+      - /var/lib/containerd
+    keep_volumes: false
+  - name: ch-node-2
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+    volumes:
+      - /var/lib/docker
+      - /var/lib/containerd
+    keep_volumes: false
+  - name: ch-node-3
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+    volumes:
+      - /var/lib/docker
+      - /var/lib/containerd
+    keep_volumes: false
+  - name: ch-node-4
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+    volumes:
+      - /var/lib/docker
+      - /var/lib/containerd
+    keep_volumes: false
+
+provisioner:
+  inventory:
+    group_vars:
+      all:
+        # `bootstrap` is a wholesale override, so every key the role reads is here
+        bootstrap:
+          # would reach the host kernel through the privileged container
+          disable_algif_aead: false
+          disable_transparent_huge_pages: false
+          setup_users: false
+          setup_sudo: false
+          # the prometheus.io.instance label is built from ansible_hostname
+          set_hostname: true
+          limits:
+            enabled: true
+            nofile:
+              soft: 8192
+              hard: 1048576
+          swap:
+            enabled: false
+            # NOT /swapfile: /proc/swaps is not namespaced
+            file: /molecule_swapfile
+            size_mb: 4096
+        dir:
+          data: /data
+          ansible: /data/ansible
+
+        molecule_root_password: molecule-root-pw
+        molecule_cluster_secret: molecule-cluster-secret
+
+    # expected_* is spelled out per host, never derived from `clickhouse`
+    host_vars:
+      ch-node-1:
+        clickhouse:
+          image: clickhouse/clickhouse-server
+          version: "26.8.10.6"
+          network: clickhouse
+          listen_ips:
+            - "{{ ansible_default_ipv4.address }}"
+          root:
+            user: root
+            password: "{{ molecule_root_password }}"
+          users:
+            app:
+              password: app-pw
+              grants:
+                - GRANT SELECT ON molecule.*
+          databases:
+            - molecule
+            - analytics
+          config: {}
+          metrics:
+            enabled: true
+            port: 9363
+          cluster:
+            name: main
+            hosts: [ch-node-1, ch-node-2, ch-node-3]
+            shard: 1
+            peer_ip: "{{ ansible_default_ipv4.address }}"
+            secret: "{{ molecule_cluster_secret }}"
+            keeper: [ch-node-4]
+          directories:
+            ansible: "{{ dir.ansible }}/clickhouse"
+            data: "{{ dir.data }}/clickhouse"
+
+        expected_compose_dir: /data/ansible/clickhouse
+        expected_data_dir: /data/clickhouse
+        expected_network: clickhouse
+        expected_container: clickhouse-clickhouse-1
+        expected_clustered: true
+        expected_shard: 1
+        expected_listen: true
+        expected_databases: [analytics, molecule]
+        expected_users: {app: app-pw}
+        expected_metrics_enabled: true
+        expected_instance_label: ch-node-1-clickhouse
+        expected_config: {}
+
+      ch-node-2:
+        clickhouse:
+          image: clickhouse/clickhouse-server
+          version: "26.8.10.6"
+          network: clickhouse
+          listen_ips: []
+          root:
+            user: root
+            password: "{{ molecule_root_password }}"
+          users:
+            app:
+              password: app-pw
+              grants:
+                - GRANT SELECT ON molecule.*
+          databases:
+            - molecule
+            - analytics
+          config: {}
+          metrics:
+            enabled: true
+            port: 9363
+          cluster:
+            name: main
+            hosts: [ch-node-1, ch-node-2, ch-node-3]
+            shard: 1
+            peer_ip: "{{ ansible_default_ipv4.address }}"
+            secret: "{{ molecule_cluster_secret }}"
+            keeper: [ch-node-4]
+          directories:
+            ansible: "{{ dir.ansible }}/clickhouse"
+            data: "{{ dir.data }}/clickhouse"
+
+        expected_compose_dir: /data/ansible/clickhouse
+        expected_data_dir: /data/clickhouse
+        expected_network: clickhouse
+        expected_container: clickhouse-clickhouse-1
+        expected_clustered: true
+        expected_shard: 1
+        expected_listen: false
+        expected_databases: [analytics, molecule]
+        expected_users: {app: app-pw}
+        expected_metrics_enabled: true
+        expected_instance_label: ch-node-2-clickhouse
+        expected_config: {}
+
+      ch-node-3:
+        clickhouse:
+          image: clickhouse/clickhouse-server
+          version: "26.8.10.6"
+          network: clickhouse-moved
+          listen_ips:
+            - "{{ ansible_default_ipv4.address }}"
+          root:
+            user: root
+            password: "{{ molecule_root_password }}"
+          users: {}
+          # created here for the Distributed table, which reads molecule.* on
+          # every shard
+          databases:
+            - molecule
+          # pushed all the way through: tests.yml asks the running server
+          config:
+            max_concurrent_queries: 150
+          metrics:
+            enabled: false
+            port: 9363
+          cluster:
+            name: main
+            hosts: [ch-node-1, ch-node-2, ch-node-3]
+            shard: 2
+            peer_ip: "{{ ansible_default_ipv4.address }}"
+            secret: "{{ molecule_cluster_secret }}"
+            keeper: [ch-node-4]
+          directories:
+            ansible: "{{ dir.ansible }}/clickhouse-moved"
+            data: "{{ dir.data }}/clickhouse-moved"
+
+        expected_compose_dir: /data/ansible/clickhouse-moved
+        expected_data_dir: /data/clickhouse-moved
+        expected_network: clickhouse-moved
+        # compose names the project after directories.ansible
+        expected_container: clickhouse-moved-clickhouse-1
+        expected_clustered: true
+        expected_shard: 2
+        expected_listen: true
+        expected_databases: [molecule]
+        expected_users: {}
+        expected_metrics_enabled: false
+        expected_config:
+          max_concurrent_queries: "150"
+        unexpected_paths:
+          - /data/ansible/clickhouse
+          - /data/clickhouse
+
+      ch-node-4:
+        # A copy of the published defaults, except root.password, which ships
+        # empty and which the role refuses. tests.yml checks the copy.
+        clickhouse:
+          image: clickhouse/clickhouse-server
+          version: "26.8.10.6"
+          network: clickhouse
+          listen_ips: []
+          root:
+            user: root
+            password: "{{ molecule_root_password }}"
+          users: {}
+          databases: []
+          config: {}
+          metrics:
+            enabled: true
+            port: 9363
+          cluster:
+            name: ""
+            hosts: []
+            shard: 1
+            peer_ip: ""
+            secret: ""
+            keeper: []
+          directories:
+            ansible: "{{ dir.ansible }}/clickhouse"
+            data: "{{ dir.data }}/clickhouse"
+        # The keeper the cluster uses. peer_ip is in listen_ips, so the client
+        # port is published where the cluster dials it.
+        clickhouse_keeper:
+          image: clickhouse/clickhouse-keeper
+          version: "26.8.10.6"
+          id: 1
+          peer_ip: "{{ ansible_default_ipv4.address }}"
+          quorum: []
+          listen_ips:
+            - "{{ ansible_default_ipv4.address }}"
+          network: clickhouse-keeper
+          client_port: 9181
+          raft_port: 9234
+          four_lw_commands: "ruok,mntr,srvr,stat,conf"
+          coordination: {}
+          metrics:
+            enabled: false
+            port: 9363
+          directories:
+            ansible: "{{ dir.ansible }}/clickhouse_keeper"
+            data: "{{ dir.data }}/clickhouse_keeper"
+
+        expected_compose_dir: /data/ansible/clickhouse
+        expected_data_dir: /data/clickhouse
+        expected_network: clickhouse
+        expected_container: clickhouse-clickhouse-1
+        expected_clustered: false
+        expected_listen: false
+        expected_databases: []
+        expected_users: {}
+        expected_metrics_enabled: true
+        expected_instance_label: ch-node-4-clickhouse
+        expected_config: {}

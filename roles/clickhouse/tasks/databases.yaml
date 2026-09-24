@@ -1,0 +1,47 @@
+---
+# The password comes from the file in the container, so it stays out of this
+# host's process list. Retries cover a server the handler just restarted.
+- name: List the existing databases
+  tags: clickhouse
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --project-directory
+      - "{{ clickhouse.directories.ansible }}"
+      - exec
+      - -T
+      - clickhouse
+      - sh
+      - -c
+      - >-
+        exec clickhouse-client --user "$CLICKHOUSE_USER"
+        --password "$(cat "$CLICKHOUSE_PASSWORD_FILE")"
+        --query 'SELECT name FROM system.databases'
+  register: clickhouse_databases
+  changed_when: false
+  retries: 30
+  delay: 2
+  until: clickhouse_databases.rc == 0
+
+# Made on this server only, also in cluster mode: every host runs the role, so
+# each one creates its own copy.
+- name: Create the missing databases
+  tags: clickhouse
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --project-directory
+      - "{{ clickhouse.directories.ansible }}"
+      - exec
+      - -T
+      - clickhouse
+      - sh
+      - -c
+      - >-
+        exec clickhouse-client --user "$CLICKHOUSE_USER"
+        --password "$(cat "$CLICKHOUSE_PASSWORD_FILE")"
+        --query 'CREATE DATABASE IF NOT EXISTS {{ item }}'
+  changed_when: true
+  loop: "{{ clickhouse.databases | difference(clickhouse_databases.stdout_lines) }}"

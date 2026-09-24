@@ -7,6 +7,8 @@ kinds:
   - tasks: "**/molecule/*/prepare_tasks.yml"
   # included once per refusal from postgres/side_effect.yml
   - tasks: "**/molecule/postgres/refusal.yml"
+  # included by clickhouse/tests.yml on the cluster members
+  - tasks: "**/molecule/clickhouse/cluster.yml"
 
 skip_list:
   # The collection is not published to Galaxy. The conventional commit

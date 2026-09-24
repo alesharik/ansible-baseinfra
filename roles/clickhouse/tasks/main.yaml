@@ -1,78 +1,113 @@
 ---
+- name: Check the clickhouse settings
+  tags: clickhouse
+  ansible.builtin.include_tasks: assert.yaml
+
 - name: Create compose dir
+  tags: clickhouse
   ansible.builtin.file:
-    path: "{{ dir.ansible }}/clickhouse"
+    path: "{{ clickhouse.directories.ansible }}"
+    state: directory
+    mode: "0755"
+
+- name: Create config dir
+  tags: clickhouse
+  ansible.builtin.file:
+    path: "{{ clickhouse.directories.ansible }}/config"
+    state: directory
+    mode: "0755"
+
+# 1002:1002, not the image's own 101: earlier versions of this role ran the
+# server as 1002, and existing data directories are owned by it. The container
+# runs as it from the start, so the entrypoint never chowns anything.
+- name: Create data dir
+  tags: clickhouse
+  ansible.builtin.file:
+    path: "{{ clickhouse.directories.data }}"
     state: directory
     mode: "0700"
-  tags: clickhouse
+    owner: "1002"
+    group: "1002"
 
-- name: Create users dir
-  ansible.builtin.file:
-    path: "{{ dir.ansible }}/clickhouse/users"
-    state: directory
-    mode: "0700"
-    owner: 1002
+# The three files below hold secrets, so only the server's uid reads them.
+- name: Move server config
   tags: clickhouse
-
-- name: Move compose files
   ansible.builtin.template:
-    src: docker-compose.yml
-    dest: "{{ dir.ansible }}/clickhouse/docker-compose.yml"
-    mode: "0700"
-  tags: clickhouse
-  notify:
-    - restart clickhouse
-- name: Move env file
-  ansible.builtin.template:
-    src: .env
-    dest: "{{ dir.ansible }}/clickhouse/.env"
-    mode: "0700"
-  tags: clickhouse
-  notify:
-    - restart clickhouse
-- name: Move init-defauts.sh file
-  ansible.builtin.template:
-    src: init-defaults.sh
-    dest: "{{ dir.ansible }}/clickhouse/init-defaults.sh"
-    mode: "0700"
-    owner: 1002
-  tags: clickhouse
+    src: config.xml
+    dest: "{{ clickhouse.directories.ansible }}/config/config.xml"
+    mode: "0400"
+    owner: "1002"
+    group: "1002"
   notify:
     - restart clickhouse
 
-- name: Move users.xml file
+- name: Move users config
+  tags: clickhouse
   ansible.builtin.template:
     src: users.xml
-    dest: "{{ dir.ansible }}/clickhouse/users/users.xml"
-    mode: "0700"
-    owner: 1002
-  tags: clickhouse
+    dest: "{{ clickhouse.directories.ansible }}/config/users.xml"
+    mode: "0400"
+    owner: "1002"
+    group: "1002"
   notify:
     - restart clickhouse
 
-- name: Create clickhouse directory
-  ansible.builtin.file:
-    path: "{{ dir.data }}/clickhouse"
-    state: directory
-    owner: 1002
-    group: 1002
-    mode: "0700"
+# Read by the entrypoint through CLICKHOUSE_PASSWORD_FILE. A file needs no
+# quoting, where a .env value would.
+- name: Move root password
   tags: clickhouse
+  ansible.builtin.copy:
+    content: "{{ clickhouse.root.password }}"
+    dest: "{{ clickhouse.directories.ansible }}/config/root_password"
+    mode: "0400"
+    owner: "1002"
+    group: "1002"
+  no_log: true
+  notify:
+    - restart clickhouse
+
+- name: Move compose files
+  tags: clickhouse
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ clickhouse.directories.ansible }}/docker-compose.yml"
+    mode: "0700"
+  notify:
+    - restart clickhouse
+
+- name: Remove files of the old layout
+  tags: clickhouse
+  ansible.builtin.file:
+    path: "{{ clickhouse.directories.ansible }}/{{ item }}"
+    state: absent
+  loop:
+    - .env
+    - init-defaults.sh
+    - users
 
 # Pull separately: on an up that also pulls, compose 5.4.0 labels the container
 # with the local image ID, then recreates it once on the next up.
 - name: Pull clickhouse images
-  community.docker.docker_compose_v2_pull:
-    project_src: "{{ dir.ansible }}/clickhouse"
-    policy: missing
   tags: clickhouse
+  community.docker.docker_compose_v2_pull:
+    project_src: "{{ clickhouse.directories.ansible }}"
+    policy: missing
 
 - name: Start clickhouse
+  tags: clickhouse
   community.docker.docker_compose_v2:
-    project_src: "{{ dir.ansible }}/clickhouse"
+    project_src: "{{ clickhouse.directories.ansible }}"
     state: present
-  tags: clickhouse
+    remove_orphans: true
+    wait: true
+    wait_timeout: 300
 
+# Restart now, so the databases below are made on a server with the new config.
 - name: Make sure handlers are flushed immediately
-  ansible.builtin.meta: flush_handlers
   tags: clickhouse
+  ansible.builtin.meta: flush_handlers
+
+- name: Create databases
+  tags: clickhouse
+  ansible.builtin.include_tasks: databases.yaml
+  when: clickhouse.databases | length > 0

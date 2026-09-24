@@ -6,6 +6,8 @@
 - [`docker`](./roles/docker/README.md) - install docker
 
 ### Roles
+- [`clickhouse`](./roles/clickhouse/README.md) - deploy clickhouse, a single server or a sharded, replicated cluster
+- [`clickhouse_keeper`](./roles/clickhouse_keeper/README.md) - deploy clickhouse keeper, a single server or an ensemble
 - [`docker_registry_server`](./roles/docker_registry_server/README.md) - deploy a docker registry with htpasswd auth
 - [`grafana`](./roles/grafana/README.md) - deploy grafana
 - [`loki`](./roles/loki/README.md) - deploy loki log store
@@ -52,7 +54,8 @@ prometheus.io.address: 127.0.0.1:9586 # full address to server
 
 | Name                     | Version                                                                 | Last checked | Last updated |
 |--------------------------|-------------------------------------------------------------------------|--------------|--------------|
-| `clickhouse`             | `24.6.2.17-alpine`                                                      |              |              |
+| `clickhouse`             | `26.8.10.6`                                                             | 2026-09-24   | 2026-09-24   |
+| `clickhouse_keeper`      | `26.8.10.6`                                                             | 2026-09-24   | 2026-09-24   |
 | `docker_registry_server` | `2`                                                                     | 2026-08-02   |              |
 | `grafana`                | `13.0.2`                                                                | 2026-08-01   | 2026-06-14   |
 | `harbor`                 | `2.15.2`                                                                | 2026-09-17   | 2026-09-17   |

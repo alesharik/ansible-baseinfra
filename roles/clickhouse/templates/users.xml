@@ -1,19 +1,19 @@
 <clickhouse>
-<users>
-{% for u in (clickhouse.users | dict2items) %}
-  <{{ u.key }}>
-    <profile>default</profile>
-    <networks>
-      <ip>::/0</ip>
-    </networks>
-    <password>{{ u.value.password }}</password>
-    <quota>default</quota>
-    <grants>
-{% for g in (u.value.grants or []) %}
-      <query>{{ g }}</query>
+    <users>
+{% for name, user in clickhouse.users | dictsort %}
+        <{{ name }}>
+            <password_sha256_hex>{{ user.password | hash('sha256') }}</password_sha256_hex>
+            <profile>default</profile>
+            <quota>default</quota>
+            <networks>
+                <ip>::/0</ip>
+            </networks>
+            <grants>
+{% for grant in user.grants | default([]) %}
+                <query>{{ grant | e }}</query>
 {% endfor %}
-    </grants>
-  </{{ u.key }}>
+            </grants>
+        </{{ name }}>
 {% endfor %}
-</users>
+    </users>
 </clickhouse>
