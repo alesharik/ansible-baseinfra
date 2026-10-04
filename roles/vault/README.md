@@ -31,6 +31,7 @@ the raft cluster through `retry_join` when they are unsealed.
 vault:
   peer_ip: # IP for vault cluster to connect to - no default, must be set
   version: 2.1.1 # Vault version
+  install_remotely: true # true: each host downloads the zip. false: the controller downloads it and copies the binary
   listen_ips: [] # Listen IPs - which IPs to expose Vault on, must contain peer_ip
   quorum: [] # List of quorum nodes - inventory hostnames
   vmagent: true # Enable/disable vmagent metrics
@@ -58,6 +59,7 @@ the role reads.
   [ansible-community.ansible-vault](https://github.com/ansible-community/ansible-vault)
   and runs it as systemd service `vault`. That role creates `/etc/vault.d` and
   `{{ vault.directories.data }}`
+- in both download modes, the controller fetches `SHA256SUMS` to check the zip
 - writes `/home/vault/vault.{cer,key}`, and exports `VAULT_ADDR`, `VAULT_CACERT`,
   `VAULT_CLIENT_CERT` and `VAULT_CLIENT_KEY` in `/home/vault/.bashrc`
 - writes sudoers rule `vault-access`: group `sudo` can run any command as

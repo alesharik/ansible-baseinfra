@@ -5,12 +5,12 @@
 # cluster - a second voter that joins over mTLS is.
 #
 # The two hosts also split the option matrix:
-#   vault-node-1  default tls and data directories, one listener, vmagent
-#                 conf.d pre-created by prepare_tasks.yml
+#   vault-node-1  default tls and data directories, one listener, remote
+#                 download, vmagent conf.d pre-created by prepare_tasks.yml
 #   vault-node-2  relocated tls and data directories, a second listener on
-#                 127.0.0.1, and vmagent conf.d ABSENT at converge - that covers
-#                 the skip guard. side_effect.yml then creates it and re-runs
-#                 the role.
+#                 127.0.0.1, download on the controller, and vmagent conf.d
+#                 ABSENT at converge - that covers the skip guard.
+#                 side_effect.yml then creates it and re-runs the role.
 #
 # Vault runs as a systemd service, not in docker, so these instances need no
 # docker-in-docker volumes.
@@ -76,6 +76,8 @@ provisioner:
       vault-node-1:
         vault:
           version: 2.1.1
+          # the host downloads the zip itself
+          install_remotely: true
           # the instance address on the molecule network. Both members dial
           # each other there, so the server certificate is issued for it too
           peer_ip: "{{ ansible_default_ipv4.address }}"
@@ -106,6 +108,8 @@ provisioner:
       vault-node-2:
         vault:
           version: 2.1.1
+          # the controller downloads the zip and copies the binary here
+          install_remotely: false
           peer_ip: "{{ ansible_default_ipv4.address }}"
           # a second listener, so the per-IP listener list has two entries
           listen_ips:

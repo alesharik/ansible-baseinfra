@@ -53,7 +53,7 @@
         - vault
   vars:
     vault_version: "{{ vault.version }}"
-    vault_install_remotely: true
+    vault_install_remotely: "{{ vault.install_remotely }}"
     vault_manage_user: false
     vault_manage_group: false
     vault_user: vault

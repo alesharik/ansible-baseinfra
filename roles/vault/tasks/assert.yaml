@@ -4,13 +4,15 @@
   ansible.builtin.assert:
     that:
       - vault.version | default('') | string | length > 0
+      - vault.install_remotely is boolean
       - vault.peer_ip | default('') | length > 0
       - vault.listen_ips is sequence and vault.listen_ips is not string
       # api_addr and the vmagent target are both https://<peer_ip>:8200, so a
       # listener has to bind there
       - vault.peer_ip | default('') in vault.listen_ips
     fail_msg: >-
-      vault.version and vault.peer_ip must be set, and vault.listen_ips must be
+      vault.version and vault.peer_ip must be set, vault.install_remotely must
+      be a boolean, and vault.listen_ips must be
       a list that contains peer_ip. peer_ip is {{ vault.peer_ip | default('unset') }},
       listen_ips is {{ vault.listen_ips }}.
     quiet: true

@@ -1,6 +1,7 @@
 ---
 vault: # noqa: var-naming[no-role-prefix]
   version: 2.1.1
+  install_remotely: true
   listen_ips: []
   quorum: []
   vmagent: true
