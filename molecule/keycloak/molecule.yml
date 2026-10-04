@@ -1,0 +1,259 @@
+---
+# Two platforms, because only one arrangement of the container can be seen per
+# host:
+#
+#   kc-default  runs a copy of the role defaults plus the two passwords, which
+#               have none. tests.yml re-reads roles/keycloak/defaults/main.yaml
+#               and asserts the copy still matches.
+#   kc-custom   a fixed hostname, no proxy headers, a feature, extra JVM flags
+#               and env, a published port, a relocated compose dir, and a
+#               database with other names on another network.
+#
+# The database comes from the postgres role in prepare_tasks.yml - a running
+# service, not a meta dependency.
+platforms:
+  - name: kc-default
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+    # docker runs inside the instance; overlayfs will not stack on overlayfs.
+    volumes:
+      - /var/lib/docker
+      - /var/lib/containerd
+    keep_volumes: false
+  - name: kc-custom
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+    volumes:
+      - /var/lib/docker
+      - /var/lib/containerd
+    keep_volumes: false
+
+provisioner:
+  inventory:
+    group_vars:
+      all:
+        bootstrap:
+          disable_algif_aead: false
+          disable_transparent_huge_pages: false
+          setup_users: false
+          setup_sudo: false
+          set_hostname: true
+          limits:
+            enabled: true
+            nofile:
+              soft: 8192
+              hard: 1048576
+          swap:
+            enabled: false
+            file: /molecule_swapfile
+            size_mb: 4096
+        dir:
+          data: /data
+          ansible: /data/ansible
+
+        molecule_pg_superuser: postgres
+        molecule_pg_superuser_password: molecule-root
+
+    # expected_* values are literals, never derived from `keycloak`.
+    host_vars:
+      kc-default:
+        postgres:
+          image: postgres
+          version: "18.6"
+          username: postgres
+          password: molecule-root
+          mode: single
+          network: postgres
+          publish: []
+          config: {}
+          users:
+            - name: keycloak
+              password: molecule-kc-db
+              ip: samenet
+              privs:
+                - { db: keycloak, type: database, privs: ALL, objs: keycloak }
+                - { db: keycloak, type: schema, privs: ALL, objs: public }
+          databases:
+            - name: keycloak
+          packages: []
+          replication:
+            password: ""
+            source: ""
+            host: ""
+            port: 5432
+          upgrade_image: tianon/postgres-upgrade
+          exporter:
+            enabled: false
+            image: quay.io/prometheuscommunity/postgres-exporter
+            version: v0.20.1
+            password: ""
+          directories:
+            ansible: "{{ dir.ansible }}/postgres"
+            data: "{{ dir.data }}/postgres"
+
+        # The role defaults, with the two passwords set
+        keycloak:
+          image: quay.io/keycloak/keycloak
+          version: "26.8.0"
+          hostname: ""
+          proxy_headers: xforwarded
+          admin:
+            username: admin
+            password: molecule-admin
+          database:
+            host: postgres
+            port: 5432
+            name: keycloak
+            user: keycloak
+            password: molecule-kc-db
+          networks:
+            - "{{ postgres.network | default('postgres') }}"
+          listen_ips: []
+          features: []
+          log_level: INFO
+          console:
+            output: json
+            json_format: ecs
+          java_opts_append: ""
+          env: []
+          directories:
+            ansible: "{{ dir.ansible }}/keycloak"
+
+        expected_matches_defaults: true
+        expected_compose_dir: /data/ansible/keycloak
+        expected_container: keycloak-keycloak-1
+        expected_image: quay.io/keycloak/keycloak:26.8.0
+        expected_network: postgres
+        expected_pg_compose_dir: /data/ansible/postgres
+        expected_db_name: keycloak
+        expected_admin_user: admin
+        expected_admin_password: molecule-admin
+        expected_env_present:
+          - KC_DB=postgres
+          - KC_DB_URL=jdbc:postgresql://postgres:5432/keycloak
+          - KC_DB_USERNAME=keycloak
+          - KC_HOSTNAME_STRICT=false
+          - KC_PROXY_HEADERS=xforwarded
+          - KC_HTTP_ENABLED=true
+          - KC_HEALTH_ENABLED=true
+          - KC_METRICS_ENABLED=true
+          - KC_LOG_LEVEL=INFO
+          - KC_LOG_CONSOLE_OUTPUT=json
+          - KC_LOG_CONSOLE_JSON_FORMAT=ecs
+        expected_env_absent:
+          - KC_HOSTNAME
+          - KC_FEATURES
+          - JAVA_OPTS
+          - JAVA_OPTS_APPEND
+        expected_jvm_flags: []
+        # HostIp:HostPort, as `docker inspect` reports it
+        expected_ports: []
+        # X-Forwarded-* is trusted, so the issuer follows the headers
+        expected_issuer: https://id.forwarded.test/realms/master
+        expected_instance_label: kc-default-keycloak
+        unexpected_paths: []
+
+      kc-custom:
+        postgres:
+          image: postgres
+          version: "18.6"
+          username: postgres
+          password: molecule-root
+          mode: single
+          network: pg-kc
+          publish: []
+          config: {}
+          users:
+            - name: kcuser
+              password: molecule-kc-db-2
+              ip: samenet
+              privs:
+                - { db: kcdb, type: database, privs: ALL, objs: kcdb }
+                - { db: kcdb, type: schema, privs: ALL, objs: public }
+          databases:
+            - name: kcdb
+          packages: []
+          replication:
+            password: ""
+            source: ""
+            host: ""
+            port: 5432
+          upgrade_image: tianon/postgres-upgrade
+          exporter:
+            enabled: false
+            image: quay.io/prometheuscommunity/postgres-exporter
+            version: v0.20.1
+            password: ""
+          directories:
+            ansible: "{{ dir.ansible }}/pg-kc"
+            data: "{{ dir.data }}/pg-kc"
+
+        keycloak:
+          image: quay.io/keycloak/keycloak
+          version: "26.8.0"
+          hostname: https://kc.example.com
+          proxy_headers: ""
+          admin:
+            username: root
+            password: molecule-admin-2
+          database:
+            host: postgres
+            port: 5432
+            name: kcdb
+            user: kcuser
+            password: molecule-kc-db-2
+          networks:
+            - pg-kc
+          listen_ips:
+            - "{{ ansible_default_ipv4.address }}:8080:8080"
+          features:
+            - docker
+          log_level: WARN
+          console:
+            output: default
+            json_format: default
+          java_opts_append: "-Dmolecule.marker=yes"
+          env:
+            - KC_LOG_CONSOLE_COLOR=false
+          directories:
+            ansible: "{{ dir.ansible }}/keycloak-moved"
+
+        expected_matches_defaults: false
+        expected_compose_dir: /data/ansible/keycloak-moved
+        # compose names the project after directories.ansible, so this name
+        # also proves the move took effect
+        expected_container: keycloak-moved-keycloak-1
+        expected_image: quay.io/keycloak/keycloak:26.8.0
+        expected_network: pg-kc
+        expected_pg_compose_dir: /data/ansible/pg-kc
+        expected_db_name: kcdb
+        expected_admin_user: root
+        expected_admin_password: molecule-admin-2
+        expected_env_present:
+          - KC_DB_URL=jdbc:postgresql://postgres:5432/kcdb
+          - KC_DB_USERNAME=kcuser
+          - KC_HOSTNAME=https://kc.example.com
+          - KC_FEATURES=docker
+          - KC_LOG_LEVEL=WARN
+          - KC_LOG_CONSOLE_OUTPUT=default
+          - JAVA_OPTS_APPEND=-Dmolecule.marker=yes
+          - KC_LOG_CONSOLE_COLOR=false
+        expected_env_absent:
+          - KC_HOSTNAME_STRICT
+          - KC_PROXY_HEADERS
+          - JAVA_OPTS
+        expected_jvm_flags:
+          - -Dmolecule.marker=yes
+        expected_ports:
+          - "{{ ansible_default_ipv4.address }}:8080"
+        # the hostname is fixed, so forwarded headers change nothing
+        expected_issuer: https://kc.example.com/realms/master
+        expected_instance_label: kc-custom-keycloak-moved
+        unexpected_paths:
+          - /data/ansible/keycloak

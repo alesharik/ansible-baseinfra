@@ -1,0 +1,38 @@
+---
+keycloak: # noqa: var-naming[no-role-prefix]
+  image: quay.io/keycloak/keycloak
+  version: "26.8.0"
+  # Public URL or host name (KC_HOSTNAME). Empty turns strict hostname checks
+  # off, and keycloak then takes the host from each request.
+  hostname: ""
+  # KC_PROXY_HEADERS: xforwarded | forwarded. Empty trusts no proxy headers.
+  proxy_headers: xforwarded
+  # The temporary admin of the master realm. Keycloak reads it only while the
+  # master realm has no admin, so on an existing database a change does nothing.
+  admin:
+    username: admin
+    password: ""
+  database:
+    host: postgres
+    port: 5432
+    name: keycloak
+    user: keycloak
+    password: ""
+  # Joined, never created - the default is the network the postgres role creates.
+  networks:
+    - "{{ postgres.network | default('postgres') }}"
+  # Published ports, e.g. "127.0.0.1:8080:8080". Empty publishes nothing.
+  listen_ips: []
+  # KC_FEATURES entries, e.g. "token-exchange". Empty keeps keycloak's defaults.
+  features: []
+  log_level: INFO
+  console:
+    output: json
+    json_format: ecs
+  # Goes to JAVA_OPTS_APPEND. JAVA_OPTS itself holds the image's own flags
+  # (heap percentages, --add-opens) and is never replaced.
+  java_opts_append: ""
+  # Any other setting, as KEY=value lines
+  env: []
+  directories:
+    ansible: "{{ dir.ansible }}/keycloak"

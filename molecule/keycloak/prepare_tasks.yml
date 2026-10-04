@@ -1,0 +1,39 @@
+---
+- name: Gather facts
+  ansible.builtin.setup:
+
+# Keycloak needs a database. The postgres role brings bootstrap and docker
+# with it through its meta, and runs here with its own defaults out of scope -
+# the case the `networks` default fallback exists for.
+- name: Deploy the database keycloak points at
+  ansible.builtin.include_role:
+    name: alesharik.baseinfra.postgres
+
+# Without this, a keycloak that never reached its database would look like a
+# role failure.
+- name: Check the keycloak database exists before converge
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - "30"
+      - docker
+      - compose
+      - --project-directory
+      - "{{ postgres.directories.ansible }}"
+      - exec
+      - -T
+      - --env
+      - "PGPASSWORD={{ molecule_pg_superuser_password }}"
+      - postgres
+      - psql
+      - --no-psqlrc
+      - -tA
+      - --username
+      - "{{ molecule_pg_superuser }}"
+      - --dbname
+      - postgres
+      - -c
+      - "SELECT datname FROM pg_database WHERE datname = '{{ postgres.databases[0].name }}'"
+  register: keycloak_prepare_db
+  changed_when: false
+  failed_when: keycloak_prepare_db.stdout | trim != postgres.databases[0].name

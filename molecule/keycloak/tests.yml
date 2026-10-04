@@ -1,0 +1,301 @@
+---
+# expected_* comes from host_vars, spelled out per host rather than derived from
+# the `keycloak` dict the template reads.
+
+# compose returns before keycloak finishes its first schema migration.
+- name: Wait for the container to turn healthy
+  ansible.builtin.command: >-
+    timeout 30 docker inspect --format {{ '{{.State.Health.Status}}' }} {{ expected_container }}
+  register: keycloak_test_health
+  changed_when: false
+  retries: 60
+  delay: 5
+  until: keycloak_test_health.stdout | trim == 'healthy'
+
+- name: Inspect the container
+  ansible.builtin.command: >-
+    timeout 30 docker inspect {{ expected_container }}
+  register: keycloak_test_inspect
+  changed_when: false
+
+- name: Parse the inspect output
+  ansible.builtin.set_fact:
+    keycloak_test_info: "{{ (keycloak_test_inspect.stdout | from_json)[0] }}"
+
+- name: Check the container runs the expected image on the expected network
+  ansible.builtin.assert:
+    that:
+      - keycloak_test_info.Config.Image == expected_image
+      - keycloak_test_info.State.Running
+      - expected_network in keycloak_test_info.NetworkSettings.Networks
+      - keycloak_test_info.Config.Cmd == ['start']
+
+- name: Check env lines the role must set
+  ansible.builtin.assert:
+    that:
+      - item in keycloak_test_info.Config.Env
+    fail_msg: "container env is {{ keycloak_test_info.Config.Env }}"
+  loop: "{{ expected_env_present }}"
+
+- name: Check env lines the role must not set
+  ansible.builtin.assert:
+    that:
+      - keycloak_test_info.Config.Env | select('match', '^' ~ item ~ '=') | list | length == 0
+    fail_msg: "{{ item }} is set: {{ keycloak_test_info.Config.Env | select('match', '^' ~ item ~ '=') | list }}"
+  loop: "{{ expected_env_absent }}"
+
+- name: Check the prometheus labels
+  ansible.builtin.assert:
+    that:
+      - keycloak_test_info.Config.Labels['prometheus.io.port'] == '9000'
+      - keycloak_test_info.Config.Labels['prometheus.io.path'] == '/metrics'
+      - keycloak_test_info.Config.Labels['prometheus.io.network'] == expected_network
+      - keycloak_test_info.Config.Labels['prometheus.io.instance'] == expected_instance_label
+
+- name: Collect what the container actually published
+  vars:
+    keycloak_bindings: >-
+      {{ (keycloak_test_info.HostConfig.PortBindings | default({}, true))
+         | dict2items | map(attribute='value') | flatten }}
+  ansible.builtin.set_fact:
+    keycloak_published: >-
+      {{ (keycloak_bindings | map(attribute='HostIp') | list)
+         | zip(keycloak_bindings | map(attribute='HostPort') | list)
+         | map('join', ':') | list | sort }}
+
+- name: Check the published ports
+  ansible.builtin.assert:
+    that:
+      - keycloak_published == (expected_ports | sort)
+    fail_msg: "published {{ keycloak_published }}, expected {{ expected_ports | sort }}"
+
+# JAVA_OPTS holds the image's own flags. java_opts_append must add to them,
+# never replace them.
+- name: Read the JVM command line, one argument per line
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - "30"
+      - docker
+      - exec
+      - "{{ expected_container }}"
+      - bash
+      - -c
+      - tr '\0' '\n' < /proc/1/cmdline
+  register: keycloak_test_cmdline
+  changed_when: false
+
+- name: Check the image's JVM flags survived and the extra ones arrived
+  vars:
+    keycloak_jvm: "{{ keycloak_test_cmdline.stdout_lines }}"
+  ansible.builtin.assert:
+    that:
+      - "'-XX:MaxRAMPercentage=70' in keycloak_jvm"
+      - "'--add-opens=java.base/java.util=ALL-UNNAMED' in keycloak_jvm"
+      - expected_jvm_flags | difference(keycloak_jvm) | length == 0
+    fail_msg: "JVM command line is {{ keycloak_jvm }}"
+
+- name: Read the compose file
+  ansible.builtin.stat:
+    path: "{{ expected_compose_dir }}/docker-compose.yml"
+  register: keycloak_test_compose
+
+# It holds the database and admin passwords.
+- name: Check the compose file is readable by root only
+  ansible.builtin.assert:
+    that:
+      - keycloak_test_compose.stat.exists
+      - keycloak_test_compose.stat.mode == '0600'
+
+- name: Log in as the bootstrap admin
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - "60"
+      - docker
+      - exec
+      - "{{ expected_container }}"
+      - /opt/keycloak/bin/kcadm.sh
+      - config
+      - credentials
+      - --config
+      - /tmp/kcadm.config
+      - --server
+      - http://127.0.0.1:8080
+      - --realm
+      - master
+      - --user
+      - "{{ expected_admin_user }}"
+      - --password
+      - "{{ expected_admin_password }}"
+  changed_when: false
+
+- name: Check a wrong admin password is refused
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - "60"
+      - docker
+      - exec
+      - "{{ expected_container }}"
+      - /opt/keycloak/bin/kcadm.sh
+      - config
+      - credentials
+      - --config
+      - /tmp/kcadm.config
+      - --server
+      - http://127.0.0.1:8080
+      - --realm
+      - master
+      - --user
+      - "{{ expected_admin_user }}"
+      - --password
+      - wrong-password
+  register: keycloak_test_bad_login
+  changed_when: false
+  failed_when: >-
+    keycloak_test_bad_login.rc == 0
+    or 'invalid_grant' not in keycloak_test_bad_login.stderr ~ keycloak_test_bad_login.stdout
+
+# The image has no curl or wget, so bash speaks HTTP/1.0 itself. The forwarded
+# headers show whether proxy_headers and hostname reached keycloak.
+- name: Read the OIDC discovery document with forwarded headers
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - "30"
+      - docker
+      - exec
+      - "{{ expected_container }}"
+      - bash
+      - -c
+      - >-
+        exec 3<>/dev/tcp/127.0.0.1/8080 &&
+        printf "%s\r\n"
+        "GET /realms/master/.well-known/openid-configuration HTTP/1.0"
+        "Host: 127.0.0.1:8080"
+        "X-Forwarded-Host: id.forwarded.test"
+        "X-Forwarded-Proto: https"
+        "" >&3 &&
+        cat <&3
+  register: keycloak_test_oidc
+  changed_when: false
+
+# The body is the only JSON in the response, so it starts at the first brace.
+- name: Check the issuer
+  vars:
+    keycloak_oidc_body: "{{ keycloak_test_oidc.stdout | regex_search('(?s)[{].*') }}"
+  ansible.builtin.assert:
+    that:
+      - "' 200 ' in keycloak_test_oidc.stdout_lines[0]"
+      - (keycloak_oidc_body | from_json).issuer == expected_issuer
+    fail_msg: "{{ keycloak_test_oidc.stdout }}"
+
+- name: Read the metrics endpoint
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - "30"
+      - docker
+      - exec
+      - "{{ expected_container }}"
+      - bash
+      - -c
+      - >-
+        exec 3<>/dev/tcp/127.0.0.1/9000 &&
+        printf "GET /metrics HTTP/1.0\r\n\r\n" >&3 &&
+        cat <&3
+  register: keycloak_test_metrics
+  changed_when: false
+  failed_when: >-
+    ' 200 ' not in keycloak_test_metrics.stdout_lines[0]
+    or 'jvm_' not in keycloak_test_metrics.stdout
+
+# The schema in the database named in expected_db_name proves keycloak used
+# the URL the role rendered, not some default.
+- name: Read the realms out of the keycloak database
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - "30"
+      - docker
+      - compose
+      - --project-directory
+      - "{{ expected_pg_compose_dir }}"
+      - exec
+      - -T
+      - --env
+      - "PGPASSWORD={{ molecule_pg_superuser_password }}"
+      - postgres
+      - psql
+      - --no-psqlrc
+      - -tA
+      - --username
+      - "{{ molecule_pg_superuser }}"
+      - --dbname
+      - "{{ expected_db_name }}"
+      - -c
+      - SELECT name FROM realm
+  register: keycloak_test_realms
+  changed_when: false
+  failed_when: "'master' not in keycloak_test_realms.stdout_lines"
+
+- name: Check paths the role must not create
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: keycloak_test_unexpected
+  loop: "{{ unexpected_paths }}"
+
+- name: Assert those paths are absent
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists
+    fail_msg: "{{ item.item }} exists"
+  loop: "{{ keycloak_test_unexpected.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Read the published role defaults
+  ansible.builtin.slurp:
+    src: "{{ playbook_dir }}/../roles/keycloak/defaults/main.yaml"
+  delegate_to: localhost
+  become: false
+  register: keycloak_test_defaults
+  when: expected_matches_defaults
+
+# kc-default runs a copy of the defaults. The two passwords differ on purpose:
+# the role has no default for them.
+- name: Check this host's dict still matches the published defaults
+  vars:
+    keycloak_role_defaults: "{{ (keycloak_test_defaults.content | b64decode | from_yaml).keycloak }}"
+  ansible.builtin.assert:
+    that:
+      - keycloak.image == keycloak_role_defaults.image
+      - keycloak.version == keycloak_role_defaults.version
+      - keycloak.hostname == keycloak_role_defaults.hostname
+      - keycloak.proxy_headers == keycloak_role_defaults.proxy_headers
+      - keycloak.admin.username == keycloak_role_defaults.admin.username
+      - keycloak.database.host == keycloak_role_defaults.database.host
+      - keycloak.database.port == keycloak_role_defaults.database.port
+      - keycloak.database.name == keycloak_role_defaults.database.name
+      - keycloak.database.user == keycloak_role_defaults.database.user
+      - keycloak.listen_ips == keycloak_role_defaults.listen_ips
+      - keycloak.features == keycloak_role_defaults.features
+      - keycloak.log_level == keycloak_role_defaults.log_level
+      - keycloak.console == keycloak_role_defaults.console
+      - keycloak.java_opts_append == keycloak_role_defaults.java_opts_append
+      - keycloak.env == keycloak_role_defaults.env
+      # Templated keys: slurped YAML is never re-templated, so check the
+      # rendered value here and the expression in the published file.
+      - keycloak.networks == ['postgres']
+      - keycloak_role_defaults.networks | length == 1
+      - "'postgres.network' in keycloak_role_defaults.networks[0]"
+      - keycloak.directories.ansible == '/data/ansible/keycloak'
+      - "'dir.ansible' in keycloak_role_defaults.directories.ansible"
+      - keycloak_role_defaults.directories.ansible.endswith('/keycloak')
+      - keycloak.keys() | sort == keycloak_role_defaults.keys() | sort
+    fail_msg: >-
+      This host pins the role defaults, but its `keycloak` dict no longer
+      matches roles/keycloak/defaults/main.yaml. Update the copy in
+      molecule/keycloak/molecule.yml.
+  when: expected_matches_defaults

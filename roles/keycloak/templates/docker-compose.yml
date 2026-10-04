@@ -1,0 +1,80 @@
+#jinja2: trim_blocks: True, lstrip_blocks: True
+{% set kc_networks = keycloak.networks | default([]) %}
+{% set kc_db = keycloak.database %}
+{% if kc_networks | length > 0 %}
+{# Joined, not created: every one of these belongs to somebody else. #}
+networks:
+{% for kc_net in kc_networks %}
+  "{{ kc_net }}":
+    name: "{{ kc_net }}"
+    external: true
+{% endfor %}
+{% endif %}
+services:
+  keycloak:
+    image: "{{ keycloak.image }}:{{ keycloak.version }}"
+    restart: unless-stopped
+    # `start` builds and migrates the schema by itself on every boot.
+    command: ["start"]
+    # A list, not a mapping: `env` lines are already KEY=value, and compose
+    # takes one style or the other, not both in one service.
+    environment:
+      - "KC_DB=postgres"
+      - "KC_DB_URL=jdbc:postgresql://{{ kc_db.host }}:{{ kc_db.port }}/{{ kc_db.name }}"
+      - "KC_DB_USERNAME={{ kc_db.user }}"
+      - "KC_DB_PASSWORD={{ kc_db.password }}"
+      - "KC_BOOTSTRAP_ADMIN_USERNAME={{ keycloak.admin.username }}"
+      - "KC_BOOTSTRAP_ADMIN_PASSWORD={{ keycloak.admin.password }}"
+{% if keycloak.hostname | length > 0 %}
+      - "KC_HOSTNAME={{ keycloak.hostname }}"
+{% else %}
+      - "KC_HOSTNAME_STRICT=false"
+{% endif %}
+{% if keycloak.proxy_headers | length > 0 %}
+      - "KC_PROXY_HEADERS={{ keycloak.proxy_headers }}"
+{% endif %}
+      - "KC_HTTP_ENABLED=true"
+      - "KC_HEALTH_ENABLED=true"
+      - "KC_METRICS_ENABLED=true"
+{% if keycloak.features | length > 0 %}
+      - "KC_FEATURES={{ keycloak.features | join(',') }}"
+{% endif %}
+      - "KC_LOG_LEVEL={{ keycloak.log_level }}"
+      - "KC_LOG_CONSOLE_OUTPUT={{ keycloak.console.output }}"
+      - "KC_LOG_CONSOLE_JSON_FORMAT={{ keycloak.console.json_format }}"
+      - "KC_LOG_ASYNC=true"
+{% if keycloak.java_opts_append | length > 0 %}
+      - "JAVA_OPTS_APPEND={{ keycloak.java_opts_append }}"
+{% endif %}
+{% for kc_env in keycloak.env %}
+      - "{{ kc_env }}"
+{% endfor %}
+{% if keycloak.listen_ips | length > 0 %}
+    ports:
+{% for kc_listen in keycloak.listen_ips %}
+      - "{{ kc_listen }}"
+{% endfor %}
+{% endif %}
+{% if kc_networks | length > 0 %}
+    networks:
+{% for kc_net in kc_networks %}
+      - "{{ kc_net }}"
+{% endfor %}
+{% endif %}
+    healthcheck:
+      # The image has neither curl nor wget, so bash talks HTTP itself to the
+      # management port. /health/ready turns 200 once the schema is migrated.
+      test: ["CMD", "bash", "-c", 'exec 3<>/dev/tcp/127.0.0.1/9000 && printf "GET /health/ready HTTP/1.0\r\n\r\n" >&3 && head -n 1 <&3 | grep -q " 200 "']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+      start_interval: 5s
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+      prometheus.io.path: /metrics
+      prometheus.io.port: 9000
+{% if kc_networks | length > 0 %}
+      prometheus.io.network: "{{ kc_networks[0] }}"
+{% endif %}
+      prometheus.io.instance: "{{ ansible_hostname }}-{{ keycloak.directories.ansible | basename }}"

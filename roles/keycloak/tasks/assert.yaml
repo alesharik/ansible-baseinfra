@@ -1,0 +1,31 @@
+---
+- name: Check the required passwords are set
+  tags: keycloak
+  ansible.builtin.assert:
+    that:
+      - keycloak.database.password | length > 0
+      - keycloak.admin.password | length > 0
+    fail_msg: >-
+      keycloak.database.password and keycloak.admin.password have no default.
+      Set both.
+
+- name: Check the list vars are lists
+  tags: keycloak
+  ansible.builtin.assert:
+    that:
+      - keycloak[item] is sequence and keycloak[item] is not string
+    fail_msg: "keycloak.{{ item }} must be a list, got {{ keycloak[item] }}"
+  loop:
+    - networks
+    - listen_ips
+    - features
+    - env
+
+- name: Check the proxy headers mode
+  tags: keycloak
+  ansible.builtin.assert:
+    that:
+      - keycloak.proxy_headers in ['', 'xforwarded', 'forwarded']
+    fail_msg: >-
+      keycloak.proxy_headers is {{ keycloak.proxy_headers }}. Use xforwarded,
+      forwarded, or an empty string.

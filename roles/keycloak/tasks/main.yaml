@@ -1,0 +1,40 @@
+---
+- name: Check the keycloak settings
+  tags: keycloak
+  ansible.builtin.include_tasks: assert.yaml
+
+- name: Create compose dir
+  tags: keycloak
+  ansible.builtin.file:
+    path: "{{ keycloak.directories.ansible }}"
+    state: directory
+    mode: "0755"
+
+# 0600: the database and admin passwords are in the environment block.
+- name: Move compose files
+  tags: keycloak
+  ansible.builtin.template:
+    src: docker-compose.yml
+    dest: "{{ keycloak.directories.ansible }}/docker-compose.yml"
+    mode: "0600"
+  notify:
+    - restart keycloak
+
+# Pull separately: on an up that also pulls, compose 5.4.0 labels the container
+# with the local image ID, then recreates it once on the next up.
+- name: Pull keycloak image
+  tags: keycloak
+  community.docker.docker_compose_v2_pull:
+    project_src: "{{ keycloak.directories.ansible }}"
+    policy: missing
+
+- name: Start keycloak
+  tags: keycloak
+  community.docker.docker_compose_v2:
+    project_src: "{{ keycloak.directories.ansible }}"
+    state: present
+    remove_orphans: true
+
+- name: Make sure handlers are flushed immediately
+  tags: keycloak
+  ansible.builtin.meta: flush_handlers
