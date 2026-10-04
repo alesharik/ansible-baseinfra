@@ -1,0 +1,466 @@
+---
+# ==========================================================================
+# Both hosts - what the role wrote to disk
+# ==========================================================================
+- name: Stat the key material the role generated
+  ansible.builtin.stat:
+    path: "{{ expected_tls_dir }}/{{ item.name }}"
+  register: vault_key_material
+  loop:
+    - {name: ca.pem, mode: "0444"}
+    - {name: server.cer, mode: "0444"}
+    - {name: server.key, mode: "0400"}
+  loop_control:
+    label: "{{ item.name }}"
+
+# vault runs as the vault user, so material it cannot open fails as a service
+# stuck restarting. The key must not be readable by anyone else.
+- name: Check every file is present, owned by vault and correctly moded
+  ansible.builtin.assert:
+    that:
+      - item.stat.isreg
+      - item.stat.mode == item.item.mode
+      - item.stat.pw_name == 'vault'
+    fail_msg: "{{ item.item.name }} is {{ item.stat }}"
+  loop: "{{ vault_key_material.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Stat the raft data dir
+  ansible.builtin.stat:
+    path: "{{ expected_data_dir }}"
+  register: vault_data_dir
+
+- name: Check the raft data dir is owned by vault
+  ansible.builtin.assert:
+    that:
+      - vault_data_dir.stat.isdir
+      - vault_data_dir.stat.pw_name == 'vault'
+    fail_msg: "data dir is {{ vault_data_dir.stat }}"
+
+- name: Read the server certificate
+  community.crypto.x509_certificate_info:
+    path: "{{ expected_tls_dir }}/server.cer"
+  register: vault_server_cert
+
+# The peer reaches this member at its own address, so a SAN missing there is
+# exactly what leaves retry_join failing while both services look healthy.
+- name: Check the server certificate is issued by our CA for every listen address
+  vars:
+    expected_sans: >-
+      {{ (['IP:' ~ ansible_default_ipv4.address]
+          + (expected_extra_listeners | map('regex_replace', '^', 'IP:') | list)) | sort }}
+  ansible.builtin.assert:
+    that:
+      - vault_server_cert.subject_alt_name | sort == expected_sans
+      - vault_server_cert.issuer.commonName == 'Vault CA'
+      - vault_server_cert.issuer.organizationName == 'Vault'
+      - vault_server_cert.subject.commonName == expected_member_name
+      - vault_server_cert.subject.organizationalUnitName == 'Vault'
+    fail_msg: "server cert {{ vault_server_cert }}"
+
+- name: Stat the CLI client material in the vault home
+  ansible.builtin.stat:
+    path: "/home/vault/{{ item.name }}"
+  register: vault_cli_material
+  loop:
+    - {name: vault.cer, mode: "0444"}
+    - {name: vault.key, mode: "0400"}
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Check the CLI client material is owned by vault
+  ansible.builtin.assert:
+    that:
+      - item.stat.isreg
+      - item.stat.mode == item.item.mode
+      - item.stat.pw_name == 'vault'
+    fail_msg: "{{ item.item.name }} is {{ item.stat }}"
+  loop: "{{ vault_cli_material.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Read the vault user's dotfile
+  ansible.builtin.slurp:
+    src: /home/vault/.bashrc
+  register: vault_dotfile_raw
+
+# Two lines come from the upstream role, two from this one. All four are what
+# lets an operator run the CLI as vault with no extra flags.
+- name: Check the dotfile exports everything the CLI needs
+  vars:
+    dotfile: "{{ (vault_dotfile_raw.content | b64decode).splitlines() }}"
+  ansible.builtin.assert:
+    that:
+      - ("export VAULT_ADDR='https://" ~ ansible_default_ipv4.address ~ ":8200'") in dotfile
+      - ("export VAULT_CACERT=" ~ expected_tls_dir ~ "/ca.pem") in dotfile
+      - "\"export VAULT_CLIENT_CERT='/home/vault/vault.cer'\" in dotfile"
+      - "\"export VAULT_CLIENT_KEY='/home/vault/vault.key'\" in dotfile"
+    fail_msg: "dotfile is {{ dotfile }}"
+
+- name: Read the sudoers rule
+  ansible.builtin.slurp:
+    src: /etc/sudoers.d/vault-access
+  register: vault_sudoers_raw
+
+- name: Check the sudo group may run commands as vault
+  ansible.builtin.assert:
+    that:
+      - "'%sudo ALL=(vault)NOPASSWD: ALL' in (vault_sudoers_raw.content | b64decode)"
+    fail_msg: "sudoers rule is {{ vault_sudoers_raw.content | b64decode }}"
+
+# ==========================================================================
+# Both hosts - the rendered vault configuration
+# ==========================================================================
+- name: Read the rendered vault configuration
+  ansible.builtin.slurp:
+    src: /etc/vault.d/vault_main.hcl
+  register: vault_config_raw
+
+# Built from the gathered facts of both hosts, an independent source from the
+# vault.peer_ip the role consumes.
+- name: Check the configuration wires up raft, mTLS and the listeners
+  vars:
+    config: "{{ vault_config_raw.content | b64decode }}"
+    own_ip: "{{ ansible_default_ipv4.address }}"
+    other: "{{ (['vault-node-1', 'vault-node-2'] | difference([inventory_hostname])) | first }}"
+    other_ip: "{{ hostvars[other].ansible_default_ipv4.address }}"
+  ansible.builtin.assert:
+    that:
+      - ('api_addr = "https://' ~ own_ip ~ ':8200"') in config
+      - ('cluster_addr = "https://' ~ own_ip ~ ':8201"') in config
+      - ('address = "' ~ own_ip ~ ':8200"') in config
+      - ('cluster_address = "' ~ own_ip ~ ':8201"') in config
+      - ('tls_cert_file = "' ~ expected_tls_dir ~ '/server.cer"') in config
+      - ('tls_key_file = "' ~ expected_tls_dir ~ '/server.key"') in config
+      - ('tls_client_ca_file="' ~ expected_tls_dir ~ '/ca.pem"') in config
+      - config is search('tls_require_and_verify_client_cert = true')
+      - config is search('unauthenticated_metrics_access = "true"')
+      - config is search('prometheus_retention_time = "12h"')
+      - ('path = "' ~ expected_data_dir ~ '"') in config
+      # one retry_join for the other member, none for this one
+      - ('leader_api_addr = "https://' ~ other_ip ~ ':8200"') in config
+      - ('leader_api_addr = "https://' ~ own_ip ~ ':8200"') not in config
+      - ('leader_client_cert_file = "' ~ expected_tls_dir ~ '/server.cer"') in config
+      # one listener stanza for each listen address
+      - config | regex_findall('listener "tcp"') | length == 1 + (expected_extra_listeners | length)
+    fail_msg: "rendered config is {{ config }}"
+
+- name: Check every extra listen address has its own listener
+  vars:
+    config: "{{ vault_config_raw.content | b64decode }}"
+  ansible.builtin.assert:
+    that:
+      - ('address = "' ~ item ~ ':8200"') in config
+      - ('cluster_address = "' ~ item ~ ':8201"') in config
+    fail_msg: "rendered config is {{ config }}"
+  loop: "{{ expected_extra_listeners }}"
+
+# ==========================================================================
+# Both hosts - the running service
+# ==========================================================================
+- name: Ask systemd whether vault is running  # noqa: command-instead-of-module
+  ansible.builtin.command: systemctl is-active vault
+  register: vault_active
+  changed_when: false
+  failed_when: false
+
+- name: Check vault is running
+  ansible.builtin.assert:
+    that:
+      - vault_active.stdout == 'active'
+    fail_msg: "vault is {{ vault_active.stdout }}"
+
+# The CLI runs as the vault user, with the same values the dotfile exports, so
+# a passing call also proves that user can read its own client key.
+- name: Build the environment the vault CLI runs with
+  ansible.builtin.set_fact:
+    vault_cli_env:
+      VAULT_ADDR: "https://{{ ansible_default_ipv4.address }}:8200"
+      VAULT_CACERT: "{{ expected_tls_dir }}/ca.pem"
+      VAULT_CLIENT_CERT: /home/vault/vault.cer
+      VAULT_CLIENT_KEY: /home/vault/vault.key
+
+# The listener requires a client certificate, so a request without one must
+# fail in the TLS handshake. A 2xx or 5xx answer here means mTLS is off.
+- name: Call the API without a client certificate
+  ansible.builtin.uri:
+    url: "https://{{ ansible_default_ipv4.address }}:8200/v1/sys/health"
+    ca_path: "{{ expected_tls_dir }}/ca.pem"
+  register: vault_no_client_cert
+  failed_when: false
+
+- name: Check the listener refused it
+  ansible.builtin.assert:
+    that:
+      - vault_no_client_cert.status == -1
+    fail_msg: "the listener answered without a client certificate: {{ vault_no_client_cert }}"
+
+# ==========================================================================
+# The cluster - init and unseal node-1, then unseal node-2 so it joins
+# ==========================================================================
+- name: Ask node-1 whether vault is initialized
+  ansible.builtin.command:
+    argv: [runuser, -u, vault, --, /usr/local/bin/vault, operator, init, -status]
+  environment: "{{ vault_cli_env }}"
+  register: vault_init_status
+  changed_when: false
+  # 0 initialized, 2 not initialized
+  failed_when: vault_init_status.rc not in [0, 2]
+  retries: 12
+  delay: 5
+  until: vault_init_status.rc in [0, 2]
+  when: inventory_hostname == 'vault-node-1'
+
+# One key share keeps the test short. The output is kept on node-1, so a
+# second verify run can unseal again.
+- name: Initialize vault on node-1
+  ansible.builtin.command:
+    argv:
+      - runuser
+      - -u
+      - vault
+      - --
+      - /usr/local/bin/vault
+      - operator
+      - init
+      - -key-shares=1
+      - -key-threshold=1
+      - -format=json
+  environment: "{{ vault_cli_env }}"
+  register: vault_init
+  changed_when: true
+  when:
+    - inventory_hostname == 'vault-node-1'
+    - vault_init_status.rc == 2
+
+- name: Keep the init output
+  ansible.builtin.copy:
+    content: "{{ vault_init.stdout }}"
+    dest: "{{ molecule_vault_init_file }}"
+    mode: "0600"
+  when:
+    - inventory_hostname == 'vault-node-1'
+    - vault_init is changed
+
+- name: Read the init output
+  ansible.builtin.slurp:
+    src: "{{ molecule_vault_init_file }}"
+  register: vault_init_raw
+  when: inventory_hostname == 'vault-node-1'
+
+- name: Remember the unseal key and the root token
+  ansible.builtin.set_fact:
+    vault_init_data: "{{ vault_init_raw.content | b64decode | from_json }}"
+  when: inventory_hostname == 'vault-node-1'
+
+- name: Unseal node-1
+  ansible.builtin.command:
+    argv:
+      - runuser
+      - -u
+      - vault
+      - --
+      - /usr/local/bin/vault
+      - operator
+      - unseal
+      - -format=json
+      - "{{ vault_init_data.unseal_keys_b64[0] }}"
+  environment: "{{ vault_cli_env }}"
+  register: vault_unseal_1
+  changed_when: true
+  retries: 12
+  delay: 5
+  until:
+    - vault_unseal_1.rc == 0
+    - not (vault_unseal_1.stdout | from_json).sealed
+  when: inventory_hostname == 'vault-node-1'
+
+# node-2 is not initialized on its own. Its retry_join reaches node-1 over
+# mTLS, and the unseal key decrypts the join challenge - so this only succeeds
+# when the member really joined the cluster of node-1.
+- name: Unseal node-2 with the key of the cluster
+  ansible.builtin.command:
+    argv:
+      - runuser
+      - -u
+      - vault
+      - --
+      - /usr/local/bin/vault
+      - operator
+      - unseal
+      - -format=json
+      - "{{ hostvars['vault-node-1'].vault_init_data.unseal_keys_b64[0] }}"
+  environment: "{{ vault_cli_env }}"
+  register: vault_unseal_2
+  changed_when: true
+  failed_when: false
+  retries: 30
+  delay: 5
+  until:
+    - vault_unseal_2.rc == 0
+    - not (vault_unseal_2.stdout | from_json).sealed
+  when: inventory_hostname == 'vault-node-2'
+
+- name: Check node-2 is unsealed
+  ansible.builtin.assert:
+    that:
+      - vault_unseal_2.rc == 0
+      - not (vault_unseal_2.stdout | from_json).sealed
+    fail_msg: "node-2 unseal returned rc {{ vault_unseal_2.rc }}: {{ vault_unseal_2.stdout }} {{ vault_unseal_2.stderr }}"
+  when: inventory_hostname == 'vault-node-2'
+
+- name: List the raft peers
+  ansible.builtin.command:
+    argv: [runuser, -u, vault, --, /usr/local/bin/vault, operator, raft, list-peers, -format=json]
+  environment: "{{ vault_cli_env | combine({'VAULT_TOKEN': vault_init_data.root_token}) }}"
+  register: vault_peers
+  changed_when: false
+  retries: 30
+  delay: 5
+  until:
+    - vault_peers.rc == 0
+    - (vault_peers.stdout | from_json).data.config.servers | selectattr('voter') | list | length == 2
+  when: inventory_hostname == 'vault-node-1'
+
+- name: Check both members are voters at their cluster addresses
+  vars:
+    servers: "{{ (vault_peers.stdout | from_json).data.config.servers }}"
+    node1_ip: "{{ hostvars['vault-node-1'].ansible_default_ipv4.address }}"
+    node2_ip: "{{ hostvars['vault-node-2'].ansible_default_ipv4.address }}"
+  ansible.builtin.assert:
+    that:
+      - servers | map(attribute='node_id') | sort == ['vault-node-1', 'vault-node-2']
+      - servers | selectattr('voter') | list | length == 2
+      - >-
+        servers | selectattr('node_id', 'eq', 'vault-node-1') | map(attribute='address')
+        | first == node1_ip ~ ':8201'
+      - >-
+        servers | selectattr('node_id', 'eq', 'vault-node-2') | map(attribute='address')
+        | first == node2_ip ~ ':8201'
+    fail_msg: "raft peers are {{ servers }}"
+  when: inventory_hostname == 'vault-node-1'
+
+- name: Read the status of node-2
+  ansible.builtin.command:
+    argv: [runuser, -u, vault, --, /usr/local/bin/vault, status, -format=json]
+  environment: "{{ vault_cli_env }}"
+  register: vault_status_2
+  changed_when: false
+  when: inventory_hostname == 'vault-node-2'
+
+- name: Check node-2 is a standby that follows node-1
+  vars:
+    status: "{{ vault_status_2.stdout | from_json }}"
+  ansible.builtin.assert:
+    that:
+      - not status.sealed
+      - status.ha_enabled
+      - not status.is_self | default(false)
+      - status.leader_address == 'https://' ~ hostvars['vault-node-1'].ansible_default_ipv4.address ~ ':8200'
+    fail_msg: "node-2 status is {{ status }}"
+  when: inventory_hostname == 'vault-node-2'
+
+# The second listener answers too, with the same certificate.
+- name: Read the status through every extra listener
+  ansible.builtin.command:
+    argv: [runuser, -u, vault, --, /usr/local/bin/vault, status, -format=json]
+  environment: "{{ vault_cli_env | combine({'VAULT_ADDR': 'https://' ~ item ~ ':8200'}) }}"
+  register: vault_extra_status
+  changed_when: false
+  loop: "{{ expected_extra_listeners }}"
+
+# ==========================================================================
+# Both hosts - the vmagent drop. node-1 got it at converge, node-2 only after
+# side_effect.yml created the conf.d the role refuses to create itself.
+# ==========================================================================
+- name: Stat the files the role wrote into the vmagent conf.d
+  ansible.builtin.stat:
+    path: "{{ molecule_vmagent_conf_dir }}/{{ item.name }}"
+  register: vault_vmagent_files
+  loop:
+    - {name: vault.yml, mode: "0444"}
+    - {name: vault.cer, mode: "0444"}
+    - {name: vault-ca.cer, mode: "0444"}
+    - {name: vault.key, mode: "0400"}
+  loop_control:
+    label: "{{ item.name }}"
+
+# uid 0: these are read by the vmagent container, never by vault
+- name: Check the scrape config and the client certificate landed correctly
+  ansible.builtin.assert:
+    that:
+      - item.stat.isreg
+      - item.stat.mode == item.item.mode
+      - item.stat.uid == 0
+    fail_msg: "{{ item.item.name }} is {{ item.stat }}"
+  loop: "{{ vault_vmagent_files.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Read the rendered scrape config
+  ansible.builtin.slurp:
+    src: "{{ molecule_vmagent_conf_dir }}/vault.yml"
+  register: vault_scrape_raw
+
+- name: Check the scrape config points vmagent at this member over mTLS
+  vars:
+    scrape: "{{ (vault_scrape_raw.content | b64decode | from_yaml)[0] }}"
+  ansible.builtin.assert:
+    that:
+      - scrape.job_name == 'vault'
+      - scrape.metrics_path == '/v1/sys/metrics'
+      - scrape.params.format == ['prometheus']
+      - scrape.scheme == 'https'
+      - scrape.static_configs[0].targets == [ansible_default_ipv4.address ~ ':8200']
+      - scrape.static_configs[0].labels.instance == expected_member_name
+      # no token - metrics need only the client certificate
+      - scrape.authorization is not defined
+      - scrape.tls_config.cert_file == '/etc/vmagent/conf.d/vault.cer'
+      - scrape.tls_config.key_file == '/etc/vmagent/conf.d/vault.key'
+      - scrape.tls_config.ca_file == '/etc/vmagent/conf.d/vault-ca.cer'
+    fail_msg: "rendered scrape config is {{ scrape }}"
+
+# Scraped the way vmagent would: same certificate, same CA, no token, no
+# redirects. Both the active node and the standby must answer.
+- name: Scrape this member's metrics with the certificate the role issued
+  ansible.builtin.uri:
+    url: "https://{{ ansible_default_ipv4.address }}:8200/v1/sys/metrics?format=prometheus"
+    client_cert: "{{ molecule_vmagent_conf_dir }}/vault.cer"
+    client_key: "{{ molecule_vmagent_conf_dir }}/vault.key"
+    ca_path: "{{ molecule_vmagent_conf_dir }}/vault-ca.cer"
+    follow_redirects: none
+    return_content: true
+  register: vault_metrics
+  retries: 12
+  delay: 5
+  until:
+    - vault_metrics.status == 200
+    - "'vault_core_unsealed' in vault_metrics.content"
+
+- name: Check the member reports itself unsealed on its metrics endpoint
+  ansible.builtin.assert:
+    that:
+      - vault_metrics.content is search('(?m)^vault_core_unsealed(\{[^}]*\})? 1$')
+    fail_msg: "metrics did not show an unsealed member"
+
+# ==========================================================================
+# vault-node-2 - relocated directories
+# ==========================================================================
+- name: Stat the paths this host relocated away from
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: vault_unexpected
+  # default([]) because a loop is expanded before `when` is consulted
+  loop: "{{ unexpected_paths | default([]) }}"
+  when: unexpected_paths is defined
+
+- name: Check the default paths were left alone
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists
+    fail_msg: "{{ item.item }} exists, so directories did not move"
+  loop: "{{ vault_unexpected.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: unexpected_paths is defined

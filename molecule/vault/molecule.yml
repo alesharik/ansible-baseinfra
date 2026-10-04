@@ -1,0 +1,138 @@
+---
+# Two platforms forming ONE raft cluster. Each member renders a retry_join
+# stanza for the other one from hostvars, and both server certificates come
+# from a single CA on the controller. Neither is exercised by a one-member
+# cluster - a second voter that joins over mTLS is.
+#
+# The two hosts also split the option matrix:
+#   vault-node-1  default tls and data directories, one listener, vmagent
+#                 conf.d pre-created by prepare_tasks.yml
+#   vault-node-2  relocated tls and data directories, a second listener on
+#                 127.0.0.1, and vmagent conf.d ABSENT at converge - that covers
+#                 the skip guard. side_effect.yml then creates it and re-runs
+#                 the role.
+#
+# Vault runs as a systemd service, not in docker, so these instances need no
+# docker-in-docker volumes.
+platforms:
+  - name: vault-node-1
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+  - name: vault-node-2
+    image: dokken/debian-13
+    pre_build_image: true
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroup_parent: docker.slice
+
+provisioner:
+  env:
+    # prepare_tasks.yml installs the upstream ansible-community.ansible-vault
+    # role here. Not through the molecule dependency step: ansible-compat puts
+    # <project>/roles first on the roles path, so ansible-galaxy would install
+    # it into this repo.
+    ANSIBLE_ROLES_PATH: ${MOLECULE_EPHEMERAL_DIRECTORY}/roles
+  inventory:
+    group_vars:
+      all:
+        # vault's meta pulls in bootstrap. `bootstrap` is a wholesale override,
+        # so every key the role reads has to be listed here.
+        bootstrap:
+          # would reach the host kernel through the privileged container
+          disable_algif_aead: false
+          disable_transparent_huge_pages: false
+          setup_users: false
+          # the role writes a sudoers rule, so sudo has to be installed
+          setup_sudo: true
+          # retry_join and the certificate CN use the instance names
+          set_hostname: true
+          limits:
+            enabled: true
+            nofile:
+              soft: 8192
+              hard: 1048576
+          swap:
+            enabled: false
+            # NOT /swapfile: /proc/swaps is not namespaced
+            file: /molecule_swapfile
+            size_mb: 4096
+        dir:
+          data: /data
+          ansible: /data/ansible
+
+        # Where both hosts point `directories.vmagent_conf`. Owned by the vmagent
+        # role, which is not in this play.
+        molecule_vmagent_conf_dir: /data/ansible/vmagent/config/conf.d
+        # Written by tests.yml on node-1 after `vault operator init`, so a
+        # second verify run reuses the same unseal key and root token.
+        molecule_vault_init_file: /root/molecule-vault-init.json
+
+    # expected_* is what tests.yml asserts against, spelled out per host rather
+    # than derived from `vault`.
+    host_vars:
+      vault-node-1:
+        vault:
+          version: 2.1.1
+          # the instance address on the molecule network. Both members dial
+          # each other there, so the server certificate is issued for it too
+          peer_ip: "{{ ansible_default_ipv4.address }}"
+          listen_ips:
+            - "{{ ansible_default_ipv4.address }}"
+          quorum:
+            - vault-node-1
+            - vault-node-2
+          vmagent: true
+          pki:
+            organization: Vault
+            organizational_unit: Vault
+          directories:
+            # NOT the role default of "{{ playbook_dir }}/certs/vault" - that is
+            # inside this repo. The CA is shared by both members, so it has to
+            # be one path on the controller.
+            ca: "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/certs/vault"
+            tls: /etc/vault/tls
+            data: /var/vault
+            vmagent_conf: "{{ dir.ansible }}/vmagent/config/conf.d"
+
+        expected_member_name: vault-node-1
+        expected_tls_dir: /etc/vault/tls
+        expected_data_dir: /var/vault
+        # listener addresses besides the instance address
+        expected_extra_listeners: []
+
+      vault-node-2:
+        vault:
+          version: 2.1.1
+          peer_ip: "{{ ansible_default_ipv4.address }}"
+          # a second listener, so the per-IP listener list has two entries
+          listen_ips:
+            - "{{ ansible_default_ipv4.address }}"
+            - 127.0.0.1
+          quorum:
+            - vault-node-1
+            - vault-node-2
+          # true, but molecule_vmagent_conf_dir does not exist on this host at
+          # converge - the role must skip the drop rather than fail or create
+          # a directory the vmagent role owns
+          vmagent: true
+          pki:
+            organization: Vault
+            organizational_unit: Vault
+          directories:
+            ca: "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/certs/vault"
+            tls: /etc/vault-moved/tls
+            data: /data/vault-moved
+            vmagent_conf: "{{ dir.ansible }}/vmagent/config/conf.d"
+
+        expected_member_name: vault-node-2
+        expected_tls_dir: /etc/vault-moved/tls
+        expected_data_dir: /data/vault-moved
+        expected_extra_listeners:
+          - 127.0.0.1
+        # the default paths this host must no longer touch
+        unexpected_paths:
+          - /etc/vault/tls
+          - /var/vault

@@ -1,0 +1,60 @@
+---
+# These files land in the vmagent role's conf.d and are read by the vmagent
+# container, never by vault - so they are not chowned to the vault user and they
+# do not notify `restart vault`.
+- name: Create vmagent private key
+  tags: vault
+  community.crypto.openssl_privatekey:
+    path: "{{ vault.directories.vmagent_conf }}/vault.key"
+    mode: "0400"
+
+- name: Create vmagent certificate signing request (CSR)
+  tags: vault
+  community.crypto.openssl_csr_pipe:
+    privatekey_path: "{{ vault.directories.vmagent_conf }}/vault.key"
+    common_name: vmagent
+    organization_name: "{{ vault.pki.organization }}"
+    organizational_unit_name: "{{ vault.pki.organizational_unit }}"
+    use_common_name_for_san: false
+  register: vault_vmagent_csr
+  changed_when: false
+
+- name: Read the existing vmagent certificate
+  ansible.builtin.slurp:
+    src: "{{ vault.directories.vmagent_conf }}/vault.cer"
+  register: vault_vmagent_certificate_existing
+  failed_when: false
+  changed_when: false
+  tags: vault
+
+- name: Sign vmagent certificate with our CA
+  tags: vault
+  become: false
+  delegate_to: 127.0.0.1
+  vars:
+    ansible_remote_tmp: "{{ playbook_dir }}/tmp"
+  community.crypto.x509_certificate_pipe:
+    content: >-
+      {{ (vault_vmagent_certificate_existing.content | b64decode)
+         if vault_vmagent_certificate_existing.content is defined else omit }}
+    csr_content: "{{ vault_vmagent_csr.csr }}"
+    provider: ownca
+    ownca_path: "{{ vault.directories.ca }}/ca.pem"
+    ownca_privatekey_path: "{{ vault.directories.ca }}/ca.key"
+    ownca_not_after: +365d  # valid for one year
+    ownca_not_before: "-1d"  # valid since yesterday
+  register: vault_vmagent_certificate
+
+- name: Write vmagent certificate
+  ansible.builtin.copy:
+    dest: "{{ vault.directories.vmagent_conf }}/vault.cer"
+    content: "{{ vault_vmagent_certificate.certificate }}"
+    mode: "0444"
+  tags: vault
+
+- name: Write vmagent CA
+  ansible.builtin.copy:
+    src: "{{ vault.directories.ca }}/ca.pem"
+    dest: "{{ vault.directories.vmagent_conf }}/vault-ca.cer"
+    mode: "0444"
+  tags: vault

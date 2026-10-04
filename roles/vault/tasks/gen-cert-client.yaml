@@ -1,0 +1,74 @@
+---
+# The certificate the vault CLI presents as the vault user. The listener
+# requires one from every client.
+- name: Create client private key
+  tags: vault
+  community.crypto.openssl_privatekey:
+    path: /home/vault/vault.key
+    owner: vault
+    group: vault
+    mode: "0400"
+
+- name: Create client certificate signing request (CSR)
+  tags: vault
+  community.crypto.openssl_csr_pipe:
+    privatekey_path: /home/vault/vault.key
+    common_name: vault-cli
+    organization_name: "{{ vault.pki.organization }}"
+    organizational_unit_name: "{{ vault.pki.organizational_unit }}"
+    use_common_name_for_san: false
+  register: vault_client_csr
+  changed_when: false
+
+- name: Read the existing client certificate
+  ansible.builtin.slurp:
+    src: /home/vault/vault.cer
+  register: vault_client_certificate_existing
+  failed_when: false
+  changed_when: false
+  tags: vault
+
+- name: Sign client certificate with our CA
+  tags: vault
+  become: false
+  delegate_to: 127.0.0.1
+  vars:
+    ansible_remote_tmp: "{{ playbook_dir }}/tmp"
+  community.crypto.x509_certificate_pipe:
+    content: >-
+      {{ (vault_client_certificate_existing.content | b64decode)
+         if vault_client_certificate_existing.content is defined else omit }}
+    csr_content: "{{ vault_client_csr.csr }}"
+    provider: ownca
+    ownca_path: "{{ vault.directories.ca }}/ca.pem"
+    ownca_privatekey_path: "{{ vault.directories.ca }}/ca.key"
+    ownca_not_after: +365d  # valid for one year
+    ownca_not_before: "-1d"  # valid since yesterday
+  register: vault_client_certificate
+
+- name: Write client certificate
+  ansible.builtin.copy:
+    dest: /home/vault/vault.cer
+    content: "{{ vault_client_certificate.certificate }}"
+    owner: vault
+    group: vault
+    mode: "0444"
+  tags: vault
+
+# Same owner and mode as the VAULT_ADDR and VAULT_CACERT lines the upstream
+# role writes into this file, so the two never fight over it.
+- name: Export the client certificate in the vault user's dotfile
+  tags: vault
+  ansible.builtin.lineinfile:
+    path: /home/vault/.bashrc
+    regexp: "^export {{ item.name }}="
+    line: "export {{ item.name }}='{{ item.value }}'"
+    owner: vault
+    group: vault
+    create: true
+    mode: "0600"
+  loop:
+    - {name: VAULT_CLIENT_CERT, value: /home/vault/vault.cer}
+    - {name: VAULT_CLIENT_KEY, value: /home/vault/vault.key}
+  loop_control:
+    label: "{{ item.name }}"

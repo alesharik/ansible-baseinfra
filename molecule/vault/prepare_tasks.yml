@@ -1,0 +1,44 @@
+---
+# The vault role includes this role by name. It is not on Galaxy, so it comes
+# from git, at the tag molecule/requirements.yml pins.
+- name: Install the upstream vault role into the ephemeral roles path
+  ansible.builtin.command:
+    argv:
+      - ansible-galaxy
+      - role
+      - install
+      - --role-file
+      - "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}/molecule/requirements.yml"
+      - --roles-path
+      - "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/roles"
+    creates: "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/roles/ansible-community.ansible-vault"
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+# node-1 only. The role writes a scrape config and a client certificate into
+# the vmagent conf.d, but never creates that directory.
+- name: Create the vmagent conf.d the role writes its scrape config into
+  ansible.builtin.file:
+    path: "{{ molecule_vmagent_conf_dir }}"
+    state: directory
+    mode: "0755"
+  when: inventory_hostname == 'vault-node-1'
+
+# Guards the negative half of this scenario: with this directory present on
+# node-2, the "nothing was written" checks in side_effect.yml pass for the
+# wrong reason.
+- name: Check node-2 starts without a vmagent conf.d
+  ansible.builtin.stat:
+    path: "{{ molecule_vmagent_conf_dir }}"
+  register: vault_prepare_conf_d
+  when: inventory_hostname == 'vault-node-2'
+
+- name: Fail loudly if node-2 already has one
+  ansible.builtin.assert:
+    that:
+      - not vault_prepare_conf_d.stat.exists
+    fail_msg: >-
+      {{ molecule_vmagent_conf_dir }} already exists on this host, so the skip
+      guard cannot be observed: {{ vault_prepare_conf_d.stat }}
+  when: inventory_hostname == 'vault-node-2'

@@ -1,0 +1,58 @@
+---
+# Re-running the role on node-2 templates the retry_join stanza from the
+# peer_ip of node-1, which is built from the facts of node-1.
+- name: Gather facts of both members
+  hosts: all
+  gather_facts: true
+  tasks: []
+
+# node-2 observes two states the converge alone cannot reach. verify runs only
+# after side_effect, so the first state - vmagent conf.d missing, so the drop
+# skipped - has to be asserted here, before the flip.
+- name: Check the skipped vmagent drop, then supply conf.d
+  hosts: vault-node-2
+  gather_facts: false
+  environment:
+    ANSIBLE_UNSAFE_WRITES: "1"
+  tasks:
+    - name: Stat the vmagent conf.d the role must not have created
+      ansible.builtin.stat:
+        path: "{{ molecule_vmagent_conf_dir }}"
+      register: vault_conf_d_before
+
+    - name: Check the role left another role's directory alone
+      ansible.builtin.assert:
+        that:
+          - not vault_conf_d_before.stat.exists
+        fail_msg: >-
+          the role created {{ molecule_vmagent_conf_dir }}, which the vmagent
+          role owns: {{ vault_conf_d_before.stat }}
+
+    # A missing conf.d must mean the drop is skipped, not redirected somewhere
+    # else.
+    - name: Look for any vmagent material the role might have written elsewhere
+      ansible.builtin.find:
+        paths: "{{ dir.ansible }}"
+        patterns: "vault*"
+        recurse: true
+        file_type: file
+      register: vault_stray_vmagent_files
+
+    - name: Check no scrape config or client key was written at all
+      ansible.builtin.assert:
+        that:
+          - vault_stray_vmagent_files.files | length == 0
+        fail_msg: >-
+          the role wrote {{ vault_stray_vmagent_files.files | map(attribute='path') | list }}
+          with no vmagent conf.d present
+
+    # the documented recovery path: deploy vmagent later and re-run this role
+    - name: Create the vmagent conf.d, as deploying vmagent later would
+      ansible.builtin.file:
+        path: "{{ molecule_vmagent_conf_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Re-run the role
+      ansible.builtin.include_role:
+        name: alesharik.baseinfra.vault

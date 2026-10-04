@@ -1,0 +1,6 @@
+---
+- name: restart vault  # noqa: name[casing]
+  ansible.builtin.systemd_service:
+    name: vault
+    state: restarted
+  tags: vault

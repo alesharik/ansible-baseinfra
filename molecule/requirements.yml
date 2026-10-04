@@ -3,7 +3,15 @@ collections:
   - name: community.general
   - name: community.docker
   - name: ansible.posix
-  # etcd's PKI tasks
+  # etcd and vault PKI tasks
   - name: community.crypto
   # postgres users, databases and grants
   - name: community.postgresql
+
+roles:
+  # The vault role installs vault through this role. It is not on Galaxy, so
+  # it comes from git, pinned to a tag.
+  - name: ansible-community.ansible-vault
+    src: https://github.com/ansible-community/ansible-vault.git
+    scm: git
+    version: v6.0.0

@@ -1,0 +1,36 @@
+---
+- name: Check the vault settings
+  tags: vault
+  ansible.builtin.assert:
+    that:
+      - vault.version | default('') | string | length > 0
+      - vault.peer_ip | default('') | length > 0
+      - vault.listen_ips is sequence and vault.listen_ips is not string
+      # api_addr and the vmagent target are both https://<peer_ip>:8200, so a
+      # listener has to bind there
+      - vault.peer_ip | default('') in vault.listen_ips
+    fail_msg: >-
+      vault.version and vault.peer_ip must be set, and vault.listen_ips must be
+      a list that contains peer_ip. peer_ip is {{ vault.peer_ip | default('unset') }},
+      listen_ips is {{ vault.listen_ips }}.
+    quiet: true
+
+# Checked across hostvars: every member renders a retry_join stanza for each
+# other member from that member's own peer_ip.
+- name: Check the quorum is coherent
+  tags: vault
+  vars:
+    vault_quorum_ips: >-
+      {{ vault.quorum | map('extract', hostvars, ['vault', 'peer_ip'])
+         | map('default', '') | list }}
+  ansible.builtin.assert:
+    that:
+      - vault.quorum is sequence and vault.quorum is not string
+      - inventory_hostname in vault.quorum
+      - vault.quorum | difference(hostvars | list) | length == 0
+      - vault_quorum_ips | select('equalto', '') | list | length == 0
+    fail_msg: >-
+      vault.quorum is {{ vault.quorum }}. It must contain {{ inventory_hostname }}
+      and name only inventory hosts, and every member needs vault.peer_ip.
+      Members resolve to addresses {{ vault_quorum_ips }}.
+    quiet: true

@@ -1,0 +1,64 @@
+---
+# Also the client certificate a member presents to the leader in retry_join.
+- name: Create server private key
+  tags: vault
+  community.crypto.openssl_privatekey:
+    path: "{{ vault.directories.tls }}/server.key"
+    owner: vault
+    group: vault
+    mode: "0400"
+  notify:
+    - restart vault
+
+- name: Create certificate signing request (CSR) for new certificate
+  tags: vault
+  community.crypto.openssl_csr_pipe:
+    privatekey_path: "{{ vault.directories.tls }}/server.key"
+    # an empty subject is only valid with a critical SAN (RFC 5280 4.2.1.6)
+    common_name: "{{ ansible_hostname }}"
+    organization_name: "{{ vault.pki.organization }}"
+    organizational_unit_name: "{{ vault.pki.organizational_unit }}"
+    use_common_name_for_san: false
+    subject_alt_name: "{{ ['IP:'] | product(vault.listen_ips) | map('join') | list }}"
+  register: vault_server_csr
+  # a _pipe module writes nothing
+  changed_when: false
+
+# Without `content` the pipe module mints a new certificate on every run, which
+# rewrites server.cer and restarts vault each time.
+- name: Read the existing server certificate
+  ansible.builtin.slurp:
+    src: "{{ vault.directories.tls }}/server.cer"
+  register: vault_server_certificate_existing
+  failed_when: false
+  changed_when: false
+  tags: vault
+
+- name: Sign certificate with our CA
+  tags: vault
+  become: false
+  delegate_to: 127.0.0.1
+  vars:
+    ansible_remote_tmp: "{{ playbook_dir }}/tmp"
+  community.crypto.x509_certificate_pipe:
+    content: >-
+      {{ (vault_server_certificate_existing.content | b64decode)
+         if vault_server_certificate_existing.content is defined else omit }}
+    csr_content: "{{ vault_server_csr.csr }}"
+    provider: ownca
+    ownca_path: "{{ vault.directories.ca }}/ca.pem"
+    ownca_privatekey_path: "{{ vault.directories.ca }}/ca.key"
+    ownca_not_after: +365d  # valid for one year
+    ownca_not_before: "-1d"  # valid since yesterday
+  register: vault_server_certificate
+
+- name: Write certificate
+  ansible.builtin.copy:
+    dest: "{{ vault.directories.tls }}/server.cer"
+    content: "{{ vault_server_certificate.certificate }}"
+    owner: vault
+    group: vault
+    mode: "0444"
+  tags: vault
+  notify:
+    - restart vault

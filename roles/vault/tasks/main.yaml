@@ -1,0 +1,158 @@
+---
+- name: Check the vault settings
+  tags: vault
+  ansible.builtin.include_tasks: assert.yaml
+
+- name: Install the crypto library the key generation needs
+  ansible.builtin.apt:
+    name: python3-cryptography
+    state: present
+    update_cache: true
+  tags: vault
+
+# Created here rather than by ansible-community.ansible-vault: the key material
+# below is chowned to this user, and it has to exist before that role runs.
+- name: Create vault group
+  ansible.builtin.group:
+    name: vault
+    system: true
+  tags: vault
+
+- name: Create vault user
+  ansible.builtin.user:
+    name: vault
+    comment: Vault user
+    group: vault
+    home: /home/vault
+    system: true
+  tags: vault
+
+- name: Create TLS dir
+  ansible.builtin.file:
+    path: "{{ vault.directories.tls }}"
+    state: directory
+    owner: vault
+    group: vault
+    mode: "0755"
+  tags: vault
+
+- name: Generate CA
+  tags: vault
+  ansible.builtin.include_tasks: gen-ca.yaml
+
+- name: Generate server keys
+  tags: vault
+  ansible.builtin.include_tasks: gen-cert-server.yaml
+
+- name: Install vault
+  tags: vault
+  ansible.builtin.include_role:
+    name: ansible-community.ansible-vault
+    apply:
+      tags:
+        - vault
+  vars:
+    vault_version: "{{ vault.version }}"
+    vault_install_remotely: true
+    vault_manage_user: false
+    vault_manage_group: false
+    vault_user: vault
+    vault_group: vault
+    vault_home: /home/vault
+    vault_data_path: "{{ vault.directories.data }}"
+    vault_backend: raft
+    vault_address: "{{ vault.peer_ip }}"
+    vault_cluster_address: "{{ vault.peer_ip }}:8201"
+    vault_api_addr: "https://{{ vault.peer_ip }}:8200"
+    vault_tls_disable: false
+    # the key material is generated in place by this role
+    vault_tls_copy_keys: false
+    vault_tls_certs_path: "{{ vault.directories.tls }}"
+    vault_tls_private_path: "{{ vault.directories.tls }}"
+    vault_tls_ca_file: ca.pem
+    vault_tls_client_ca_file: ca.pem
+    vault_tls_cert_file: server.cer
+    vault_tls_key_file: server.key
+    vault_tls_require_and_verify_client_cert: true
+    # the upstream health probe presents no client certificate, so the
+    # listener above would refuse it
+    vault_disable_api_health_check: true
+    vault_unauthenticated_metrics_access: true
+    vault_telemetry_enabled: true
+    vault_telemetry_disable_hostname: true
+    vault_prometheus_retention_time: 12h
+    vault_custom_configuration: |
+      log_format = "json"
+    # A YAML string, not a list: the upstream raft template pipes it through
+    # from_yaml. A member skips the entry whose peer is its own inventory name.
+    vault_raft_cluster_members: |
+      {% for member in vault.quorum %}
+      - peer: "{{ member }}"
+        api_addr: "https://{{ hostvars[member].vault.peer_ip }}:8200"
+      {% endfor %}
+    # One listener for each listen IP: <ip>:8200 for the API, <ip>:8201 for
+    # cluster traffic, all with the same mTLS settings.
+    vault_baseinfra_listener_tls:
+      vault_port: 8200
+      vault_tls_disable: false
+      vault_tls_certs_path: "{{ vault.directories.tls }}"
+      vault_tls_private_path: "{{ vault.directories.tls }}"
+      vault_tls_cert_file: server.cer
+      vault_tls_key_file: server.key
+      vault_tls_ca_file: ca.pem
+      vault_tls_client_ca_file: ca.pem
+      vault_tls_min_version: tls12
+      vault_tls_cipher_suites: ""
+      vault_tls_require_and_verify_client_cert: true
+      vault_tls_disable_client_certs: false
+    vault_tcp_listeners: >-
+      {{ vault.listen_ips
+         | map('community.general.dict_kv', 'vault_address')
+         | zip(vault.listen_ips | map('regex_replace', '$', ':8201')
+               | map('community.general.dict_kv', 'vault_cluster_address'))
+         | map('combine')
+         | map('combine', vault_baseinfra_listener_tls)
+         | list }}
+
+# lets an operator run the CLI as the vault user, which owns the client
+# certificate below
+- name: Allow sudo group to run commands as the vault user
+  community.general.sudoers:
+    name: vault-access
+    group: sudo
+    runas: vault
+    commands: ALL
+    nopassword: true
+  tags: vault
+
+- name: Generate client keys
+  tags: vault
+  ansible.builtin.include_tasks: gen-cert-client.yaml
+
+- name: Check for the vmagent conf.d directory
+  ansible.builtin.stat:
+    path: "{{ vault.directories.vmagent_conf }}"
+  register: vault_vmagent_conf_d
+  when: vault.vmagent
+  tags: vault
+
+- name: Generate vmagent keys
+  tags: vault
+  when:
+    - vault.vmagent
+    - vault_vmagent_conf_d.stat.isdir | default(false)
+  ansible.builtin.include_tasks: gen-cert-vmagent.yaml
+
+- name: Move vmagent config
+  when:
+    - vault.vmagent
+    - vault_vmagent_conf_d.stat.isdir | default(false)
+  ansible.builtin.template:
+    src: vmagent.yaml
+    dest: "{{ vault.directories.vmagent_conf }}/vault.yml"
+    mode: "0444"
+  tags: vault
+
+- name: Make sure handlers are flushed immediately
+  ansible.builtin.meta: flush_handlers
+  tags: vault

@@ -1,0 +1,15 @@
+- job_name: "vault"
+  scrape_interval: 5s
+  metrics_path: /v1/sys/metrics
+  params:
+    format: [ 'prometheus' ]
+  scheme: https
+  static_configs:
+    - targets: [ '{{ vault.peer_ip }}:8200' ]
+      labels:
+        instance: "{{ ansible_hostname }}"
+  follow_redirects: false # Do not go to master for metrics - just ignore it
+  tls_config:
+    cert_file: "/etc/vmagent/conf.d/vault.cer"
+    key_file: "/etc/vmagent/conf.d/vault.key"
+    ca_file: "/etc/vmagent/conf.d/vault-ca.cer"

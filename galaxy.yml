@@ -17,8 +17,10 @@ dependencies:
   community.docker: "*"
   # redis and valkey set vm.overcommit_memory through ansible.posix.sysctl
   ansible.posix: "*"
-  # etcd builds its own CA and issues server, peer and client certificates
+  # etcd and vault build their own CA and issue server, peer and client certificates
   community.crypto: "*"
+  # vault writes a sudoers rule and builds its listeners with dict_kv
+  community.general: "*"
   # postgres manages users, databases and grants
   community.postgresql: "*"
 repository: https://github.com/alesharik/ansible-baseinfra

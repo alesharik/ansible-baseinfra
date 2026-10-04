@@ -1,0 +1,14 @@
+---
+vault: # noqa: var-naming[no-role-prefix]
+  version: 2.1.1
+  listen_ips: []
+  quorum: []
+  vmagent: true
+  pki:
+    organization: "Vault"
+    organizational_unit: "Vault"
+  directories:
+    ca: "{{ playbook_dir }}/certs/vault"
+    tls: /etc/vault/tls
+    data: /var/vault
+    vmagent_conf: "{{ vmagent.directories.ansible | default(dir.ansible ~ '/vmagent') }}/config/conf.d"

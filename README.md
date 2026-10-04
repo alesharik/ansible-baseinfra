@@ -18,6 +18,7 @@
 - [`redis`](./roles/redis/README.md) - deploy a single-node redis
 - [`traefik`](./roles/traefik/README.md) - deploy traefik reverse proxy
 - [`valkey`](./roles/valkey/README.md) - deploy a single-node valkey
+- [`vault`](./roles/vault/README.md) - deploy a hashicorp vault cluster with raft storage and mutual TLS
 - [`vinyl`](./roles/vinyl/README.md) - deploy varnish cache with an haproxy outbound TLS connector
 - [`vmagent`](./roles/vmagent/README.md) - deploy vmagent metrics scraper
 - [`watchtower`](./roles/watchtower/README.md) - deploy watchtower container updater
@@ -69,6 +70,7 @@ prometheus.io.address: 127.0.0.1:9586 # full address to server
 | `postgres`               | `18.6`, exporter - `v0.20.1`                                            | 2026-09-22   | 2026-09-22   |
 | `redis`                  | `8.10-alpine`, exporter - `v1.89.0`                                     | 2026-08-15   | 2026-08-15   |
 | `valkey`                 | `9.1-alpine`, exporter - `v1.89.0`                                      | 2026-08-15   | 2026-08-15   |
+| `vault`                  | `2.1.1`                                                                 | 2026-10-04   | 2026-10-04   |
 | `vmagent`                | `v1.101.0`                                                              |              |              |
 | `watchtower`             | `1.14.3`                                                                | 2026-07-30   | 2026-07-30   |
 | `wg_exporter`            | `3.6.6`                                                                 | 2026-08-02   |              |
