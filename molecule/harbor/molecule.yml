@@ -23,17 +23,6 @@
 # The postgres and the redis both come from prepare_tasks.yml, not from a meta
 # dependency - harbor's dependencies are bootstrap and docker, and an external
 # database and cache are the normal case.
-#
-# Both hosts set `syslog.enabled: false`, which is the one thing neither of them
-# can cover. Harbor's bundled rsyslog container starts rsyslog with
-# `sudo -u #10000`, and inside a molecule instance pam_unix fails the account
-# check with "Authentication service cannot retrieve authentication info" - so
-# the container restarts forever and every other container then fails to be
-# created against a syslog endpoint that never opens. It is nesting, not the
-# storage driver and not the capability set: the same image with the same caps
-# works on an ordinary docker host, and CAP_DAC_READ_SEARCH, which the harbor
-# container does not get, is what makes it work here. So the syslog path is
-# covered by the compose template's absent branch only.
 platforms:
   - name: harbor-default
     image: dokken/debian-13
@@ -140,11 +129,6 @@ provisioner:
           network: harbor
           listen_ips: []
           networks: []
-          # the one deliberate difference from the published defaults - see the
-          # note at the top of this file
-          syslog:
-            enabled: false
-            port: 1514
           db:
             host: postgres
             port: 5432
@@ -168,13 +152,9 @@ provisioner:
           directories:
             ansible: "{{ dir.ansible }}/harbor"
             data: "{{ dir.data }}/harbor"
-            logs: /var/log/harbor
 
         expected_compose_dir: /data/ansible/harbor
         expected_data_dir: /data/harbor
-        # only read by the defaults-drift assertion: with syslog off nothing
-        # writes here and the role does not create it
-        expected_logs_dir: /var/log/harbor
         expected_network: harbor
         expected_backend_networks: [harbor-backend]
         # compose names the project after project_src, which is
@@ -196,7 +176,6 @@ provisioner:
           prometheus.io.port: "8080"
           prometheus.io.instance: harbor-default-harbor
         expected_proxy_ports: {}
-        expected_syslog: false
         # every network the proxy is on, which is the internal one alone here
         expected_proxy_networks: [harbor]
         # one network carries both backends, so a backend component lands on two
@@ -209,6 +188,9 @@ provisioner:
         # template reached harbor and not just the file on disk
         expected_db_host: postgres
         expected_redis_host: redis:6379
+        # harbor's own log root, which the role does not create
+        unexpected_paths:
+          - /var/log/harbor
 
       harbor-moved:
         molecule_db_network: harbor-db
@@ -240,11 +222,6 @@ provisioner:
             - "127.0.0.1:18080:8080"
           networks:
             - traefik-molecule
-          syslog:
-            enabled: false
-            # not 1514: the default is published on 127.0.0.1 of the instance,
-            # and moving it is the only way a second harbor could share a host
-            port: 11514
           db:
             host: postgres
             port: 5432
@@ -277,11 +254,9 @@ provisioner:
           directories:
             ansible: "{{ dir.ansible }}/harbor-moved"
             data: "{{ dir.data }}/harbor-moved"
-            logs: /var/log/harbor-moved
 
         expected_compose_dir: /data/ansible/harbor-moved
         expected_data_dir: /data/harbor-moved
-        expected_logs_dir: /var/log/harbor-moved
         expected_network: harbor-second
         expected_backend_networks: [harbor-db, harbor-cache]
         # directories.ansible is relocated here, and compose names the project
@@ -301,7 +276,6 @@ provisioner:
           "8080/tcp":
             - HostIp: 127.0.0.1
               HostPort: "18080"
-        expected_syslog: false
         expected_proxy_networks: [harbor-second, traefik-molecule]
         # two separate backends here, so every backend component lands on three
         expected_core_networks: [harbor-second, harbor-db, harbor-cache]
@@ -315,6 +289,5 @@ provisioner:
         unexpected_paths:
           - /data/ansible/harbor
           - /data/harbor
+          # harbor's own log root, which the role no longer creates
           - /var/log/harbor
-          # syslog is off, so nothing writes a log root at all
-          - /var/log/harbor-moved

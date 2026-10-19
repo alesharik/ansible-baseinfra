@@ -23,19 +23,6 @@ harbor: # noqa: var-naming[no-role-prefix]
   # environment of its own - attach the network here and route to `<harbor.network>:8080`
   # from your own proxy config.
   networks: []
-  # Harbor's bundled rsyslog container. Every other container logs into it
-  # through docker's syslog driver, and it writes <directories.logs>/*.log with
-  # logrotate, which is what harbor's own documentation describes.
-  #
-  # Off drops the container and leaves every other one on the daemon's own
-  # logging driver - `docker logs`, journald, or whatever the host is set to -
-  # which is where the rest of this collection puts container output. Off also
-  # makes `directories.logs` unused.
-  syslog:
-    enabled: true
-    # Published on 127.0.0.1, so it is a host-level port two instances would
-    # fight over.
-    port: 1514
   # Harbor keeps no database of its own. `network` is the docker network the
   # server answers on, and `host` is its name on that network.
   db:
@@ -81,7 +68,3 @@ harbor: # noqa: var-naming[no-role-prefix]
     # registry blobs, the secrets, and the internal TLS certs prepare copies
     # into `secret/tls`, which is where the containers read them from.
     data: "{{ dir.data }}/harbor"
-    # Bind-mounted into the `log` container, which is what writes it. Harbor's
-    # own default, kept separate from `data` because it is a log root and
-    # belongs wherever the host keeps those.
-    logs: /var/log/harbor

@@ -39,9 +39,6 @@ harbor:
   network: harbor # the docker network the role creates
   listen_ips: [] # host publications for the proxy container, compose syntax
   networks: [] # extra external networks the proxy joins
-  syslog: # harbor's bundled rsyslog container
-    enabled: true
-    port: 1514 # published on 127.0.0.1, every container logs into it
   db:
     host: ""
     port: 5432
@@ -65,7 +62,6 @@ harbor:
   directories:
     ansible: "{{ dir.ansible }}/harbor"
     data: "{{ dir.data }}/harbor"
-    logs: /var/log/harbor
 ```
 `harbor` is a plain dict override — setting it replaces the defaults wholesale,
 so list every key above, not just the ones you are changing.
@@ -105,28 +101,14 @@ Uploading a large image needs the proxy to allow a large body. On nginx that is
 
 ### Logging
 
-With `syslog.enabled`, harbor runs its own rsyslog container. Every other
-container logs into it through the docker syslog driver, and it writes
-`{{ directories.logs }}/*.log` with logrotate. That is harbor's own default, and
-what harbor's documentation describes.
+Every container logs through the docker daemon's own logging driver, as in the
+rest of this collection, so `docker logs` works.
 
-Turn it off to leave every container on the daemon's own logging driver, which
-is where the rest of this collection puts container output:
-
-```yaml
-harbor:
-  syslog:
-    enabled: false
-```
-
-Off also drops the `log` container, the host publication, and
-`{{ directories.logs }}`, which the role then does not create.
-
-Harbor starts rsyslog with `sudo -u #10000`. That call fails inside a nested
-docker daemon, where pam_unix reports "Authentication service cannot retrieve
-authentication info", so the container restarts forever and every other
-container then fails to be created. An ordinary docker host is fine. The
-molecule scenario runs with `syslog.enabled: false` for this reason.
+The role does not run harbor's rsyslog `log` container. With it, every other
+container logs through the docker syslog driver into that container. On a
+reboot the daemon starts all containers at once and ignores `depends_on`. The
+syslog driver then fails against a `log` container that does not listen yet, and
+harbor stays down.
 
 ### Database and redis
 
@@ -197,10 +179,9 @@ certificates.
 - creates `{{ harbor.directories.data }}`. Everything under it is created and
   owned by `prepare`: `registry`, `job_logs`, `ca_download`, `secret`,
   `trivy-adapter`
-- creates `{{ harbor.directories.logs }}`, with syslog on
 - deploys a docker compose project named after `directories.ansible`, with
   containers `registry`, `registryctl`, `core`, `portal`, `jobservice`,
-  `proxy`, and — behind their flags — `log`, `trivy-adapter` and `exporter`
+  `proxy`, and — behind their flags — `trivy-adapter` and `exporter`
 
 #### Docker networks
 - creates `{{ harbor.network }}`
@@ -208,10 +189,6 @@ certificates.
 - connects the `proxy` container to every network in `{{ harbor.networks }}`
 
 ### Networking
-- publishes `{{ harbor.syslog.port }}` on `127.0.0.1`, with syslog on. Every
-  container logs through the syslog driver, which the docker daemon opens on
-  the host rather than on a docker network, so this is what makes their logging
-  work
 - publishes whatever `listen_ips` names, and nothing else
 - `{{ harbor.network }}:8080` on `{{ harbor.network }}` and on every network in
   `{{ harbor.networks }}`

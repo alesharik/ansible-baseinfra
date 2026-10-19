@@ -24,8 +24,8 @@
   neither, because it reads the database settings from core over HTTP at
   startup - and then connects to postgres itself. Harbor's own compose puts
   every container on one network with the database and redis on it, so nothing
-  upstream records which component needs which. portal, proxy and log are the
-  three that provably need neither.
+  upstream records which component needs which. portal and proxy are the two
+  that provably need neither.
 #}
 networks:
   harbor:
@@ -42,45 +42,6 @@ networks:
     external: true
 {% endfor %}
 services:
-{% if harbor.syslog.enabled %}
-  log:
-    image: "goharbor/harbor-log:v{{ harbor.version }}"
-    restart: always
-    cap_drop:
-      - ALL
-    cap_add:
-      - CHOWN
-      - DAC_OVERRIDE
-      - SETGID
-      - SETUID
-    volumes:
-      - "{{ harbor.directories.logs }}/:/var/log/docker/:z"
-      - type: bind
-        source: ./common/config/log/logrotate.conf
-        target: /etc/logrotate.d/logrotate.conf
-      - type: bind
-        source: ./common/config/log/rsyslog_docker.conf
-        target: /etc/rsyslog.d/rsyslog_docker.conf
-    # Every other container logs through the syslog driver, which the docker
-    # daemon opens on the host - not on a docker network - so this publication
-    # is what makes their logging work at all. 127.0.0.1 and not localhost:
-    # the daemon resolves localhost to ::1 first on a host with IPv6, and this
-    # is an IPv4 publication, so every other container fails to be created with
-    # "dial tcp [::1]:1514: connect: connection refused".
-    ports:
-      - "127.0.0.1:{{ harbor.syslog.port }}:10514"
-    # The image ships this test with a 30 second interval, which every other
-    # container would then wait out. rsyslog binds in about a second, and
-    # nothing may be created before it does.
-    healthcheck:
-      test: ["CMD-SHELL", "netstat -ltun | grep -q 10514"]
-      interval: 2s
-      timeout: 3s
-      retries: 30
-    networks:
-      - harbor
-
-{% endif %}
   registry:
     image: "goharbor/registry-photon:v{{ harbor.version }}"
     restart: always
@@ -113,18 +74,6 @@ services:
 {% for net in harbor_backends %}
       - "{{ net }}"
 {% endfor %}
-{% if harbor.syslog.enabled %}
-    depends_on:
-      log:
-        condition: service_healthy
-{% endif %}
-{% if harbor.syslog.enabled %}
-    logging:
-      driver: "syslog"
-      options:
-        syslog-address: "tcp://127.0.0.1:{{ harbor.syslog.port }}"
-        tag: "registry"
-{% endif %}
 
   registryctl:
     image: "goharbor/harbor-registryctl:v{{ harbor.version }}"
@@ -157,18 +106,6 @@ services:
 {% for net in harbor_backends %}
       - "{{ net }}"
 {% endfor %}
-{% if harbor.syslog.enabled %}
-    depends_on:
-      log:
-        condition: service_healthy
-{% endif %}
-{% if harbor.syslog.enabled %}
-    logging:
-      driver: "syslog"
-      options:
-        syslog-address: "tcp://127.0.0.1:{{ harbor.syslog.port }}"
-        tag: "registryctl"
-{% endif %}
 
   core:
     image: "goharbor/harbor-core:v{{ harbor.version }}"
@@ -208,19 +145,8 @@ services:
       - "{{ net }}"
 {% endfor %}
     depends_on:
-{% if harbor.syslog.enabled %}
-      log:
-        condition: service_healthy
-{% endif %}
       registry:
         condition: service_started
-{% if harbor.syslog.enabled %}
-    logging:
-      driver: "syslog"
-      options:
-        syslog-address: "tcp://127.0.0.1:{{ harbor.syslog.port }}"
-        tag: "core"
-{% endif %}
 
   portal:
     image: "goharbor/harbor-portal:v{{ harbor.version }}"
@@ -244,18 +170,6 @@ services:
         target: /etc/harbor/tls/portal.key
     networks:
       - harbor
-{% if harbor.syslog.enabled %}
-    depends_on:
-      log:
-        condition: service_healthy
-{% endif %}
-{% if harbor.syslog.enabled %}
-    logging:
-      driver: "syslog"
-      options:
-        syslog-address: "tcp://127.0.0.1:{{ harbor.syslog.port }}"
-        tag: "portal"
-{% endif %}
 
   jobservice:
     image: "goharbor/harbor-jobservice:v{{ harbor.version }}"
@@ -288,19 +202,8 @@ services:
       - "{{ net }}"
 {% endfor %}
     depends_on:
-{% if harbor.syslog.enabled %}
-      log:
-        condition: service_healthy
-{% endif %}
       core:
         condition: service_started
-{% if harbor.syslog.enabled %}
-    logging:
-      driver: "syslog"
-      options:
-        syslog-address: "tcp://127.0.0.1:{{ harbor.syslog.port }}"
-        tag: "jobservice"
-{% endif %}
 
   proxy:
     image: "goharbor/nginx-photon:v{{ harbor.version }}"
@@ -342,23 +245,12 @@ services:
 {% endfor %}
 {% endif %}
     depends_on:
-{% if harbor.syslog.enabled %}
-      log:
-        condition: service_healthy
-{% endif %}
       registry:
         condition: service_started
       core:
         condition: service_started
       portal:
         condition: service_started
-{% if harbor.syslog.enabled %}
-    logging:
-      driver: "syslog"
-      options:
-        syslog-address: "tcp://127.0.0.1:{{ harbor.syslog.port }}"
-        tag: "proxy"
-{% endif %}
 
 {% if harbor.trivy.enabled %}
   trivy-adapter:
@@ -389,18 +281,6 @@ services:
 {% for net in harbor_backends %}
       - "{{ net }}"
 {% endfor %}
-{% if harbor.syslog.enabled %}
-    depends_on:
-      log:
-        condition: service_healthy
-{% endif %}
-{% if harbor.syslog.enabled %}
-    logging:
-      driver: "syslog"
-      options:
-        syslog-address: "tcp://127.0.0.1:{{ harbor.syslog.port }}"
-        tag: "trivy-adapter"
-{% endif %}
 {% endif %}
 {% if harbor.metrics.enabled %}
   exporter:
@@ -418,10 +298,6 @@ services:
       - "{{ net }}"
 {% endfor %}
     depends_on:
-{% if harbor.syslog.enabled %}
-      log:
-        condition: service_healthy
-{% endif %}
       core:
         condition: service_started
     # Harbor's own nginx proxies /metrics on 9090 to this container, so the
@@ -432,11 +308,4 @@ services:
       prometheus.io.path: /metrics
       prometheus.io.port: 8080
       prometheus.io.instance: "{{ inventory_hostname }}-{{ harbor.network }}"
-{% if harbor.syslog.enabled %}
-    logging:
-      driver: "syslog"
-      options:
-        syslog-address: "tcp://127.0.0.1:{{ harbor.syslog.port }}"
-        tag: "exporter"
-{% endif %}
 {% endif %}

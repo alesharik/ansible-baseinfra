@@ -21,16 +21,6 @@
     state: directory
     mode: "0755"
 
-# The bundled rsyslog container writes here. With syslog off nothing does, so
-# the role does not make the directory either.
-- name: Create log dir
-  tags: harbor
-  ansible.builtin.file:
-    path: "{{ harbor.directories.logs }}"
-    state: directory
-    mode: "0755"
-  when: harbor.syslog.enabled
-
 - name: Create tls staging dir
   tags: harbor
   ansible.builtin.file:
@@ -236,10 +226,9 @@
   community.docker.docker_compose_v2:
     project_src: "{{ harbor.directories.ansible }}"
     state: present
-    # Turning trivy, the exporter or syslog off takes a service out of the
-    # compose file, and compose leaves a container it no longer knows about
-    # running. The log container is the loud case: it restarts for ever against
-    # a port nothing publishes any more.
+    # Turning trivy or the exporter off takes a service out of the compose file,
+    # and compose leaves a container it no longer knows about running. This also
+    # removes the `log` container of a deploy from before the role dropped it.
     remove_orphans: true
 
 - name: Make sure handlers are flushed immediately

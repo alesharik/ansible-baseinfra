@@ -20,10 +20,6 @@
     that:
       - role_defaults.harbor.version == harbor.version
       - role_defaults.harbor.network == harbor.network
-      # the one key this host deliberately differs on, so it is checked
-      # against the published default rather than against the host copy
-      - role_defaults.harbor.syslog.enabled
-      - role_defaults.harbor.syslog.port == harbor.syslog.port
       - role_defaults.harbor.listen_ips == []
       - role_defaults.harbor.networks == []
       - role_defaults.harbor.config == {}
@@ -36,7 +32,6 @@
       - role_defaults.harbor.trivy.skip_update == harbor.trivy.skip_update
       - role_defaults.harbor.trivy.security_check == harbor.trivy.security_check
       - role_defaults.harbor.metrics.enabled
-      - role_defaults.harbor.directories.logs == expected_logs_dir
     fail_msg: >-
       roles/harbor/defaults/main.yaml has changed - the "default" host is
       running something else now
@@ -47,8 +42,9 @@
   ansible.builtin.stat:
     path: "{{ item }}"
   register: harbor_dirs
-  loop: "{{ [expected_compose_dir, expected_data_dir] +
-            ([expected_logs_dir] if expected_syslog else []) }}"
+  loop:
+    - "{{ expected_compose_dir }}"
+    - "{{ expected_data_dir }}"
 
 - name: Check every directory the role owns exists
   ansible.builtin.assert:
@@ -109,7 +105,8 @@
       - harbor_yml.data_volume == expected_data_dir
       - harbor_yml.internal_tls.enabled
       - harbor_yml.internal_tls.dir == expected_compose_dir ~ '/tls'
-      - harbor_yml.log.local.location == expected_logs_dir
+      # the role runs no rsyslog container, so it sets no log root for one
+      - harbor_yml.log.local is not defined
       - harbor_yml._version == '2.15.0'
       - harbor_yml.external_database.harbor.host == expected_db_host
       - harbor_yml.external_database.harbor.db_name == 'harbor'
@@ -341,16 +338,13 @@
       - sources | select('search', '^' ~ expected_compose_dir ~ '/tls/') | list | length == 0
     fail_msg: "core mounts {{ sources }}"
 
-# syslog.enabled: false on both hosts - see the note in molecule.yml. What is
-# asserted here is the absent branch: no log container, and no container left
-# pointing at a syslog endpoint that nothing serves.
-- name: Check the log container is absent with syslog off
+# The role runs no rsyslog container: no `log` container, and no container
+# left pointing at a syslog endpoint that nothing serves.
+- name: Check the log container is absent
   ansible.builtin.assert:
     that:
       - expected_project ~ '-log-1' not in harbor_running.stdout_lines
-    fail_msg: >-
-      {{ expected_project }}-log-1 is running with syslog.enabled false
-  when: not expected_syslog
+    fail_msg: "{{ expected_project }}-log-1 is running"
 
 - name: Check no service was left on the syslog driver
   vars:
@@ -361,9 +355,8 @@
     that:
       - drivers | length == 0
     fail_msg: >-
-      {{ drivers | length }} services still log through the syslog driver with
-      syslog.enabled false, and nothing serves that endpoint
-  when: not expected_syslog
+      {{ drivers | length }} services set a logging driver, and the role runs
+      no syslog endpoint for them
 
 - name: Check the containers keep the daemon's own logging driver
   ansible.builtin.command: >-
@@ -371,7 +364,6 @@
     --format '{% raw %}{{.HostConfig.LogConfig.Type}}{% endraw %}'
   register: harbor_core_log_driver
   changed_when: false
-  when: not expected_syslog
 
 - name: Check core logs are readable with docker logs
   ansible.builtin.assert:
@@ -379,7 +371,6 @@
       - harbor_core_log_driver.stdout != 'syslog'
     fail_msg: >-
       core still logs through {{ harbor_core_log_driver.stdout }}
-  when: not expected_syslog
 
 # --- the generated component config ------------------------------------------
 # harbor.yml is the role's input; these files are what goharbor/prepare made of

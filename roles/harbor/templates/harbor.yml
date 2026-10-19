@@ -9,6 +9,10 @@
 
   to_nice_yaml also quotes and escapes for us, which raw interpolation did not:
   a password with a `:` or a newline in it used to produce a broken file.
+
+  `log` has no `local` section: that only configures harbor's rsyslog `log`
+  container, which the role does not run. Every container logs through the
+  docker daemon's own driver.
 #}
 {% set harbor_yml = {
   '_version': harbor.version.split('.')[0:2] | join('.') ~ '.0',
@@ -21,14 +25,7 @@
     'enabled': true,
     'dir': harbor.directories.ansible ~ '/tls',
   },
-  'log': {
-    'level': 'info',
-    'local': {
-      'location': harbor.directories.logs,
-      'rotate_count': 5,
-      'rotate_size': '5M',
-    },
-  },
+  'log': {'level': 'info'},
   'jobservice': {
     'max_job_workers': 10,
     'job_loggers': ['STD_OUTPUT'],
