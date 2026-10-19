@@ -105,8 +105,6 @@
       - harbor_yml.data_volume == expected_data_dir
       - harbor_yml.internal_tls.enabled
       - harbor_yml.internal_tls.dir == expected_compose_dir ~ '/tls'
-      # the role runs no rsyslog container, so it sets no log root for one
-      - harbor_yml.log.local is not defined
       - harbor_yml._version == '2.15.0'
       - harbor_yml.external_database.harbor.host == expected_db_host
       - harbor_yml.external_database.harbor.db_name == 'harbor'

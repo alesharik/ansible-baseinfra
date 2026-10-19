@@ -10,9 +10,11 @@
   to_nice_yaml also quotes and escapes for us, which raw interpolation did not:
   a password with a `:` or a newline in it used to produce a broken file.
 
-  `log` has no `local` section: that only configures harbor's rsyslog `log`
-  container, which the role does not run. Every container logs through the
-  docker daemon's own driver.
+  `log.local` only configures harbor's rsyslog `log` container, which the role
+  does not run: every container logs through the docker daemon's own driver.
+  It stays anyway, because prepare reads `log_location` unconditionally when it
+  renders its own docker-compose.yml and dies with KeyError without it. Nothing
+  reads or creates the path - that compose file is overwritten by the role's.
 #}
 {% set harbor_yml = {
   '_version': harbor.version.split('.')[0:2] | join('.') ~ '.0',
@@ -25,7 +27,10 @@
     'enabled': true,
     'dir': harbor.directories.ansible ~ '/tls',
   },
-  'log': {'level': 'info'},
+  'log': {
+    'level': 'info',
+    'local': {'location': '/var/log/harbor'},
+  },
   'jobservice': {
     'max_job_workers': 10,
     'job_loggers': ['STD_OUTPUT'],
