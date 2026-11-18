@@ -1,7 +1,7 @@
 # docker_registry_server
 __Tags - `docker_registry_server`__
 
-Deploys a docker registry (default version - `2`) with htpasswd authentication.
+Deploys a docker registry (default version - `3`) with htpasswd authentication.
 
 ### Usage
 ```yaml
@@ -30,7 +30,7 @@ docker:
   registry:
     server:
       image: registry
-      version: "2"
+      version: "3"
       users: {} # username -> {password, autologin}
       autologin_registry: ~ # address `docker login` is pointed at; unset = no login
       networks: [] # external docker networks to attach to

@@ -91,7 +91,7 @@ provisioner:
           data: /data
           ansible: /data/ansible
         # the image the tests run their clients from - every host already pulled it
-        expected_client_image: postgres:18.6
+        expected_client_image: postgres:18.7
         expected_pgdata: /var/lib/postgresql/18/docker
         expected_server_version_min: 180000
         expected_extension_dir: /usr/share/postgresql/18/extension
@@ -112,7 +112,7 @@ provisioner:
         # stale unnoticed.
         postgres:
           image: postgres
-          version: "18.6"
+          version: "18.7"
           username: postgres
           password: molecule-root
           mode: single
@@ -137,7 +137,7 @@ provisioner:
           exporter:
             enabled: true
             image: quay.io/prometheuscommunity/postgres-exporter
-            version: v0.20.1
+            version: v0.21.1
             password: molecule-exporter
           directories:
             ansible: "{{ dir.ansible }}/postgres"
@@ -173,7 +173,7 @@ provisioner:
         expected_exporter_instance: pg-single-postgres
         # a built image: the tag is the hash of the Dockerfile, so only the
         # prefix and the shape are pinned here
-        expected_image_prefix: "baseinfra-postgres:18.6-"
+        expected_image_prefix: "baseinfra-postgres:18.7-"
         expected_build: true
         expected_extensions_db: appdb
         expected_extensions:
@@ -186,7 +186,7 @@ provisioner:
       pg-primary:
         postgres:
           image: postgres
-          version: "18.6"
+          version: "18.7"
           username: postgres
           # A literal dollar sign on purpose - doubled here, because molecule
           # interpolates this file and reads two as one, even in comments.
@@ -231,7 +231,7 @@ provisioner:
           exporter:
             enabled: true
             image: quay.io/prometheuscommunity/postgres-exporter
-            version: v0.20.1
+            version: v0.21.1
             password: molecule-exporter
           directories:
             ansible: "{{ dir.ansible }}/pg-main"
@@ -275,7 +275,7 @@ provisioner:
         expected_app_password: molecule-app
         expected_work_mem: 8MB
         expected_wal_keep_size: 512MB
-        expected_image_prefix: "baseinfra-postgres:18.6-"
+        expected_image_prefix: "baseinfra-postgres:18.7-"
         expected_build: true
         expected_extensions_db: appdb
         expected_extensions:
@@ -294,7 +294,7 @@ provisioner:
       pg-standby:
         postgres:
           image: postgres
-          version: "18.6"
+          version: "18.7"
           username: postgres
           # the superuser replicates from the primary, so it has its password
           password: molecule-$$root
@@ -319,7 +319,7 @@ provisioner:
           exporter:
             enabled: true
             image: quay.io/prometheuscommunity/postgres-exporter
-            version: v0.20.1
+            version: v0.21.1
             # the prom-exporter login replicates from the primary with this password
             password: molecule-exporter
           directories:
@@ -355,7 +355,7 @@ provisioner:
         expected_superuser_password: molecule-$$root
         expected_exporter_instance: pg-standby-postgres
         # no build: the compose file names the image straight
-        expected_image_prefix: "postgres:18.6"
+        expected_image_prefix: "postgres:18.7"
         expected_build: false
         # appdb and its extension rows come over replication from pg-primary
         expected_extensions_db: appdb

@@ -117,7 +117,7 @@ provisioner:
       pulsar-node-1:
         zookeeper:
           image: zookeeper
-          version: "3.9.5"
+          version: "3.9.7"
           id: 1
           peer_ip: "{{ ansible_default_ipv4.address }}"
           quorum:
@@ -151,7 +151,7 @@ provisioner:
 
         bookkeeper:
           image: apache/bookkeeper
-          version: "4.18.0"
+          version: "4.18.1"
           # The instance's own address on the molecule network, so the other
           # host's broker can dial this bookie.
           advertised_ip: "{{ ansible_default_ipv4.address }}"
@@ -194,7 +194,7 @@ provisioner:
 
         pulsar:
           image: apachepulsar/pulsar
-          version: "4.2.1"
+          version: "5.0.1"
           cluster_name: cluster-a
           # What this broker registers itself as, so it is also the address
           # node-2's client is handed when the lookup redirects it here.
@@ -251,7 +251,7 @@ provisioner:
         # compose names the project after project_src, which is
         # dir.ansible/pulsar on this host
         expected_container: pulsar-broker-1
-        expected_image: apachepulsar/pulsar:4.2.1
+        expected_image: apachepulsar/pulsar:5.0.1
         expected_cluster_name: cluster-a
         expected_broker_port: 6650
         expected_web_port: 8080
@@ -283,7 +283,7 @@ provisioner:
       pulsar-node-2:
         zookeeper:
           image: zookeeper
-          version: "3.9.5"
+          version: "3.9.7"
           id: 2
           peer_ip: "{{ ansible_default_ipv4.address }}"
           quorum:
@@ -318,7 +318,7 @@ provisioner:
 
         bookkeeper:
           image: apache/bookkeeper
-          version: "4.18.0"
+          version: "4.18.1"
           advertised_ip: "{{ ansible_default_ipv4.address }}"
           # renamed too, so pulsar.bookkeeper.network is not the default either
           network: bookkeeper-second
@@ -355,7 +355,7 @@ provisioner:
 
         pulsar:
           image: apachepulsar/pulsar
-          version: "4.2.1"
+          version: "5.0.1"
           cluster_name: cluster-a
           advertised_ip: "{{ ansible_default_ipv4.address }}"
           # The address-only shape, and the reason this host exists: no docker
@@ -422,7 +422,7 @@ provisioner:
         # directories.ansible is relocated here, and compose names the project
         # after it - so this name also proves the move actually took effect
         expected_container: pulsar-moved-broker-1
-        expected_image: apachepulsar/pulsar:4.2.1
+        expected_image: apachepulsar/pulsar:5.0.1
         expected_cluster_name: cluster-a
         expected_broker_port: 6650
         expected_web_port: 8080
@@ -458,7 +458,7 @@ provisioner:
         # the broker below is the counterpart of.
         zookeeper:
           image: zookeeper
-          version: "3.9.5"
+          version: "3.9.7"
           id: 1
           peer_ip: ""
           quorum: []
@@ -490,7 +490,7 @@ provisioner:
         # worker below keeps its state in that table service.
         bookkeeper:
           image: apache/bookkeeper
-          version: "4.18.0"
+          version: "4.18.1"
           advertised_ip: ""
           network: bookkeeper
           bookie_port: 3181
@@ -530,7 +530,7 @@ provisioner:
         # cannot go stale unnoticed.
         pulsar:
           image: apachepulsar/pulsar
-          version: "4.2.1"
+          version: "5.0.1"
           cluster_name: cluster-a
           # left at the default: the broker is known by its compose service
           # name, which is the whole of the single-host shape
@@ -577,7 +577,7 @@ provisioner:
           - zookeeper
           - bookkeeper
         expected_container: pulsar-broker-1
-        expected_image: apachepulsar/pulsar:4.2.1
+        expected_image: apachepulsar/pulsar:5.0.1
         expected_cluster_name: cluster-a
         expected_broker_port: 6650
         expected_web_port: 8080

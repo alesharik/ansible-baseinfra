@@ -20,7 +20,7 @@ gid `101` — the `clickhouse` user inside it.
 ```yaml
 clickhouse_keeper:
   image: clickhouse/clickhouse-keeper
-  version: "26.8.10.6"
+  version: "26.8.40.7"
   id: 1 # raft server_id, unique across the ensemble
   peer_ip: "" # address the other members and clickhouse dial; required once quorum is set
   quorum: [] # inventory hostnames of every member; empty = single server

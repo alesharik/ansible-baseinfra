@@ -25,7 +25,7 @@ temporal_ui:
 ```yaml
 temporal_ui:
   image: temporalio/ui
-  version: "2.53.3"
+  version: "2.58.1"
   networks:
     - "{{ temporal.network | default('temporal') }}" # joined; the role creates none
   address: "temporal:{{ temporal.grpc_port | default(7233) }}"

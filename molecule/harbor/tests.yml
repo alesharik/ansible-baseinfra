@@ -105,7 +105,7 @@
       - harbor_yml.data_volume == expected_data_dir
       - harbor_yml.internal_tls.enabled
       - harbor_yml.internal_tls.dir == expected_compose_dir ~ '/tls'
-      - harbor_yml._version == '2.15.0'
+      - harbor_yml._version == '2.16.0'
       - harbor_yml.external_database.harbor.host == expected_db_host
       - harbor_yml.external_database.harbor.db_name == 'harbor'
       - harbor_yml.external_redis.host == expected_redis_host

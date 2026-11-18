@@ -71,7 +71,7 @@ provisioner:
         # listen_ips, which an ensemble needs. tests.yml checks the copy.
         clickhouse_keeper:
           image: clickhouse/clickhouse-keeper
-          version: "26.8.10.6"
+          version: "26.8.40.7"
           id: 1
           peer_ip: "{{ ansible_default_ipv4.address }}"
           quorum:
@@ -99,7 +99,7 @@ provisioner:
         expected_mounts:
           - /data/clickhouse_keeper:/var/lib/clickhouse
           - /data/ansible/clickhouse_keeper/config/keeper.xml:/etc/clickhouse-keeper/keeper_config.d/ansible.xml
-        expected_image: clickhouse/clickhouse-keeper:26.8.10.6
+        expected_image: clickhouse/clickhouse-keeper:26.8.40.7
         expected_metrics_enabled: true
         expected_metrics_port: 9363
         expected_instance_label: ck-node-1-clickhouse_keeper
@@ -108,7 +108,7 @@ provisioner:
       ck-node-2:
         clickhouse_keeper:
           image: clickhouse/clickhouse-keeper
-          version: "26.8.10.6"
+          version: "26.8.40.7"
           id: 2
           peer_ip: "{{ ansible_default_ipv4.address }}"
           quorum:
@@ -140,7 +140,7 @@ provisioner:
         expected_mounts:
           - /data/keeper-moved:/var/lib/clickhouse
           - /data/ansible/keeper-moved/config/keeper.xml:/etc/clickhouse-keeper/keeper_config.d/ansible.xml
-        expected_image: clickhouse/clickhouse-keeper:26.8.10.6
+        expected_image: clickhouse/clickhouse-keeper:26.8.40.7
         expected_metrics_enabled: false
         expected_metrics_port: 9363
         expected_coordination:

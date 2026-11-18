@@ -111,7 +111,7 @@ provisioner:
           exporter:
             enabled: false
             image: oliver006/redis_exporter
-            version: v1.89.0
+            version: v1.97.0
           directories:
             ansible: "{{ dir.ansible }}/redis"
             data: "{{ dir.data }}/redis"
@@ -122,7 +122,7 @@ provisioner:
         # controller and asserts every other key still matches, so this copy
         # cannot go stale unnoticed.
         harbor:
-          version: "2.15.2"
+          version: "2.16.0"
           hostname: harbor-default.molecule
           external_url: ""
           admin_password: molecule-admin-pass
@@ -205,13 +205,13 @@ provisioner:
           exporter:
             enabled: false
             image: oliver006/redis_exporter
-            version: v1.89.0
+            version: v1.97.0
           directories:
             ansible: "{{ dir.ansible }}/redis"
             data: "{{ dir.data }}/redis"
 
         harbor:
-          version: "2.15.2"
+          version: "2.16.0"
           hostname: harbor-moved.molecule
           # set outright rather than derived from hostname, and on a port, which
           # is the case the default cannot produce

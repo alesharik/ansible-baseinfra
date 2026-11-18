@@ -1,7 +1,7 @@
 ---
 clickhouse_keeper: # noqa: var-naming[no-role-prefix]
   image: clickhouse/clickhouse-keeper
-  version: "26.8.10.6"
+  version: "26.8.40.7"
   # The raft server_id. Unique across the ensemble, and the number the other
   # members know this one by.
   id: 1

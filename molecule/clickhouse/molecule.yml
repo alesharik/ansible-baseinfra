@@ -94,7 +94,7 @@ provisioner:
       ch-node-1:
         clickhouse:
           image: clickhouse/clickhouse-server
-          version: "26.8.10.6"
+          version: "26.8.40.7"
           network: clickhouse
           listen_ips:
             - "{{ ansible_default_ipv4.address }}"
@@ -140,7 +140,7 @@ provisioner:
       ch-node-2:
         clickhouse:
           image: clickhouse/clickhouse-server
-          version: "26.8.10.6"
+          version: "26.8.40.7"
           network: clickhouse
           listen_ips: []
           root:
@@ -185,7 +185,7 @@ provisioner:
       ch-node-3:
         clickhouse:
           image: clickhouse/clickhouse-server
-          version: "26.8.10.6"
+          version: "26.8.40.7"
           network: clickhouse-moved
           listen_ips:
             - "{{ ansible_default_ipv4.address }}"
@@ -236,7 +236,7 @@ provisioner:
         # empty and which the role refuses. tests.yml checks the copy.
         clickhouse:
           image: clickhouse/clickhouse-server
-          version: "26.8.10.6"
+          version: "26.8.40.7"
           network: clickhouse
           listen_ips: []
           root:
@@ -262,7 +262,7 @@ provisioner:
         # port is published where the cluster dials it.
         clickhouse_keeper:
           image: clickhouse/clickhouse-keeper
-          version: "26.8.10.6"
+          version: "26.8.40.7"
           id: 1
           peer_ip: "{{ ansible_default_ipv4.address }}"
           quorum: []

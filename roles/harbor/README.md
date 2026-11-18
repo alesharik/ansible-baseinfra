@@ -32,7 +32,7 @@ harbor:
 ### Vars
 ```yaml
 harbor:
-  version: "2.15.2"
+  version: "2.16.0"
   hostname: "" # the name the reverse proxy serves, and what clients push to
   external_url: "" # empty means https://<hostname>
   admin_password: ""

@@ -1,7 +1,7 @@
 ---
 pulsar: # noqa: var-naming[no-role-prefix]
   image: apachepulsar/pulsar
-  version: "4.2.1"
+  version: "5.0.1"
   # The cluster's name in the metadata, written by the init this role runs. Every
   # broker pointed at the same metadata has to agree with it - and changing it on
   # a deployment that has already run creates a *second*, empty cluster rather

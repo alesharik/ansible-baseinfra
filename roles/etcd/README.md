@@ -26,7 +26,7 @@ must have `etcd.peer_ip` set — the role reads them out of `hostvars` to build
 ```yaml
 etcd:
   peer_ip: # IP for etcd cluster to connect to - no default, must be set
-  version: v3.6.12 # ETCD version
+  version: v3.7.3 # ETCD version
   image: "quay.io/coreos/etcd" # ETCD image
   listen_ips: [] # Listen IPs - which IPs to expose ETCD on
   networks: [] # List of docker networks to connect to - must already exist

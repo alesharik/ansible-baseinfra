@@ -14,7 +14,7 @@ docker: # noqa: var-naming[no-role-prefix]
   registry:
     server:
       image: registry
-      version: "2"
+      version: "3"
       # username -> {password, autologin}. Users removed from this dict are
       # removed from htpasswd on the next run.
       users: {}

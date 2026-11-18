@@ -20,7 +20,7 @@ a wholesale override, so a real config lists every key in [Vars](#vars).
 ```yaml
 garage:
   image: dxflrs/garage
-  version: v2.4.1
+  version: v2.5.0
   peers: [] # inventory hostnames of every member; empty = single node
   peer_ip: "" # address the other members dial; required once peers is set
   rpc_port: 3901 # host port for RPC, published on peer_ip in a cluster

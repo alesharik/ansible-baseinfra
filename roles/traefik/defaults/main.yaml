@@ -1,7 +1,7 @@
 ---
 traefik: # noqa: var-naming[no-role-prefix]
   image: traefik
-  version: "v3.6.15"
+  version: "v3.7.19"
   entrypoints:
     web:
       address: :80

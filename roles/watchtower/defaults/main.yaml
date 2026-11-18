@@ -1,7 +1,7 @@
 ---
 watchtower: # noqa: var-naming[no-role-prefix]
   image: nickfedor/watchtower
-  version: 1.14.3
+  version: 1.24.1
   vmagent: true
   interval: 30
   # Puts the container on docker's built-in `none` network, so compose creates

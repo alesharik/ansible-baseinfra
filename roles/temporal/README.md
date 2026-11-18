@@ -28,10 +28,10 @@ temporal:
 ```yaml
 temporal:
   image: temporalio/server
-  version: "1.31.2"
+  version: "1.32.2"
   admin_tools: # schema migrations and the namespace bootstrap
     image: temporalio/admin-tools
-    version: "1.31.2" # keep in step with `version`
+    version: "1.32.2" # keep in step with `version`
   network: temporal # the docker network this role creates
   advertised_ip: "" # address off-host clients reach the frontend at; empty = one host
   grpc_port: 7233 # where clients open workflows
@@ -133,7 +133,7 @@ Changing `retention` on a namespace already registered therefore does nothing.
 Change it by hand:
 
 ```
-docker run --rm --network temporal temporalio/admin-tools:1.31.2 \
+docker run --rm --network temporal temporalio/admin-tools:1.32.2 \
   temporal operator namespace update --address temporal:7233 -n default --retention 168h
 ```
 

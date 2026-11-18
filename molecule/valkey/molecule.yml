@@ -89,7 +89,7 @@ provisioner:
           exporter:
             enabled: true
             image: oliver006/redis_exporter
-            version: v1.89.0
+            version: v1.97.0
           directories:
             ansible: "{{ dir.ansible }}/valkey"
             data: "{{ dir.data }}/valkey"
@@ -134,7 +134,7 @@ provisioner:
           exporter:
             enabled: false
             image: oliver006/redis_exporter
-            version: v1.89.0
+            version: v1.97.0
           directories:
             ansible: "{{ dir.ansible }}/valkey-cache"
             data: "{{ dir.data }}/valkey-cache"

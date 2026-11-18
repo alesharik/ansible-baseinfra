@@ -102,7 +102,7 @@ provisioner:
       watchtower-custom:
         watchtower:
           image: nickfedor/watchtower
-          version: 1.14.3
+          version: 1.24.1
           # left on: the skip below has to be the *conf.d is missing* branch,
           # not the "vmagent integration is off" branch. The token is still
           # generated and the metrics API still enabled.

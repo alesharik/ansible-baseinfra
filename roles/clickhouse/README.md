@@ -26,7 +26,7 @@ in [Vars](#vars).
 ```yaml
 clickhouse:
   image: clickhouse/clickhouse-server
-  version: "26.8.10.6"
+  version: "26.8.40.7"
   network: clickhouse # the docker network the role creates
   listen_ips: [] # host IPs the HTTP (8123) and native (9000) ports are published on
   root: # admin login; the entrypoint creates it and removes `default`

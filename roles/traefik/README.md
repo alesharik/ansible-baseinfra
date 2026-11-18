@@ -12,7 +12,7 @@ Deploys traefik as a docker compose service
 ```yaml
 traefik:
   image: traefik
-  version: "v3.6.15"
+  version: "v3.7.19"
   entrypoints: # written into traefik.yml as `entryPoints` verbatim
     web:
       address: :80

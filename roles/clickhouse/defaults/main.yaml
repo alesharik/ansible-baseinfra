@@ -1,7 +1,7 @@
 ---
 clickhouse: # noqa: var-naming[no-role-prefix]
   image: clickhouse/clickhouse-server
-  version: "26.8.10.6"
+  version: "26.8.40.7"
   # The docker network the role creates, and the name consumers attach to.
   network: clickhouse
   # Host IPs the HTTP (8123) and native (9000) ports are published on. Empty

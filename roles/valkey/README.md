@@ -31,7 +31,7 @@ valkey:
   exporter:
     enabled: true
     image: oliver006/redis_exporter
-    version: v1.89.0
+    version: v1.97.0
   directories:
     ansible: "{{ dir.ansible }}/valkey" # compose project on the host
     data: "{{ dir.data }}/valkey" # mounted at /data

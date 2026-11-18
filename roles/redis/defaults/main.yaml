@@ -24,7 +24,7 @@ redis: # noqa: var-naming[no-role-prefix]
   exporter:
     enabled: true
     image: oliver006/redis_exporter
-    version: v1.89.0
+    version: v1.97.0
   directories:
     ansible: "{{ dir.ansible }}/redis"
     data: "{{ dir.data }}/redis"

@@ -3,7 +3,7 @@ postgres: # noqa: var-naming[no-role-prefix]
   image: postgres
   # Must start with the major number: the role builds PGDATA from it
   # (/var/lib/postgresql/<major>/docker) and upgrades when it goes up.
-  version: "18.6"
+  version: "18.7"
   # The bootstrap superuser. Only initdb reads it, so changing either of these
   # on an existing cluster does not change the server - it only breaks the login.
   username: postgres
@@ -43,7 +43,7 @@ postgres: # noqa: var-naming[no-role-prefix]
   exporter:
     enabled: true
     image: quay.io/prometheuscommunity/postgres-exporter
-    version: v0.20.1
+    version: v0.21.1
     # The prom-exporter login. It replicates, so a standby needs the same value
     # as its primary.
     password: ""

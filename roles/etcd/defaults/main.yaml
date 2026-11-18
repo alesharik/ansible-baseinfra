@@ -1,6 +1,6 @@
 ---
 etcd: # noqa: var-naming[no-role-prefix]
-  version: v3.6.12
+  version: v3.7.3
   image: "quay.io/coreos/etcd"
   listen_ips: []
   networks: []

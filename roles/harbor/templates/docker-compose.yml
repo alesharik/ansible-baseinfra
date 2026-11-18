@@ -51,6 +51,8 @@ services:
       - CHOWN
       - SETGID
       - SETUID
+    env_file:
+      - ./common/config/registry/env
     volumes:
       - "{{ harbor_data }}/registry:/storage:z"
       - ./common/config/registry/:/etc/registry/:z

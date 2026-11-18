@@ -1,7 +1,7 @@
 ---
 temporal_ui: # noqa: var-naming[no-role-prefix]
   image: temporalio/ui
-  version: "2.53.3"
+  version: "2.58.1"
   networks:
     - "{{ temporal.network | default('temporal') }}"
   address: "temporal:{{ temporal.grpc_port | default(7233) }}"

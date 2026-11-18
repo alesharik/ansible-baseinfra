@@ -101,7 +101,7 @@ provisioner:
     host_vars:
       etcd-node-1:
         etcd:
-          version: v3.6.12
+          version: v3.7.3
           image: "quay.io/coreos/etcd"
           # The instance's own address on the molecule network. Both members
           # publish their peer port on it and dial each other there, so this is
@@ -146,7 +146,7 @@ provisioner:
           - /data/ansible/etcd/config:/etcd-config
         # the image the role already pulled, reused for etcdctl so the test
         # costs no extra pull
-        expected_image: quay.io/coreos/etcd:v3.6.12
+        expected_image: quay.io/coreos/etcd:v3.7.3
         # basename of directories.ansible, which is what the role suffixes every
         # vmagent filename and the scrape job name with
         expected_vmagent_prefix: etcd-etcd
@@ -157,7 +157,7 @@ provisioner:
 
       etcd-node-2:
         etcd:
-          version: v3.6.12
+          version: v3.7.3
           image: "quay.io/coreos/etcd"
           peer_ip: "{{ ansible_default_ipv4.address }}"
           listen_ips:
@@ -197,7 +197,7 @@ provisioner:
         expected_mounts:
           - /data/etcd-moved:/etcd-data
           - /data/ansible/etcd-moved/config:/etcd-config
-        expected_image: quay.io/coreos/etcd:v3.6.12
+        expected_image: quay.io/coreos/etcd:v3.7.3
         expected_vmagent_prefix: etcd-etcd-moved
         expected_vmagent_job: docker-etcd-etcd-moved
         expected_instance_label: etcd-node-2-etcd-moved

@@ -75,7 +75,7 @@ provisioner:
     host_vars:
       vault-node-1:
         vault:
-          version: 2.1.1
+          version: 2.2.2
           # the host downloads the zip itself
           install_remotely: true
           # the instance address on the molecule network. Both members dial
@@ -107,7 +107,7 @@ provisioner:
 
       vault-node-2:
         vault:
-          version: 2.1.1
+          version: 2.2.2
           # the controller downloads the zip and copies the binary here
           install_remotely: false
           peer_ip: "{{ ansible_default_ipv4.address }}"

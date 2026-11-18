@@ -1,10 +1,10 @@
 ---
 temporal: # noqa: var-naming[no-role-prefix]
   image: temporalio/server
-  version: "1.31.2"
+  version: "1.32.2"
   admin_tools:
     image: temporalio/admin-tools
-    version: "1.31.2"
+    version: "1.32.2"
   network: temporal
   advertised_ip: ""
   grpc_port: 7233

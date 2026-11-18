@@ -17,7 +17,7 @@ vmagent:
 ```yaml
 vmagent:
   image: victoriametrics/vmagent
-  version: v1.101.0
+  version: v1.156.0
   remoteWrite: {} # each key becomes a -remoteWrite.<key>=<value> flag
   node_label: true # adds -remoteWrite.label=node=<ansible_hostname> to every shipped series
   directories:

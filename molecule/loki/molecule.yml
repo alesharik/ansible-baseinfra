@@ -100,7 +100,7 @@ provisioner:
       loki-custom:
         loki:
           image: grafana/loki
-          version: 3.5
+          version: 3.7
           # converge runs with the default network on; side_effect.yml flips
           # both of these and re-runs the role, so verify sees the disabled
           # state on this host and the default state on loki-defaults

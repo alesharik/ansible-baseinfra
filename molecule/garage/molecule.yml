@@ -83,7 +83,7 @@ provisioner:
       garage-single:
         garage:
           image: dxflrs/garage
-          version: v2.4.1
+          version: v2.5.0
           peers: []
           peer_ip: ""
           rpc_port: 3901
@@ -123,7 +123,7 @@ provisioner:
         expected_mounts:
           - /data/garage:/var/lib/garage
           - /data/ansible/garage/config:/etc/garage
-        expected_image: dxflrs/garage:v2.4.1
+        expected_image: dxflrs/garage:v2.5.0
         expected_ports: []
         expected_rpc_public_addr: 127.0.0.1:3901
         expected_replication_factor: 1
@@ -142,7 +142,7 @@ provisioner:
       garage-node-1:
         garage:
           image: dxflrs/garage
-          version: v2.4.1
+          version: v2.5.0
           peers:
             - garage-node-1
             - garage-node-2
@@ -180,7 +180,7 @@ provisioner:
         expected_mounts:
           - /data/garage:/var/lib/garage
           - /data/ansible/garage/config:/etc/garage
-        expected_image: dxflrs/garage:v2.4.1
+        expected_image: dxflrs/garage:v2.5.0
         # S3 on the host address, RPC on the host address
         expected_ports: ["3900", "3901"]
         expected_replication_factor: 2
@@ -197,7 +197,7 @@ provisioner:
       garage-node-2:
         garage:
           image: dxflrs/garage
-          version: v2.4.1
+          version: v2.5.0
           peers:
             - garage-node-1
             - garage-node-2
@@ -231,7 +231,7 @@ provisioner:
         expected_mounts:
           - /data/garage-moved:/var/lib/garage
           - /data/ansible/garage-moved/config:/etc/garage
-        expected_image: dxflrs/garage:v2.4.1
+        expected_image: dxflrs/garage:v2.5.0
         expected_ports: ["3901"]
         expected_replication_factor: 2
         expected_nodes: 2

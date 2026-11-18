@@ -30,7 +30,7 @@ the raft cluster through `retry_join` when they are unsealed.
 ```yaml
 vault:
   peer_ip: # IP for vault cluster to connect to - no default, must be set
-  version: 2.1.1 # Vault version
+  version: 2.2.2 # Vault version
   install_remotely: true # true: each host downloads the zip. false: the controller downloads it and copies the binary
   listen_ips: [] # Listen IPs - which IPs to expose Vault on, must contain peer_ip
   quorum: [] # List of quorum nodes - inventory hostnames

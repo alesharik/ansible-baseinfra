@@ -25,7 +25,7 @@ bookkeeper:
 ```yaml
 bookkeeper:
   image: apache/bookkeeper
-  version: "4.18.0"
+  version: "4.18.1"
   advertised_ip: "" # address other hosts reach this bookie at; empty = one host
   network: bookkeeper # the docker network the role creates
   bookie_port: 3181

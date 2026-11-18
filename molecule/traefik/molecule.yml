@@ -76,7 +76,7 @@ provisioner:
         # copy cannot silently drift away from what it claims to pin.
         traefik:
           image: traefik
-          version: "v3.6.15"
+          version: "v3.7.19"
           entrypoints:
             web:
               address: :80
@@ -132,7 +132,7 @@ provisioner:
       traefik-custom:
         traefik:
           image: traefik
-          version: "v3.6.15"
+          version: "v3.7.19"
           entrypoints:
             http:
               address: ":8000"

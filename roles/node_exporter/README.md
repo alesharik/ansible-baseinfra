@@ -1,7 +1,7 @@
 # node_exporter
 __Tags - `node_exporter`__
 
-Deploys node exporter (default version - `v1.8.1`). **Container has read-only
+Deploys node exporter (default version - `v1.12.1`). **Container has read-only
 access to the root file system:**
 
 - /proc:/host/proc:ro
@@ -18,7 +18,7 @@ access to the root file system:**
 ```yaml
 node_exporter:
   image: prom/node-exporter
-  version: v1.8.1
+  version: v1.12.1
   networks: [] # external docker networks to attach to
   disable_default_network: false # point compose's default network at `none`
   directories:

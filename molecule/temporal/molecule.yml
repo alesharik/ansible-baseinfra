@@ -112,10 +112,10 @@ provisioner:
         # cannot go stale unnoticed.
         temporal:
           image: temporalio/server
-          version: "1.31.2"
+          version: "1.32.2"
           admin_tools:
             image: temporalio/admin-tools
-            version: "1.31.2"
+            version: "1.32.2"
           network: temporal
           advertised_ip: ""
           grpc_port: 7233
@@ -157,7 +157,7 @@ provisioner:
         expected_compose_dir: /data/ansible/temporal
         # compose names the project after project_src
         expected_container: temporal-temporal-1
-        expected_image: temporalio/server:1.31.2
+        expected_image: temporalio/server:1.32.2
         expected_network: temporal
         expected_grpc_port: 7233
         expected_http_port: 7243
@@ -191,10 +191,10 @@ provisioner:
 
         temporal:
           image: temporalio/server
-          version: "1.31.2"
+          version: "1.32.2"
           admin_tools:
             image: temporalio/admin-tools
-            version: "1.31.2"
+            version: "1.32.2"
           # renamed, so what the UI scenario's default() fallback points at is
           # not the only name this ever has
           network: temporal-moved
@@ -253,7 +253,7 @@ provisioner:
         # directories.ansible is relocated here, and compose names the project
         # after it - so this name also proves the move actually took effect
         expected_container: temporal-moved-temporal-1
-        expected_image: temporalio/server:1.31.2
+        expected_image: temporalio/server:1.32.2
         expected_network: temporal-moved
         expected_grpc_port: 7333
         expected_http_port: 7343

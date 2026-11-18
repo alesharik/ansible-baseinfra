@@ -74,7 +74,7 @@
     that:
       - compose.services | list == ['clickhouse']
       - compose.networks.clickhouse.name == expected_network
-      - service.image == 'clickhouse/clickhouse-server:26.8.10.6'
+      - service.image == 'clickhouse/clickhouse-server:26.8.40.7'
       - service.user == '1002:1002'
       - service.environment.CLICKHOUSE_USER == 'root'
       # no password in the compose file, only the path to it
@@ -234,7 +234,7 @@
 - name: Scrape the metrics endpoint from inside the network
   ansible.builtin.command: >-
     timeout 30 docker run --rm --network {{ expected_network }} --entrypoint wget
-    clickhouse/clickhouse-server:26.8.10.6 -qO- http://clickhouse:9363/metrics
+    clickhouse/clickhouse-server:26.8.40.7 -qO- http://clickhouse:9363/metrics
   register: clickhouse_metrics
   changed_when: false
   failed_when: >-
@@ -244,7 +244,7 @@
 - name: Check nothing answers on the metrics port with metrics off
   ansible.builtin.command: >-
     timeout 30 docker run --rm --network {{ expected_network }} --entrypoint sh
-    clickhouse/clickhouse-server:26.8.10.6 -c 'nc -z -w 2 clickhouse 9363'
+    clickhouse/clickhouse-server:26.8.40.7 -c 'nc -z -w 2 clickhouse 9363'
   register: clickhouse_metrics_closed
   changed_when: false
   failed_when: clickhouse_metrics_closed.rc == 0

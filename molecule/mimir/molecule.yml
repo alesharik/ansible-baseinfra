@@ -94,7 +94,7 @@ provisioner:
       mimir-custom:
         mimir:
           image: grafana/mimir
-          version: 2.16.0
+          version: 3.2.6
           # converge runs with the default network on; side_effect.yml flips
           # both of these and re-runs the role, so verify sees the disabled
           # state on this host and the default state on mimir-defaults

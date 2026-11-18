@@ -89,7 +89,7 @@ provisioner:
           exporter:
             enabled: true
             image: oliver006/redis_exporter
-            version: v1.89.0
+            version: v1.97.0
           directories:
             ansible: "{{ dir.ansible }}/redis"
             data: "{{ dir.data }}/redis"
@@ -138,7 +138,7 @@ provisioner:
           exporter:
             enabled: true
             image: oliver006/redis_exporter
-            version: v1.89.0
+            version: v1.97.0
           directories:
             ansible: "{{ dir.ansible }}/redis-cache"
             data: "{{ dir.data }}/redis-cache"

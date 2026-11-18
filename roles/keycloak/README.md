@@ -49,7 +49,7 @@ cannot create tables in `public`, and the first start fails.
 ```yaml
 keycloak:
   image: quay.io/keycloak/keycloak
-  version: "26.8.0"
+  version: "26.8.2"
   hostname: "" # KC_HOSTNAME; empty turns strict hostname checks off
   proxy_headers: xforwarded # xforwarded | forwarded | "" (trust no proxy headers)
   admin:

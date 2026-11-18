@@ -14,7 +14,7 @@ Requires `com.centurylinklabs.watchtower.enable: "true"` label to enable updates
 ```yaml
 watchtower:
   image: nickfedor/watchtower
-  version: 1.14.3
+  version: 1.24.1
   vmagent: true # enable vmagent role integration
   interval: 30
   notification_url: # set notification url - https://containrrr.dev/watchtower/notifications/

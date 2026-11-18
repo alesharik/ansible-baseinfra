@@ -106,7 +106,7 @@ provisioner:
         # every other key still matches, so this copy cannot go stale unnoticed.
         zookeeper:
           image: zookeeper
-          version: "3.9.5"
+          version: "3.9.7"
           id: 1
           # The instance's own address on the molecule network. Both members
           # publish their peer and election ports on it and dial each other
@@ -160,7 +160,7 @@ provisioner:
           - /data/zookeeper/logs:/logs
         # the image this host's client containers are run from - the role
         # already pulled it, so using it costs no extra pull
-        expected_image: zookeeper:3.9.5
+        expected_image: zookeeper:3.9.7
         expected_metrics_enabled: true
         expected_metrics_port: 7070
         expected_instance_label: zk-node-1-zookeeper
@@ -176,7 +176,7 @@ provisioner:
       zk-node-2:
         zookeeper:
           image: zookeeper
-          version: "3.9.5"
+          version: "3.9.7"
           id: 2
           peer_ip: "{{ ansible_default_ipv4.address }}"
           quorum:
@@ -228,7 +228,7 @@ provisioner:
           - /data/zookeeper-moved/data:/data
           - /data/zookeeper-moved/datalog:/datalog
           - /data/zookeeper-moved/logs:/logs
-        expected_image: zookeeper:3.9.5
+        expected_image: zookeeper:3.9.7
         expected_metrics_enabled: false
         expected_metrics_port: 7070
         # metrics are off, so ZOO_CFG_EXTRA carries the operator entries alone

@@ -75,10 +75,10 @@ provisioner:
         # namespace tu-custom opens on.
         temporal:
           image: temporalio/server
-          version: "1.31.2"
+          version: "1.32.2"
           admin_tools:
             image: temporalio/admin-tools
-            version: "1.31.2"
+            version: "1.32.2"
           network: temporal
           advertised_ip: ""
           grpc_port: 7233
@@ -126,7 +126,7 @@ provisioner:
         # `temporal` dict above.
         expected_compose_dir: /data/ansible/temporal-ui
         expected_container: temporal-ui-ui-1
-        expected_image: temporalio/ui:2.53.3
+        expected_image: temporalio/ui:2.58.1
         expected_network: temporal
         expected_port: 8080
         expected_address: "temporal:7233"
@@ -144,7 +144,7 @@ provisioner:
       tu-custom:
         temporal_ui:
           image: temporalio/ui
-          version: "2.53.3"
+          version: "2.58.1"
           networks:
             - temporal
           address: "temporal:7233"
@@ -164,7 +164,7 @@ provisioner:
         # directories.ansible is relocated, and compose names the project after
         # it - so this name also proves the move took effect
         expected_container: temporal-ui-moved-ui-1
-        expected_image: temporalio/ui:2.53.3
+        expected_image: temporalio/ui:2.58.1
         expected_network: temporal
         expected_port: 8080
         expected_address: "temporal:7233"

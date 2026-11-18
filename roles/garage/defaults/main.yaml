@@ -1,7 +1,7 @@
 ---
 garage: # noqa: var-naming[no-role-prefix]
   image: dxflrs/garage
-  version: v2.4.1
+  version: v2.5.0
   # Inventory hostnames of every cluster member, this host included. Empty runs
   # a single node.
   peers: []

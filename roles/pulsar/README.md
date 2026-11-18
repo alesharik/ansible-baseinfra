@@ -73,7 +73,7 @@ The one-shot cluster-metadata init runs on the same networks, so it reaches
 ```yaml
 pulsar:
   image: apachepulsar/pulsar
-  version: "4.2.1"
+  version: "5.0.1"
   cluster_name: cluster-a # the name in the metadata; see below before changing
   advertised_ip: "" # address other hosts reach this broker at; empty = one host
   networks: [] # existing docker networks to join; the role creates none

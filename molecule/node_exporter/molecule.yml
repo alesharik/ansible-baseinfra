@@ -88,7 +88,7 @@ provisioner:
         # re-reads defaults/main.yaml to prove the expectations below match it.
         expected_compose_dir: /data/ansible/node-exporter
         expected_image: prom/node-exporter
-        expected_version: v1.8.1
+        expected_version: v1.12.1
         expect_network_mode_none: false
         # compose names the project after the basename of project_src, so this
         # is the network it creates for the role when the flag is off

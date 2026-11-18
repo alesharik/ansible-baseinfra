@@ -25,7 +25,7 @@ zookeeper:
 ```yaml
 zookeeper:
   image: zookeeper
-  version: "3.9.5"
+  version: "3.9.7"
   id: 1 # this server's myid, 1..255, unique across the ensemble
   peer_ip: "" # address the other members dial; required once quorum is set
   quorum: [] # inventory hostnames of every member; empty = standalone

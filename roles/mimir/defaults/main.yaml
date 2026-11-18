@@ -1,7 +1,7 @@
 ---
 mimir: # noqa: var-naming[no-role-prefix]
   image: grafana/mimir
-  version: 2.16.0
+  version: 3.2.6
   networks: []
   # Points compose's default network at docker's built-in `none`, so no project
   # bridge network is created - one less network, and one less set of iptables

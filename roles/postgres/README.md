@@ -26,7 +26,7 @@ postgres:
 ```yaml
 postgres:
   image: postgres
-  version: "18.6" # must start with the major number
+  version: "18.7" # must start with the major number
   username: postgres # the bootstrap superuser
   password: "" # required
   mode: single # single | primary | standby
@@ -47,7 +47,7 @@ postgres:
   exporter:
     enabled: true
     image: quay.io/prometheuscommunity/postgres-exporter
-    version: v0.20.1
+    version: v0.21.1
     password: "" # required when enabled; the `prom-exporter` login
   directories:
     ansible: "{{ dir.ansible }}/postgres" # compose project and config/pg_hba.conf

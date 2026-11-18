@@ -1,6 +1,6 @@
 ---
 harbor: # noqa: var-naming[no-role-prefix]
-  version: "2.15.2"
+  version: "2.16.0"
   # The name harbor knows itself by. It goes into harbor.yml `hostname`, which
   # is the name docker clients push to and the audience of the token service, so
   # it has to be the name the reverse proxy serves - not an address of this host.

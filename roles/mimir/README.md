@@ -1,7 +1,7 @@
 # mimir
 __Tags - `mimir`__
 
-Deploys mimir (default version - `2.16.0`)
+Deploys mimir (default version - `3.2.6`)
 
 Runs the single-binary layout — one container with `-target=all`, every ring
 backed by `memberlist` and a replication factor of 1, storing blocks on the local
@@ -16,7 +16,7 @@ filesystem. Multitenancy is off, so writers and readers need no tenant header.
 ```yaml
 mimir:
   image: grafana/mimir
-  version: 2.16.0
+  version: 3.2.6
   networks: [] # external docker networks to attach to
   disable_default_network: false # point compose's default network at `none`
   env: [] # environment lines for the container, e.g. "JAEGER_AGENT_HOST=jaeger"

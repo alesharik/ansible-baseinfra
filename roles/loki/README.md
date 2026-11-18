@@ -1,7 +1,7 @@
 # loki
 __Tags - `loki`__
 
-Deploys loki (default version - `3.5`)
+Deploys loki (default version - `3.7`)
 
 ### Usage
 ```yaml
@@ -12,7 +12,7 @@ Deploys loki (default version - `3.5`)
 ```yaml
 loki:
   image: grafana/loki
-  version: 3.5
+  version: 3.7
   networks: [] # external docker networks to attach to
   disable_default_network: false # point compose's default network at `none`
   env: [] # environment lines for the container, e.g. "JAEGER_AGENT_HOST=jaeger"

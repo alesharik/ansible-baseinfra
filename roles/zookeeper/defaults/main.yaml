@@ -1,7 +1,7 @@
 ---
 zookeeper: # noqa: var-naming[no-role-prefix]
   image: zookeeper
-  version: "3.9.5"
+  version: "3.9.7"
   # Written to <directories.data>/myid, and the number this member is known by in
   # every other member's `quorum` entry. The image's entrypoint writes myid only
   # when it does not already exist, so changing this on a live node would

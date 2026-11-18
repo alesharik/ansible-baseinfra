@@ -115,7 +115,7 @@ provisioner:
       bk-node-1:
         zookeeper:
           image: zookeeper
-          version: "3.9.5"
+          version: "3.9.7"
           id: 1
           peer_ip: "{{ ansible_default_ipv4.address }}"
           quorum:
@@ -149,7 +149,7 @@ provisioner:
 
         bookkeeper:
           image: apache/bookkeeper
-          version: "4.18.0"
+          version: "4.18.1"
           # The instance's own address on the molecule network. This is what the
           # bookie registers itself as, so it is also how bk-node-2's client
           # reaches it.
@@ -200,7 +200,7 @@ provisioner:
         # dir.ansible/bookkeeper on this host
         expected_container: bookkeeper-bookkeeper-1
         expected_bookie_port: 3181
-        expected_image: apache/bookkeeper:4.18.0
+        expected_image: apache/bookkeeper:4.18.1
         expected_mounts:
           - /data/bookkeeper/journal:/bookkeeper/journal
           - /data/bookkeeper/ledgers:/bookkeeper/ledgers
@@ -224,7 +224,7 @@ provisioner:
       bk-node-2:
         zookeeper:
           image: zookeeper
-          version: "3.9.5"
+          version: "3.9.7"
           id: 2
           peer_ip: "{{ ansible_default_ipv4.address }}"
           quorum:
@@ -257,7 +257,7 @@ provisioner:
 
         bookkeeper:
           image: apache/bookkeeper
-          version: "4.18.0"
+          version: "4.18.1"
           advertised_ip: "{{ ansible_default_ipv4.address }}"
           network: bookkeeper-second
           bookie_port: 3181
@@ -309,7 +309,7 @@ provisioner:
         # after it - so this name also proves the move actually took effect
         expected_container: bookkeeper-moved-bookkeeper-1
         expected_bookie_port: 3181
-        expected_image: apache/bookkeeper:4.18.0
+        expected_image: apache/bookkeeper:4.18.1
         expected_mounts:
           - /data/bookkeeper-moved/journal:/bookkeeper/journal
           - /data/bookkeeper-moved/ledgers:/bookkeeper/ledgers
@@ -339,7 +339,7 @@ provisioner:
         # the bookie below is the counterpart of.
         zookeeper:
           image: zookeeper
-          version: "3.9.5"
+          version: "3.9.7"
           id: 1
           peer_ip: ""
           quorum: []
@@ -372,7 +372,7 @@ provisioner:
         # every other key still matches, so this copy cannot go stale unnoticed.
         bookkeeper:
           image: apache/bookkeeper
-          version: "4.18.0"
+          version: "4.18.1"
           # left at the default: the bookie is known by its compose service
           # name, which is the whole of the single-host shape
           advertised_ip: ""
@@ -416,7 +416,7 @@ provisioner:
         expected_zk_network: zookeeper
         expected_container: bookkeeper-bookkeeper-1
         expected_bookie_port: 3181
-        expected_image: apache/bookkeeper:4.18.0
+        expected_image: apache/bookkeeper:4.18.1
         expected_mounts:
           - /data/bookkeeper/journal:/bookkeeper/journal
           - /data/bookkeeper/ledgers:/bookkeeper/ledgers
@@ -429,7 +429,7 @@ provisioner:
         expected_grpc_port: 4181
         # for the zkCli that reads the table service's registration back out of
         # zookeeper - the image the zookeeper role already pulled on this host
-        expected_zk_image: zookeeper:3.9.5
+        expected_zk_image: zookeeper:3.9.7
         expected_cluster_writer: false
         expected_config_lines: []
         # No advertised_ip, so the bookie is known by the compose service name -
